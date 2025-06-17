@@ -1,0 +1,4 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+websockets==12.0 
+sc_client==0.1.0

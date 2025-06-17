@@ -1,0 +1,20 @@
+{
+  "name": "nika-client",
+  "version": "1.0.0",
+  "description": "TypeScript client for Nika WebSocket communication",
+  "main": "nika-client.ts",
+  "scripts": {
+    "start": "ts-node nika-client.ts",
+    "debug": "ts-node-dev --respawn --transpile-only nika-client.ts"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/ws": "^8.5.10",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
+  }
+}
