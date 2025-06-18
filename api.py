@@ -47,7 +47,7 @@ async def receive_complex_request(request: RequestModel):
         else:
             context = str(kb_results)
         
-        llm_response = llm_call(context)
+        llm_response = llm_call(request, context)
         return {
             "status": "success",
             "message": "Complex request processed",
