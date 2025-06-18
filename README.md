@@ -1,6 +1,6 @@
-```markdown
 # OpenNIKA-API
 
+```markdown
 A standalone API service for interacting with the [NIKA knowledge base](https://github.com/ostis-apps/nika) using OSTIS technology.
 
 ## Features
