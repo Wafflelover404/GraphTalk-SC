@@ -240,7 +240,7 @@ if __name__ == "__main__":
         connect(url)
         if is_connected():
             # Example search with max depth 2
-            search_results = kb_search("Когда защита первой лабы?", max_depth=2)
+            search_results = kb_search("Кто такая Ника", max_depth=2)
             print("Search results:")
             print_results(search_results)
         else:

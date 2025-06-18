@@ -1,16 +1,22 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List, Union
 import uvicorn
 import logging
+import os
+import zipfile
 
 from nika_search import kb_search
 from llm import llm_call
 
 app = FastAPI(title="NIKA API")
+path_to_kb = "/Users/ivanafanasyeff/Documents/technopark/nika/knowledge-base"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+UPLOAD_DIR = "uploaded_kbs"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 class RequestModel(BaseModel):
     text: str
@@ -20,42 +26,58 @@ class ResponseModel(BaseModel):
     message: str
     response: Union[List[str], str, dict]
 
-@app.post("/resp/simple", response_model=ResponseModel)
-async def receive_request(request: RequestModel):
-    """Process simple text requests using KB search"""
-    logger.info(f"Received simple request: {request.text}")
-
-    try:
-        results = kb_search(request.text)
-        if not isinstance(results, (list, str, dict)):
-            results = str(results)
-        return {"status": "success", "message": "Request processed", "response": results}
-    except Exception as e:
-        logger.error(f"Error processing simple request: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-@app.post("/resp/complex", response_model=ResponseModel)
-async def receive_complex_request(request: RequestModel):
-    """Process complex requests using KB search + LLM"""
-    logger.info(f"Received complex request: {request.text}")
+@app.post("/query", response_model=ResponseModel)
+async def query_endpoint(request: RequestModel, humanize: bool = Query(False, description="If true, use LLM to humanize the response")):
+    """Process requests using KB search, optionally humanized by LLM"""
+    logger.info(f"Received request: {request.text} | humanize={humanize}")
 
     try:
         kb_results = kb_search(request.text)
-        
         if isinstance(kb_results, list):
-            context = "\n".join(kb_results)
+            kb_results = list(dict.fromkeys(kb_results))
+        if not isinstance(kb_results, (list, str, dict)):
+            kb_results = str(kb_results)
+        if humanize:
+            if isinstance(kb_results, list):
+                context = "\n".join(kb_results)
+            else:
+                context = str(kb_results)
+            llm_response = llm_call(request.text, context)
+            return {
+                "status": "success",
+                "message": "Request processed with LLM humanization",
+                "response": llm_response
+            }
         else:
-            context = str(kb_results)
-        
-        llm_response = llm_call(request, context)
-        return {
-            "status": "success",
-            "message": "Complex request processed",
-            "response": llm_response
-        }
+            return {
+                "status": "success",
+                "message": "Request processed",
+                "response": kb_results
+            }
     except Exception as e:
-        logger.error(f"Error processing complex request: {str(e)}")
+        logger.error(f"Error processing request: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/upload/kb_zip")
+async def upload_kb_zip(file: UploadFile = File(...)):
+    """
+    Accept a zip file and save it to the local uploaded_kbs directory.
+    Input:
+        Path to file
+    """
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Only zip files are allowed.")
+    save_path = os.path.join(UPLOAD_DIR, file.filename)
+    try:
+        with open(save_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024): 
+                buffer.write(chunk)
+            with zipfile.ZipFile(save_path, 'r') as zip_ref:
+                zip_ref.extractall(path_to_kb)
+                print(f"Succesfully written file {save_path} to {path_to_kb}")
+        return {"status": "success", "message": f"File saved as {save_path}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
