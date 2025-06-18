@@ -1,5 +1,3 @@
-Here's a comprehensive README.md for your OpenNIKA-API project:
-
 ```markdown
 # OpenNIKA-API
 
