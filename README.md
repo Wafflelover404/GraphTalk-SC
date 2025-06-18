@@ -19,7 +19,7 @@
 ## Installation
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/OpenNIKA-API.git
+git clone https://github.com/Wafflelover404/OpenNIKA-API.git
 cd OpenNIKA-API
 ```
 
