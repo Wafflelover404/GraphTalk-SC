@@ -26,6 +26,31 @@ class ResponseModel(BaseModel):
     message: str
     response: Union[List[str], str, dict]
 
+@app.get("/")
+async def landing_page():
+    return {
+        "description": "NIKA API provides functionalities for querying a knowledge base and uploading knowledge base files.",
+        "endpoints": {
+            "/query": {
+                "method": "POST",
+                "description": "Processes a text query against the knowledge base. Optionally, the response can be humanized using a language model.",
+                "parameters": {
+                    "text": "The query text to search in the knowledge base.",
+                    "humanize": "Optional boolean to indicate if the response should be humanized."
+                },
+                "response": "Returns the search results or a humanized response."
+            },
+            "/upload/kb_zip": {
+                "method": "POST",
+                "description": "Uploads a zip file containing knowledge base data and extracts it to the server.",
+                "parameters": {
+                    "file": "The zip file to upload."
+                },
+                "response": "Returns the status of the upload operation."
+            }
+        }
+    }
+
 @app.post("/query", response_model=ResponseModel)
 async def query_endpoint(request: RequestModel, humanize: bool = Query(False, description="If true, use LLM to humanize the response")):
     """Process requests using KB search, optionally humanized by LLM"""
