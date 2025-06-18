@@ -14,7 +14,7 @@
 ## Prerequisites
 - Python 3.9+
 - OSTIS Knowledge Base running locally (`ws://localhost:8090`)
-- [SC-server](https://github.com/ostis-dev/sc-server) running
+- SC-server running
 
 ## Installation
 1. Clone the repository:
