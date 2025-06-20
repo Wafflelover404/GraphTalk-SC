@@ -5,12 +5,17 @@ import uvicorn
 import logging
 import os
 import zipfile
+import shutil
+import uuid
+import glob
+from fastapi.concurrency import run_in_threadpool
 
 from nika_search import kb_search
 from llm import llm_call
+from memloader import load_scs_directory  # Import the memloader function
 
 app = FastAPI(title="NIKA API")
-path_to_kb = "/Users/ivanafanasyeff/Documents/technopark/nika/knowledge-base"
+path_to_kb = "./unpacked_kbs"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,23 +91,53 @@ async def query_endpoint(request: RequestModel, humanize: bool = Query(False, de
 @app.post("/upload/kb_zip")
 async def upload_kb_zip(file: UploadFile = File(...)):
     """
-    Accept a zip file and save it to the local uploaded_kbs directory.
-    Input:
-        Path to file
+    Accept a zip file, save it, extract it, load .scs files into SC memory, and clean up.
     """
     if not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Only zip files are allowed.")
+    
     save_path = os.path.join(UPLOAD_DIR, file.filename)
+    unpacked_root = os.path.abspath("unpacked_kbs")
+    os.makedirs(unpacked_root, exist_ok=True)
+    
+    unique_dir = os.path.join(unpacked_root, f"{os.path.splitext(file.filename)[0]}_{uuid.uuid4().hex}")
+    os.makedirs(unique_dir, exist_ok=True)
+    logger.info(f"Unique extraction directory: {unique_dir}")
+    
     try:
+        # Save the uploaded file
         with open(save_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024): 
+            while chunk := await file.read(1024 * 1024):
                 buffer.write(chunk)
-            with zipfile.ZipFile(save_path, 'r') as zip_ref:
-                zip_ref.extractall(path_to_kb)
-                print(f"Succesfully written file {save_path} to {path_to_kb}")
-        return {"status": "success", "message": f"File saved as {save_path}"}
+        
+        # Extract the zip file
+        with zipfile.ZipFile(save_path, 'r') as zip_ref:
+            zip_ref.extractall(unique_dir)
+            logger.info(f"Succesfully extracted {save_path} to {unique_dir}")
+        
+        # Load .scs files into SC memory
+        load_status = await run_in_threadpool(load_scs_directory, unique_dir)
+        logger.info(f"SCS files loaded with status: {load_status}")
+        
+        return {
+            "status": "success",
+            "message": f"File saved as {save_path}",
+            "unique_dir": unique_dir,
+            "load_status": load_status
+        }
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        logger.error(f"Error during file processing: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    
+    finally:
+        # Clean up the extracted directory
+        if os.path.exists(unique_dir):
+            try:
+                shutil.rmtree(unique_dir)
+                logger.info(f"Cleaned up directory {unique_dir}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to clean up directory {unique_dir}: {cleanup_err}")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=9001)
