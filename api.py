@@ -12,7 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from nika_search import kb_search
 from llm import llm_call
-from memloader import load_scs_directory  # Import the memloader function
+from memloader import load_scs_directory  # Import the, memloader function
 
 app = FastAPI(title="NIKA API")
 path_to_kb = "./unpacked_kbs"

@@ -1,12 +1,14 @@
 from g4f.client import Client
+import json
+
 
 def llm_call(message):
     """
-    A function to call LLM models (GPT-Like models) to complete KB-Parsed data.
+    A function to call LLM models (GPT-Like models) to translate plain text into json.
     Args:
         message (str): Text message as a string (should be a string, not a list)
     Return:
-        Text response (str)
+        Parsed JSON response (dict)
     """
     client = Client()
     # Read the prompt from json-prompt.md
@@ -24,8 +26,18 @@ def llm_call(message):
         ],
         web_search=False
     )
-
-    return(response.choices[0].message.content)
+    content = response.choices[0].message.content
+    #try:
+    return json.loads(content)
+    #except json.JSONDecodeError:
+    #    print("Error: LLM response is not valid JSON.")
+    #    return None
 
 if __name__ == "__main__":
-    print(llm_call("Я обучаюсь в Национальном детском технопарке"))
+    result = llm_call("Я обучаюсь в Национальном детском технопарке")
+    if result is not None:
+        with open("output.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print("JSON written to output.json")
+    else:
+        print("No valid JSON to write.") 
