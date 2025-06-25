@@ -28,7 +28,7 @@ def kb_search(search_string):
         connect(url)
         
         if not is_connected():
-            return ["Not connected to NIKA"]
+            return ["Not connected to SC-machine"]
             
         # Create search context link
         construction = ScConstruction()

@@ -14,11 +14,11 @@ import toml
 import bcrypt
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from nika_search import kb_search
+from sc_search import kb_search
 
 # Initialize app with proper metadata
 app = FastAPI(
-    title="NIKA API",
+    title="SC-Machine API",
     description="Knowledge Base Query and Management System",
     version="1.0.0",
     docs_url=None,
@@ -118,7 +118,7 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 @app.get("/", include_in_schema=False)
 async def landing_page():
     return {
-        "app": "NIKA API",
+        "app": "SC-Machine API",
         "version": app.version,
         "endpoints": {
             "/query": {"method": "POST", "description": "Query the knowledge base"},

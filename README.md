@@ -1,26 +1,33 @@
-# OpenNIKA-API
-## A standalone API service for interacting with the [NIKA knowledge base](https://github.com/ostis-apps/nika) using OSTIS technology.
+# GraphTalk
+A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
 
-```markdown
+## Overview
+GraphTalk provides a secure, feature-rich interface for interacting with OSTIS knowledge bases through:
+- **REST API**: Secure endpoints with bearer token authentication
+- **Knowledge Base Search**: Multiple search algorithms for different use cases
+- **LLM Integration**: AI-powered response generation and semantic parsing
+- **File Management**: Upload and process knowledge base files
+- **Semantic Processing**: Convert natural language to structured semantic representations
 
-## Features
-- REST API endpoints for knowledge base queries
-- Simple keyword-based search
-- Complex reasoning with LLM integration
-- Connection to OSTIS knowledge bases via WebSocket
-- Recursive knowledge graph traversal
-- Automatic element decoding (keynodes, links, connectors)
+## Key Features
+- 🔐 **Secure API**: Token-based authentication with bcrypt hashing
+- 🔍 **Dual Search System**: Fast basic search and deep recursive exploration
+- 🤖 **AI Integration**: GPT-4o-mini for humanized responses and JSON generation
+- 📁 **File Processing**: Upload ZIP files containing SCS knowledge base files
+- 🌐 **WebSocket Connection**: Direct integration with OSTIS SC-machine
+- 📊 **Semantic Parsing**: Convert natural language to SC-Machine JSON format
+- 📖 **Interactive Documentation**: Swagger UI with authentication
 
 ## Prerequisites
 - Python 3.9+
-- OSTIS Knowledge Base running locally (`ws://localhost:8090`)
-- SC-server running
+- OSTIS SC-machine running locally (`ws://localhost:8090/ws_json`)
+- Required Python packages (see requirements.txt)
 
 ## Installation
 1. Clone the repository:
 ```bash
-git clone https://github.com/Wafflelover404/OpenNIKA-API.git
-cd OpenNIKA-API
+git clone <repository-url>
+cd GraphTalk
 ```
 
 2. Install dependencies:
@@ -28,101 +35,183 @@ cd OpenNIKA-API
 pip install -r requirements.txt
 ```
 
-## Running the API
+3. Verify OSTIS connection:
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8080
+python socket-client.py
 ```
-The API will be available at `http://localhost:8080`
+Expected output: "Connected to the server !"
+
+## Quick Start
+
+### 1. Start the API Server
+```bash
+python api.py
+```
+The API will be available at `http://localhost:9001`
+
+### 2. Create Access Token (One-time setup)
+```bash
+curl -X POST http://localhost:9001/create_token
+```
+Save the returned token - it will only be shown once!
+
+### 3. Query the Knowledge Base
+```bash
+# Basic search
+curl -X POST http://localhost:9001/query \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "OSTIS technology"}'
+
+# Humanized response with LLM
+curl -X POST "http://localhost:9001/query?humanize=true" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "What is OSTIS?"}'
+```
 
 ## API Endpoints
 
-### 1. Simple Search (`/resp/simple`)
-- **Method**: POST
-- **Input**: 
-  ```json
-  {"text": "your search query"}
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Request processed",
-    "response": ["Keynode: example", "Link Content: example"]
-  }
-  ```
+### Authentication
+- **POST /create_token**: Generate access token (one-time only)
+- **GET /**: API information and endpoint overview
 
-### 2. Complex Reasoning (`/resp/complex`)
-- **Method**: POST
-- **Input**: 
-  ```json
-  {"text": "your complex question"}
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Complex request processed",
-    "response": "LLM-generated answer based on KB data"
-  }
-  ```
+### Core Operations
+- **POST /query**: Search knowledge base with optional LLM humanization
+  - Query parameter: `humanize=true` for AI-enhanced responses
+- **POST /upload/kb_zip**: Upload ZIP files containing .scs knowledge base files
+- **GET /docs**: Interactive API documentation (requires authentication)
 
-## Search Modules
-1. `nika_search.py` - Basic search:
-   - Simple keyword matching
-   - Returns keynodes and link contents
-   - Fast response time
+## Module Overview
 
-2. `nika_search-total.py` - Advanced search:
-   - Recursive traversal (configurable depth)
-   - Relationship mapping (parent/child/adjacent)
-   - Full element decoding
-   - Returns structured knowledge graph
+### Core API (`api.py`)
+- FastAPI application with secure authentication
+- File upload and processing capabilities
+- Integration with search and LLM modules
+
+### Search Modules
+1. **Basic Search (`sc_search.py`)**:
+   - Fast, non-recursive search
+   - Substring-based matching
+   - Returns keynodes and link content
+
+2. **Advanced Search (`sc_search-total.py`)**:
+   - Recursive knowledge graph traversal
+   - Configurable depth exploration
+   - Multi-directional relationship mapping
+   - Structured nested results
+
+### AI Integration
+1. **Response Generation (`llm.py`)**:
+   - Converts KB search results to natural language
+   - Uses GPT-4o-mini for cost-effective processing
+   - Context-aware response generation
+
+2. **Semantic Parsing (`json-llm.py`)**:
+   - Converts natural language to SC-Machine JSON format
+   - Follows formal semantic specification
+   - Supports Russian language processing
+
+### Utilities
+- **Knowledge Base Loader (`memloader.py`)**: Batch process SCS files
+- **Connection Tester (`socket-client.py`)**: Verify OSTIS connectivity
+- **JSON Standard (`json-prompt.md`)**: Semantic conversion specification
 
 ## Project Structure
 ```
-OpenNIKA-API/
-├── api.py               # Main API application (FastAPI)
-├── llm.py               # LLM integration module
-├── nika_search.py       # Simple KB search implementation
-├── nika_search-total.py # Advanced KB traversal implementation
-├── socket-client.py     # OSTIS connection test script
-├── requirements.txt     # Python dependencies
-└── README.md            # Project documentation
+GraphTalk/
+├── api.py                    # Main FastAPI application
+├── sc_search.py             # Basic KB search module
+├── sc_search-total.py       # Advanced recursive search
+├── llm.py                   # LLM response generation
+├── json-llm.py             # Natural language to JSON conversion
+├── memloader.py            # SCS file batch processor
+├── socket-client.py        # OSTIS connection test utility
+├── json-prompt.md          # SC-Machine JSON standard specification
+├── requirements.txt        # Python dependencies
+├── uploaded_kbs/           # Directory for uploaded files
+├── unpacked_kbs/          # Temporary extraction directory
+└── docs/                  # Comprehensive documentation
+    ├── api.md
+    ├── sc_search.md
+    ├── sc_search-total.md
+    ├── llm.md
+    ├── json-llm.md
+    ├── memloader.md
+    ├── socket-client.md
+    └── json-prompt.md
 ```
+
+## Project Documentation
+
+Documentation for individual components can be found in the `docs/` directory:
+
+- [API Module](./docs/api.md): Documentation for `api.py`, detailing API endpoints and security features.
+- [Basic Search Module](./docs/sc_search.md): Details on `sc_search.py` for quick non-recursive knowledge base search.
+- [Advanced Search Module](./docs/sc_search-total.md): Details on `sc_search-total.py` for recursive knowledge base exploration.
+- [LLM Integration](./docs/llm.md): Information on `llm.py` for language model integration and response generation.
+- [JSON LLM Converter](./docs/json-llm.md): Guide for `json-llm.py` explaining JSON generation from text.
+- [Knowledge Base Loader](./docs/memloader.md): Instructions for `memloader.py` to process SCS files.
+- [Connection Testing Tool](./docs/socket-client.md): Details on `socket-client.py` for testing OSTIS connectivity.
+- [SC-Machine JSON Standard](./docs/json-prompt.md): Specification details from `json-prompt.md` for semantic JSON conversion.
 
 ## Troubleshooting
-1. **Connection issues**:
-   - Verify OSTIS server is running: `ws://localhost:8090`
-   - Test connection: `python socket-client.py`
-   - Expected output: `"Connected to the server!"`
 
-2. **Empty responses**:
-   - Ensure knowledge base contains relevant data
-   - Check search terms match KB identifiers
-   - Increase max_depth in `nika_search-total.py` for deeper traversal
+### Connection Issues
+- **OSTIS Server**: Verify OSTIS server is running at `ws://localhost:8090/ws_json`
+- **Test Connection**: Run `python socket-client.py`
+- **Expected Output**: "Connected to the server !"
+- **Port Check**: Ensure port 8090 is not blocked by firewall
 
-3. **LLM errors**:
-   - Verify internet connection
-   - Check GPT-4 API availability
-   - Review `llm.py` for model compatibility
+### Authentication Issues
+- **Token Creation**: Only one token can be created per installation
+- **Token Storage**: Token is stored in `~/secrets.toml`
+- **Reset Token**: Delete `~/secrets.toml` to create a new token
 
-## Example Requests
+### Search Issues
+- **Empty Results**: Knowledge base may not contain relevant data
+- **Search Terms**: Use specific terms that match KB content
+- **Connection**: Verify OSTIS connection before searching
+
+### LLM Issues
+- **Internet Connection**: Required for GPT-4o-mini access
+- **API Limits**: g4f client may have rate limits
+- **Fallback**: API returns raw KB results if LLM fails
+
+### File Upload Issues
+- **File Format**: Only .zip files containing .scs files are accepted
+- **Extraction**: Temporary files are stored in `unpacked_kbs/`
+- **Permissions**: Ensure write permissions for upload directories
+
+## Development
+
+### Running Individual Modules
 ```bash
-# Simple search
-curl -X POST http://localhost:8080/resp/simple \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Когда защита первой лабы?"}'
+# Test OSTIS connection
+python socket-client.py
 
-# Complex reasoning
-curl -X POST http://localhost:8080/resp/complex \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Объясни тему семантических сетей"}'
+# Test basic knowledge base search
+python sc_search.py
+
+# Test JSON conversion
+python json-llm.py
+
+# Test file loading
+python memloader.py
 ```
 
-## Contribution
-Contributions are welcome! Please open an issue or PR for:
-- New knowledge base connectors
-- Additional LLM providers
-- Performance improvements
-- Documentation enhancements
-```
+### Environment Configuration
+- **OSTIS URL**: Configurable in each module (default: `ws://localhost:8090/ws_json`)
+- **API Port**: Configurable in `api.py` (default: 9001)
+- **Upload Directories**: `uploaded_kbs/` and `unpacked_kbs/`
+
+## License
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+## Contributing
+Contributions are welcome! Please consider:
+- Adding new search algorithms
+- Improving LLM integration
+- Enhancing security features
+- Writing additional documentation
+- Adding test coverage

@@ -1,4 +1,4 @@
-# nika-tools.py
+# sc-search-total.py
 
 from sc_client.client import connect, is_connected, disconnect, search_by_template
 from sc_client.models import ScAddr, ScConstruction, ScLinkContent, ScLinkContentType, ScTemplate
@@ -240,10 +240,10 @@ if __name__ == "__main__":
         connect(url)
         if is_connected():
             # Example search with max depth 2
-            search_results = kb_search("Кто такая Ника", max_depth=2)
+            search_results = kb_search("OSTIS technology", max_depth=2)
             print("Search results:")
             print_results(search_results)
         else:
-            print("Not connected to NIKA")
+            print("Not connected to SC-machine")
     finally:
         disconnect()
