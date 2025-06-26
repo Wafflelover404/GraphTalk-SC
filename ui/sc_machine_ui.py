@@ -30,9 +30,12 @@ if 'token_created' not in st.session_state:
 if page == "Documentation":
     st.title("SC-Machine API Documentation")
     
-    # Try to read README.md from the same directory
+    # Try to read README.md from the project root directory
     try:
-        readme_path = "../README.md"
+        # Get the directory where this script is located, then go up one level to project root
+        script_dir = Path(__file__).parent
+        readme_path = script_dir.parent / "README.md"
+        
         with open(readme_path, "r", encoding="utf-8") as f:
             readme_content = f.read()
         st.markdown(readme_content)
@@ -149,11 +152,10 @@ elif page == "API Client":
                             "Authorization": f"Bearer {st.session_state.token}"
                         }
                         payload = {
-                            "text": query_text,
-                            "humanize": humanize
+                            "text": query_text
                         }
                         response = requests.post(
-                            f"{st.session_state.server_url.rstrip('/')}/query",
+                            f"{st.session_state.server_url.rstrip('/')}/query?humanize={'true' if humanize else 'false'}",
                             json=payload,
                             headers=headers
                         )
