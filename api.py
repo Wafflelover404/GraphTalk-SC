@@ -16,6 +16,8 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sc_search import kb_search
 
+from llm import llm_call
+
 # Initialize app with proper metadata
 app = FastAPI(
     title="SC-Machine API",
