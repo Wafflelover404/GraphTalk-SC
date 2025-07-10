@@ -154,6 +154,7 @@ Documentation for individual components can be found in the `docs/` directory:
 - [Knowledge Base Loader](./docs/memloader.md): Instructions for `memloader.py` to process SCS files.
 - [Connection Testing Tool](./docs/socket-client.md): Details on `socket-client.py` for testing OSTIS connectivity.
 - [SC-Machine JSON Standard](./docs/json-prompt.md): Specification details from `json-prompt.md` for semantic JSON conversion.
+- [NLP JSON Interpretation & LLM Integration](docs/nlp_json_interpretation.md)
 
 ## Troubleshooting
 
