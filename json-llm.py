@@ -54,7 +54,7 @@ def llm_call(message):
 
 
 if __name__ == "__main__":
-    result = llm_call("Я обучаюсь в Национальном детском технопарке")
+    result = llm_call("Вчера я поступил в БГУ, а сегодня я поступил в МГУ. Я учусь на факультете математики и физики в БГУ, а в МГУ на факультете информатики. Я живу в Минске и Москве.")
     if result is not None:
         with open("output.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)

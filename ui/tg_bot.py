@@ -11,6 +11,7 @@ from telegram.ext import (
 import requests
 import os
 from pathlib import Path
+SECRETS_PATH = os.path.expanduser("~/secrets.toml")
 
 # Enable logging
 logging.basicConfig(
@@ -69,7 +70,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             'token_created': False
         }
     
-    choice = int(query.data)
+    # Handle string callback data first
+    if query.data == 'create_token':
+        await create_token(query, context)
+        return
+    elif query.data == 'enter_token':
+        await query.edit_message_text(
+            text="Please enter your existing token:"
+        )
+        context.user_data['state'] = ENTERING_TOKEN
+        return
+    
+    # Handle integer callback data
+    try:
+        choice = int(query.data)
+    except ValueError:
+        # If we can't convert to int, it's an unknown callback
+        await query.edit_message_text(text="Unknown option selected.")
+        return
     
     if choice == SETTING_SERVER_URL:
         await query.edit_message_text(
@@ -120,13 +138,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data['state'] = UPLOAD_KB
     elif choice == VIEW_DOCS:
         await show_documentation(query)
-    elif query.data == 'create_token':
-        await create_token(query, context)
-    elif query.data == 'enter_token':
-        await query.edit_message_text(
-            text="Please enter your existing token:"
-        )
-        context.user_data['state'] = ENTERING_TOKEN
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle regular text messages based on the current state."""
@@ -305,8 +316,9 @@ async def process_query(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
 async def show_documentation(query) -> None:
     """Show the documentation from README.md or fallback content."""
     try:
-        # Try to read README.md from the current directory
-        readme_path = Path(__file__).parent / "README.md"
+        # Try to read README.md from the project root directory
+        script_dir = Path(__file__).parent
+        readme_path = script_dir.parent / "README.md"
         with open(readme_path, "r", encoding="utf-8") as f:
             readme_content = f.read()
         
@@ -374,7 +386,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     """Start the bot."""
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token("").build()
+    application = Application.builder().token("8052771201:AAGio64wXRmCavmuYc_N5uPlfxrtW3A6qTs").build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
