@@ -1,8 +1,10 @@
 from g4f.client import Client
 import json
+import ast
+import re
 
 
-def llm_call(message):
+def llm_json_interpret(message):
     """
     A function to call LLM models (GPT-Like models) to translate plain text into JSON.
     Args:
@@ -44,17 +46,35 @@ def llm_call(message):
     content = response.choices[0].message.content
     print("LLM raw output:", repr(content))
 
+    # If content is already a dict, return it directly
+    if isinstance(content, dict):
+        return content
+
+    # Try to extract JSON from special tags if present
+    match = re.search(r"<json>(.*?)</json>", content, re.DOTALL)
+    if match:
+        content = match.group(1).strip()
+
+    # Try to parse as JSON
     try:
-        # Attempt to parse the JSON response
-        parsed_json = json.loads(content)
-        return parsed_json
-    except json.JSONDecodeError as e:
-        print(f"Error: LLM response is not valid JSON. Error details: {e}")
-        return None
+        return json.loads(content)
+    except Exception:
+        pass
+
+    # Try to parse as Python dict (e.g. single quotes)
+    try:
+        parsed = ast.literal_eval(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    print("Error: LLM response is not valid JSON or dict.")
+    return None
 
 
 if __name__ == "__main__":
-    result = llm_call("Вчера я поступил в БГУ, а сегодня я поступил в МГУ. Я учусь на факультете математики и физики в БГУ, а в МГУ на факультете информатики. Я живу в Минске и Москве.")
+    result = llm_json_interpret("Вчера я поступил в БГУ, а сегодня я поступил в МГУ. Я учусь на факультете математики и физики в БГУ, а в МГУ на факультете информатики. Я живу в Минске и Москве.")
     if result is not None:
         with open("output.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)

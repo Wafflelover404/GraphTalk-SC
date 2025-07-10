@@ -11,15 +11,7 @@ def kb_search(search_string):
         search_string (str): The search query to look for in the knowledge base
         
     Returns:
-        list: A list of strings containing the search results. Each result can be either:
-            - A keynode identifier (if the element has a system identifier)
-            - A link content (if the element contains data)
-            - An unknown element address (if neither of the above)
-            
-    Note:
-        The function establishes a WebSocket connection to the OSTIS server,
-        performs the search, and automatically disconnects after completion.
-        If any errors occur during the process, they will be returned as a single-item list.
+        list: A list of unique strings containing the search results.
     """
     url = "ws://localhost:8090/ws_json"
     
@@ -41,17 +33,23 @@ def kb_search(search_string):
         links_list = search_links_by_contents_substrings(*search_terms)
         result_addrs = [addr for sublist in links_list for addr in sublist]
         
-        # Process and display results
-        decoded_results = []
-        for addr in result_addrs:
+        # Deduplicate by address
+        unique_addrs = set(result_addrs)
+
+        # Process and display results, deduplicate by result string
+        decoded_results = set()
+        for addr in unique_addrs:
             sys_idtf = get_element_system_identifier(addr)
             if sys_idtf:
-                decoded_results.append(f"Keynode: {sys_idtf}")
+                decoded_results.add(f"Keynode: {sys_idtf}")
             else:
                 content = get_link_content_data(addr)
-                decoded_results.append(f"Link Content: {content}" if content else f"Unknown Element: {addr}")
-        
-        return decoded_results
+                if content:
+                    decoded_results.add(f"Link Content: {content}")
+                else:
+                    decoded_results.add(f"Unknown Element: {addr}")
+
+        return list(decoded_results)
         
     except Exception as e:
         return [f"Error during search: {e}"]

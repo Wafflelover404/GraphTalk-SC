@@ -16,7 +16,12 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sc_search import kb_search
 
+
+# Import LLM and JSON interpretation from dedicated modules
+from json_llm import llm_json_interpret
 from llm import llm_call
+from json_interpreter import load_data_to_sc
+import json
 
 # Initialize app with proper metadata
 app = FastAPI(
@@ -246,6 +251,228 @@ async def upload_knowledge_base(
         # Cleanup extracted files
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir, ignore_errors=True)
+
+@app.post("/upload/kb_nlp", response_model=APIResponse)
+async def upload_kb_nlp(
+    file: UploadFile = File(...),
+    _: bool = Depends(verify_token)
+):
+    """
+    Upload and process a knowledge base using NLP.
+    Accepts plain text or JSON, processes it with LLM, and loads into the system.
+    """
+
+    try:
+        content = await file.read()
+        filename = file.filename.lower()
+        text_data = content.decode('utf-8')
+
+        # Always process with LLM to get JSON, regardless of file type
+        llm_json_str = await run_in_threadpool(llm_json_interpret, text_data)
+
+        # Accept both dict and str from llm_json_interpret
+        if isinstance(llm_json_str, dict):
+            json_kb = llm_json_str
+        else:
+            try:
+                json_kb = json.loads(llm_json_str)
+            except Exception as e:
+                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_str}")
+
+        # Load JSON into KB using your interpreter
+        SERVER_URL = "ws://localhost:8090/ws_json"
+        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
+
+        return APIResponse(
+            status="success",
+            message="NLP knowledge base processed and loaded",
+            response={
+                "interpreted_json": json_kb,
+                "llm_raw_json": llm_json_str,
+                "load_log": logs
+            }
+        )
+    except Exception as e:
+        logger.exception("NLP KB upload failed")
+        return APIResponse(
+            status="error",
+            message=str(e),
+            response=None
+        )
+
+from fastapi import Body
+
+@app.post("/upload/kb_nlp_text", response_model=APIResponse)
+async def upload_kb_nlp_text(
+    request: QueryRequest,
+    _: bool = Depends(verify_token)
+):
+    """
+    Accepts plain text (in JSON body as {"text": ...}), processes it with LLM to JSON, and loads into SC-memory.
+    """
+    try:
+        text_data = request.text
+        llm_json_str = await run_in_threadpool(llm_json_interpret, text_data)
+
+        # Accept both dict and str from llm_json_interpret
+        if isinstance(llm_json_str, dict):
+            json_kb = llm_json_str
+        else:
+            try:
+                json_kb = json.loads(llm_json_str)
+            except Exception as e:
+                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_str}")
+
+        SERVER_URL = "ws://localhost:8090/ws_json"
+        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
+
+        return APIResponse(
+            status="success",
+            message="NLP knowledge base processed and loaded from text",
+            response={
+                "interpreted_json": json_kb,
+                "llm_raw_json": llm_json_str,
+                "load_log": logs
+            }
+        )
+    except Exception as e:
+        logger.exception("NLP KB upload (text) failed")
+        return APIResponse(
+            status="error",
+            message=str(e),
+            response=None
+        )
+
+@app.post("/upload/kb_nlp_json", response_model=APIResponse)
+async def upload_kb_nlp_json(
+    file: UploadFile = File(...),
+    _: bool = Depends(verify_token)
+):
+    """
+    Accepts a JSON file and loads it directly into SC-memory.
+    """
+    try:
+        content = await file.read()
+        try:
+            json_kb = json.loads(content.decode('utf-8'))
+        except Exception as e:
+            raise HTTPException(400, f"Invalid JSON: {e}")
+
+        SERVER_URL = "ws://localhost:8090/ws_json"
+        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
+
+        return APIResponse(
+            status="success",
+            message="NLP knowledge base processed and loaded from JSON",
+            response={
+                "interpreted_json": json_kb,
+                "load_log": logs
+            }
+        )
+    except Exception as e:
+        logger.exception("NLP KB upload (json) failed")
+        return APIResponse(
+            status="error",
+            message=str(e),
+            response=None
+        )
+
+
+def load_data_to_sc(server_url: str, json_data: dict) -> list[str]:
+    """
+    Loads the provided JSON knowledge base into SC-memory using the py-sc-kpm stack.
+    Returns a list of log strings describing what was loaded.
+    """
+    from sc_kpm.utils.common_utils import generate_node
+    from sc_kpm.utils import generate_link, generate_binary_relation, generate_role_relation
+    from sc_client.constants import sc_type
+    from sc_kpm import ScKeynodes, ScServer
+    import re
+    import unicodedata
+
+    def normalize_identifier(identifier: str) -> str:
+        try:
+            from unidecode import unidecode
+            identifier = unidecode(identifier)
+        except ImportError:
+            identifier = unicodedata.normalize('NFKD', identifier).encode('ascii', 'ignore').decode('ascii')
+        identifier = identifier.lower()
+        identifier = re.sub(r'\s+', '_', identifier)
+        identifier = re.sub(r'[^a-z0-9_]', '', identifier)
+        return identifier
+
+    def create_node_with_label(original_text: str):
+        norm_id = normalize_identifier(original_text)
+        try:
+            addr = ScKeynodes[norm_id]
+            log = f"Node exists: {norm_id} (from '{original_text}') -> {addr}"
+        except Exception:
+            try:
+                addr = generate_node(sc_type.CONST_NODE)
+                log = f"Node created: {norm_id} (from '{original_text}') -> {addr}"
+            except Exception as e2:
+                log = f"Failed to create node: {norm_id} (from '{original_text}') | {e2}"
+                return None, log
+        # Attach the original text as a link
+        try:
+            label_link = generate_link(original_text)
+            generate_binary_relation(sc_type.CONST_PERM_POS_ARC, addr, label_link)
+            log += f" | Label attached"
+        except Exception as e:
+            log += f" | Label attach failed: {e}"
+        return addr, log
+
+    logs = []
+    server = ScServer(server_url)
+    try:
+        with server.start():
+            # Add Source content as a link node
+            content_id = 'Source content'
+            content_addr, log = create_node_with_label(content_id)
+            logs.append(log)
+            try:
+                content_link = generate_link(json_data[content_id])
+                generate_binary_relation(sc_type.CONST_PERM_POS_ARC, content_addr, content_link)
+                logs.append(f"Source content link attached: {json_data[content_id]}")
+            except Exception as e:
+                logs.append(f"Source content link attach failed: {e}")
+
+            # Process all relations except membership and Source content
+            for rel, subjects in json_data.items():
+                if rel in ('membership', 'Source content'):
+                    continue
+                rel_addr, log = create_node_with_label(rel)
+                logs.append(log)
+                for subj, objects in subjects.items():
+                    subj_addr, log = create_node_with_label(subj)
+                    logs.append(log)
+                    if isinstance(objects, list):
+                        for obj in objects:
+                            obj_addr, log = create_node_with_label(obj)
+                            logs.append(log)
+                            try:
+                                generate_role_relation(subj_addr, obj_addr, rel_addr)
+                                logs.append(f"Relation created: {subj} -[{rel}]-> {obj}")
+                            except Exception as e:
+                                logs.append(f"Relation failed: {subj} -[{rel}]-> {obj} | {e}")
+                    else:
+                        obj_addr, log = create_node_with_label(objects)
+                        logs.append(log)
+                        try:
+                            generate_role_relation(subj_addr, obj_addr, rel_addr)
+                            logs.append(f"Relation created: {subj} -[{rel}]-> {objects}")
+                        except Exception as e:
+                            logs.append(f"Relation failed: {subj} -[{rel}]-> {objects} | {e}")
+
+            # Ensure all membership nodes exist
+            for item in json_data.get('membership', {}):
+                addr, log = create_node_with_label(item)
+                logs.append(log)
+
+    except Exception as e:
+        logs.append(f"Error loading data: {e}")
+    return logs
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)
