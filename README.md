@@ -26,7 +26,7 @@ GraphTalk provides a secure, feature-rich interface for interacting with OSTIS k
 ## Installation
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/Wafflelover404/GraphTalk
 cd GraphTalk
 ```
 
