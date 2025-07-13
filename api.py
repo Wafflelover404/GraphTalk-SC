@@ -84,9 +84,13 @@ def token_exists() -> bool:
 
 def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     """Token verification dependency"""
-    # Skip authentication for open endpoints
+    # Require authentication for all protected endpoints
     if not credentials:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication credentials.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     # Check if token exists in system
     if not token_exists():
@@ -130,8 +134,11 @@ async def landing_page():
         "endpoints": {
             "/query": {"method": "POST", "description": "Query the knowledge base"},
             "/upload/kb_zip": {"method": "POST", "description": "Upload a knowledge base zip file"},
+            "/upload/kb_nlp": {"method": "POST", "description": "Convert plain text into sc and load it"},
+            "/upload/kb_json    ": {"method": "POST", "description": "Convert plain text into sc and load it"},
             "/create_token": {"method": "POST", "description": "Generate a new access token (only once)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
+            
         }
     }
 
@@ -147,6 +154,7 @@ async def generate_token():
     
     token = secrets.token_urlsafe(64)
     token_bytes = token.encode('utf-8')
+    #print("token: ", token)
     
     # Hash and store the token
     salt = bcrypt.gensalt(rounds=12)
@@ -162,24 +170,30 @@ async def generate_token():
         token=token
     )
 
+
+# Whitelist /docs endpoint (no authentication required)
 @app.get("/docs", include_in_schema=False)
-async def get_documentation(_: bool = Depends(verify_token)):
-    """Serve Swagger UI with authentication"""
+async def get_documentation():
+    """Serve Swagger UI without authentication"""
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=app.title + " - Swagger UI"
     )
 
+
+# Whitelist /openapi.json endpoint (no authentication required)
 @app.get("/openapi.json", include_in_schema=False)
-async def get_openapi_schema(_: bool = Depends(verify_token)):
+async def get_openapi_schema():
     return app.openapi()
 
 @app.post("/query", response_model=APIResponse)
 async def process_query(
     request: QueryRequest,
     humanize: bool = Query(False),
-    _: bool = Depends(verify_token)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
+    # Explicitly check authentication
+    verify_token(credentials)
     """Process a knowledge base query"""
     try:
         # Perform knowledge base search
@@ -252,61 +266,13 @@ async def upload_knowledge_base(
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir, ignore_errors=True)
 
-@app.post("/upload/kb_nlp", response_model=APIResponse)
-async def upload_kb_nlp(
-    file: UploadFile = File(...),
-    _: bool = Depends(verify_token)
-):
-    """
-    Upload and process a knowledge base using NLP.
-    Accepts plain text or JSON, processes it with LLM, and loads into the system.
-    """
-
-    try:
-        content = await file.read()
-        filename = file.filename.lower()
-        text_data = content.decode('utf-8')
-
-        # Always process with LLM to get JSON, regardless of file type
-        llm_json_str = await run_in_threadpool(llm_json_interpret, text_data)
-
-        # Accept both dict and str from llm_json_interpret
-        if isinstance(llm_json_str, dict):
-            json_kb = llm_json_str
-        else:
-            try:
-                json_kb = json.loads(llm_json_str)
-            except Exception as e:
-                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_str}")
-
-        # Load JSON into KB using your interpreter
-        SERVER_URL = "ws://localhost:8090/ws_json"
-        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
-
-        return APIResponse(
-            status="success",
-            message="NLP knowledge base processed and loaded",
-            response={
-                "interpreted_json": json_kb,
-                "llm_raw_json": llm_json_str,
-                "load_log": logs
-            }
-        )
-    except Exception as e:
-        logger.exception("NLP KB upload failed")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
-
-from fastapi import Body
-
 @app.post("/upload/kb_nlp_text", response_model=APIResponse)
 async def upload_kb_nlp_text(
     request: QueryRequest,
-    _: bool = Depends(verify_token)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
+    # Explicitly check authentication
+    verify_token(credentials)
     """
     Accepts plain text (in JSON body as {"text": ...}), processes it with LLM to JSON, and loads into SC-memory.
     """
@@ -342,136 +308,6 @@ async def upload_kb_nlp_text(
             message=str(e),
             response=None
         )
-
-@app.post("/upload/kb_nlp_json", response_model=APIResponse)
-async def upload_kb_nlp_json(
-    file: UploadFile = File(...),
-    _: bool = Depends(verify_token)
-):
-    """
-    Accepts a JSON file and loads it directly into SC-memory.
-    """
-    try:
-        content = await file.read()
-        try:
-            json_kb = json.loads(content.decode('utf-8'))
-        except Exception as e:
-            raise HTTPException(400, f"Invalid JSON: {e}")
-
-        SERVER_URL = "ws://localhost:8090/ws_json"
-        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
-
-        return APIResponse(
-            status="success",
-            message="NLP knowledge base processed and loaded from JSON",
-            response={
-                "interpreted_json": json_kb,
-                "load_log": logs
-            }
-        )
-    except Exception as e:
-        logger.exception("NLP KB upload (json) failed")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
-
-
-def load_data_to_sc(server_url: str, json_data: dict) -> list[str]:
-    """
-    Loads the provided JSON knowledge base into SC-memory using the py-sc-kpm stack.
-    Returns a list of log strings describing what was loaded.
-    """
-    from sc_kpm.utils.common_utils import generate_node
-    from sc_kpm.utils import generate_link, generate_binary_relation, generate_role_relation
-    from sc_client.constants import sc_type
-    from sc_kpm import ScKeynodes, ScServer
-    import re
-    import unicodedata
-
-    def normalize_identifier(identifier: str) -> str:
-        try:
-            from unidecode import unidecode
-            identifier = unidecode(identifier)
-        except ImportError:
-            identifier = unicodedata.normalize('NFKD', identifier).encode('ascii', 'ignore').decode('ascii')
-        identifier = identifier.lower()
-        identifier = re.sub(r'\s+', '_', identifier)
-        identifier = re.sub(r'[^a-z0-9_]', '', identifier)
-        return identifier
-
-    def create_node_with_label(original_text: str):
-        norm_id = normalize_identifier(original_text)
-        try:
-            addr = ScKeynodes[norm_id]
-            log = f"Node exists: {norm_id} (from '{original_text}') -> {addr}"
-        except Exception:
-            try:
-                addr = generate_node(sc_type.CONST_NODE)
-                log = f"Node created: {norm_id} (from '{original_text}') -> {addr}"
-            except Exception as e2:
-                log = f"Failed to create node: {norm_id} (from '{original_text}') | {e2}"
-                return None, log
-        # Attach the original text as a link
-        try:
-            label_link = generate_link(original_text)
-            generate_binary_relation(sc_type.CONST_PERM_POS_ARC, addr, label_link)
-            log += f" | Label attached"
-        except Exception as e:
-            log += f" | Label attach failed: {e}"
-        return addr, log
-
-    logs = []
-    server = ScServer(server_url)
-    try:
-        with server.start():
-            # Add Source content as a link node
-            content_id = 'Source content'
-            content_addr, log = create_node_with_label(content_id)
-            logs.append(log)
-            try:
-                content_link = generate_link(json_data[content_id])
-                generate_binary_relation(sc_type.CONST_PERM_POS_ARC, content_addr, content_link)
-                logs.append(f"Source content link attached: {json_data[content_id]}")
-            except Exception as e:
-                logs.append(f"Source content link attach failed: {e}")
-
-            # Process all relations except membership and Source content
-            for rel, subjects in json_data.items():
-                if rel in ('membership', 'Source content'):
-                    continue
-                rel_addr, log = create_node_with_label(rel)
-                logs.append(log)
-                for subj, objects in subjects.items():
-                    subj_addr, log = create_node_with_label(subj)
-                    logs.append(log)
-                    if isinstance(objects, list):
-                        for obj in objects:
-                            obj_addr, log = create_node_with_label(obj)
-                            logs.append(log)
-                            try:
-                                generate_role_relation(subj_addr, obj_addr, rel_addr)
-                                logs.append(f"Relation created: {subj} -[{rel}]-> {obj}")
-                            except Exception as e:
-                                logs.append(f"Relation failed: {subj} -[{rel}]-> {obj} | {e}")
-                    else:
-                        obj_addr, log = create_node_with_label(objects)
-                        logs.append(log)
-                        try:
-                            generate_role_relation(subj_addr, obj_addr, rel_addr)
-                            logs.append(f"Relation created: {subj} -[{rel}]-> {objects}")
-                        except Exception as e:
-                            logs.append(f"Relation failed: {subj} -[{rel}]-> {objects} | {e}")
-
-            # Ensure all membership nodes exist
-            for item in json_data.get('membership', {}):
-                addr, log = create_node_with_label(item)
-                logs.append(log)
-
-    except Exception as e:
-        logs.append(f"Error loading data: {e}")
-    return logs
 
 
 if __name__ == "__main__":

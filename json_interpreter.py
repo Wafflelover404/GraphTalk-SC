@@ -7,9 +7,7 @@ from sc_kpm import ScServer
 import unicodedata
 import re
 
-# Load JSON data from file
-with open('output.json', 'r', encoding='utf-8') as f:
-    data = json.load(f)
+
 
 def normalize_identifier(identifier: str) -> str:
     try:
@@ -43,7 +41,7 @@ def create_node_with_label(original_text: str):
         log += f" | Label attach failed: {e}"
     return addr, log
 
-def load_data_to_sc(server_url: str):
+def load_data_to_sc(server_url: str, data: dict):
     server = ScServer(server_url)
     logs = []
     try:
@@ -93,7 +91,7 @@ def load_data_to_sc(server_url: str):
 
             print("Data loaded successfully")
     except Exception as e:
-        logs.append(f"Error loading data: {e} (normalized: '{norm_id}', original: '{original_text}')")
+        logs.append(f"Error loading data: {e}")
     finally:
         print("\n--- Detailed Log ---")
         for entry in logs:
@@ -101,4 +99,6 @@ def load_data_to_sc(server_url: str):
 
 if __name__ == '__main__':
     SERVER_URL = 'ws://localhost:8090/ws_json'
-    load_data_to_sc(SERVER_URL)
+    with open('output.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    load_data_to_sc(SERVER_URL, data)
