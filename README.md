@@ -1,4 +1,9 @@
 # GraphTalk
+
+**[English](#english)** | **[Русский](docs/ru/README.md)**
+
+## English
+
 A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
 
 ## Overview
@@ -70,6 +75,21 @@ curl -X POST "http://localhost:9001/query?humanize=true" \
   -d '{"text": "What is OSTIS?"}'
 ```
 
+### 4. Alternative UI Access Methods
+
+#### Streamlit Web Interface
+```bash
+# Launch web UI
+streamlit run ui/sc_machine_ui.py
+```
+Access at `http://localhost:8501`
+
+#### Telegram Bot
+```bash
+# Configure bot token in ui/tg_bot.py and run
+python ui/tg_bot.py
+```
+
 ## API Endpoints
 
 ### Authentication
@@ -80,6 +100,7 @@ curl -X POST "http://localhost:9001/query?humanize=true" \
 - **POST /query**: Search knowledge base with optional LLM humanization
   - Query parameter: `humanize=true` for AI-enhanced responses
 - **POST /upload/kb_zip**: Upload ZIP files containing .scs knowledge base files
+- **POST /upload/kb_nlp_text**: Convert plain text to semantic JSON and load into SC-memory
 - **GET /docs**: Interactive API documentation (requires authentication)
 
 ## Module Overview
@@ -112,8 +133,22 @@ curl -X POST "http://localhost:9001/query?humanize=true" \
    - Follows formal semantic specification
    - Supports Russian language processing
 
-### Utilities
+### Data Processing
+- **JSON Interpreter (`json_interpreter.py`)**: Loads semantic JSON data into SC-memory
 - **Knowledge Base Loader (`memloader.py`)**: Batch process SCS files
+
+### User Interfaces
+1. **Streamlit UI (`ui/sc_machine_ui.py`)**:
+   - Web-based graphical interface for API interaction
+   - Token management and server connection testing
+   - File upload and knowledge base querying capabilities
+
+2. **Telegram Bot (`ui/tg_bot.py`)**:
+   - Telegram bot interface for mobile/remote access
+   - Interactive commands for all API operations
+   - Session management for multiple users
+
+### Utilities
 - **Connection Tester (`socket-client.py`)**: Verify OSTIS connectivity
 - **JSON Standard (`json-prompt.md`)**: Semantic conversion specification
 
@@ -124,37 +159,51 @@ GraphTalk/
 ├── sc_search.py             # Basic KB search module
 ├── sc_search-total.py       # Advanced recursive search
 ├── llm.py                   # LLM response generation
-├── json-llm.py             # Natural language to JSON conversion
+├── json_llm.py             # Natural language to JSON conversion
+├── json_interpreter.py     # JSON to SC-memory loader
 ├── memloader.py            # SCS file batch processor
 ├── socket-client.py        # OSTIS connection test utility
 ├── json-prompt.md          # SC-Machine JSON standard specification
 ├── requirements.txt        # Python dependencies
+├── output.json            # Example JSON output file
 ├── uploaded_kbs/           # Directory for uploaded files
 ├── unpacked_kbs/          # Temporary extraction directory
+├── ui/                    # User interface modules
+│   ├── sc_machine_ui.py   # Streamlit web interface
+│   └── tg_bot.py          # Telegram bot interface
 └── docs/                  # Comprehensive documentation
-    ├── api.md
-    ├── sc_search.md
-    ├── sc_search-total.md
-    ├── llm.md
-    ├── json-llm.md
-    ├── memloader.md
-    ├── socket-client.md
-    └── json-prompt.md
+    ├── en/                # English documentation
+    │   ├── api.md
+    │   ├── sc_search.md
+    │   ├── sc_search-total.md
+    │   ├── llm.md
+    │   ├── json-llm.md
+    │   ├── memloader.md
+    │   ├── json-prompt.md
+    │   └── nlp_json_interpretation.md
+    └── ru/                # Russian documentation
+        ├── api.md
+        ├── sc_search.md
+        ├── sc_search-total.md
+        ├── llm.md
+        ├── json-llm.md
+        ├── memloader.md
+        ├── json-prompt.md
+        └── nlp_json_interpretation.md
 ```
 
 ## Project Documentation
 
 Documentation for individual components can be found in the `docs/` directory:
 
-- [API Module](./docs/api.md): Documentation for `api.py`, detailing API endpoints and security features.
-- [Basic Search Module](./docs/sc_search.md): Details on `sc_search.py` for quick non-recursive knowledge base search.
-- [Advanced Search Module](./docs/sc_search-total.md): Details on `sc_search-total.py` for recursive knowledge base exploration.
-- [LLM Integration](./docs/llm.md): Information on `llm.py` for language model integration and response generation.
-- [JSON LLM Converter](./docs/json-llm.md): Guide for `json-llm.py` explaining JSON generation from text.
-- [Knowledge Base Loader](./docs/memloader.md): Instructions for `memloader.py` to process SCS files.
-- [Connection Testing Tool](./docs/socket-client.md): Details on `socket-client.py` for testing OSTIS connectivity.
-- [SC-Machine JSON Standard](./docs/json-prompt.md): Specification details from `json-prompt.md` for semantic JSON conversion.
-- [NLP JSON Interpretation & LLM Integration](docs/nlp_json_interpretation.md)
+- [API Module](./docs/en/api.md): Documentation for `api.py`, detailing API endpoints and security features.
+- [Basic Search Module](./docs/en/sc_search.md): Details on `sc_search.py` for quick non-recursive knowledge base search.
+- [Advanced Search Module](./docs/en/sc_search-total.md): Details on `sc_search-total.py` for recursive knowledge base exploration.
+- [LLM Integration](./docs/en/llm.md): Information on `llm.py` for language model integration and response generation.
+- [JSON LLM Converter](./docs/en/json-llm.md): Guide for `json-llm.py` explaining JSON generation from text.
+- [Knowledge Base Loader](./docs/en/memloader.md): Instructions for `memloader.py` to process SCS files.
+- [SC-Machine JSON Standard](./docs/en/json-prompt.md): Specification details for semantic JSON conversion.
+- [NLP JSON Interpretation & LLM Integration](./docs/en/nlp_json_interpretation.md)
 
 ## Troubleshooting
 
