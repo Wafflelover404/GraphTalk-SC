@@ -1,8 +1,6 @@
 # GraphTalk
 
-**[English](#english)** | **[Русский](docs/ru/README.md)**
-
-## English
+**English** | **[Русский](docs/ru/README.md)**
 
 A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
 
