@@ -297,7 +297,6 @@ async def upload_kb_nlp_text(
             message="NLP knowledge base processed and loaded from text",
             response={
                 "interpreted_json": json_kb,
-                "llm_raw_json": llm_json_str,
                 "load_log": logs
             }
         )

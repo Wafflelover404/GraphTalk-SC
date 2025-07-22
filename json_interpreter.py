@@ -75,6 +75,38 @@ def load_data_to_sc(server_url: str, data: dict):
                                 logs.append(f"Relation created: {subj} -[{rel}]-> {obj}")
                             except Exception as e:
                                 logs.append(f"Relation failed: {subj} -[{rel}]-> {obj} | {e}")
+                    elif isinstance(objects, dict):
+                        # Handle nested dicts (e.g., actions)
+                        for obj_key, obj_val in objects.items():
+                            obj_key_addr, log = create_node_with_label(obj_key)
+                            logs.append(log)
+                            if isinstance(obj_val, list):
+                                for v in obj_val:
+                                    v_addr, log = create_node_with_label(v)
+                                    logs.append(log)
+                                    try:
+                                        generate_role_relation(obj_key_addr, v_addr, rel_addr)
+                                        logs.append(f"Relation created: {obj_key} -[{rel}]-> {v}")
+                                    except Exception as e:
+                                        logs.append(f"Relation failed: {obj_key} -[{rel}]-> {v} | {e}")
+                                try:
+                                    generate_role_relation(subj_addr, obj_key_addr, rel_addr)
+                                    logs.append(f"Relation created: {subj} -[{rel}]-> {obj_key}")
+                                except Exception as e:
+                                    logs.append(f"Relation failed: {subj} -[{rel}]-> {obj_key} | {e}")
+                            else:
+                                obj_val_addr, log = create_node_with_label(obj_val)
+                                logs.append(log)
+                                try:
+                                    generate_role_relation(obj_key_addr, obj_val_addr, rel_addr)
+                                    logs.append(f"Relation created: {obj_key} -[{rel}]-> {obj_val}")
+                                except Exception as e:
+                                    logs.append(f"Relation failed: {obj_key} -[{rel}]-> {obj_val} | {e}")
+                                try:
+                                    generate_role_relation(subj_addr, obj_key_addr, rel_addr)
+                                    logs.append(f"Relation created: {subj} -[{rel}]-> {obj_key}")
+                                except Exception as e:
+                                    logs.append(f"Relation failed: {subj} -[{rel}]-> {obj_key} | {e}")
                     else:
                         obj_addr, log = create_node_with_label(objects)
                         logs.append(log)
@@ -96,6 +128,8 @@ def load_data_to_sc(server_url: str, data: dict):
         print("\n--- Detailed Log ---")
         for entry in logs:
             print(entry)
+        
+    return logs
 
 if __name__ == '__main__':
     SERVER_URL = 'ws://localhost:8090/ws_json'
