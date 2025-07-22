@@ -386,7 +386,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     """Start the bot."""
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token("8052771201:AAGio64wXRmCavmuYc_N5uPlfxrtW3A6qTs").build()
+    application = Application.builder().token("").build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
