@@ -4,6 +4,8 @@
 
 A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
 
+![](./docs/schemas/diagram.png)
+
 ## Overview
 GraphTalk provides a secure, feature-rich interface for interacting with OSTIS knowledge bases through:
 - **REST API**: Secure endpoints with bearer token authentication
