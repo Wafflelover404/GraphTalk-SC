@@ -1,74 +1,68 @@
-from g4f.client import Client
+import os
+import asyncio
 import json
-import ast
 import re
+from google import genai
 
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-def llm_json_interpret(message):
-    """
-    A function to call LLM models (GPT-Like models) to translate plain text into JSON.
-    Args:
-        message (str): Text message as a string (should be a string, not a list)
-    Return:
-        Parsed JSON response (dict)
-    """
-    client = Client()
-    # Read the prompt from json-prompt.md
-    with open("./docs/en/json-prompt.md", "r", encoding="utf-8") as f:
-        base_prompt = f.read()
+async def llm_json_interpret(text: str) -> dict | str:
 
-    # Add instruction to respond with JSON only
-    system_prompt = (
-        f"""
-        System:
-        Use following standard to convert provided article to semantic JSON.
-        {base_prompt}
-        """
-    )
+    with open("docs/en/json-prompt.md", "r", encoding="utf-8") as f:
+        system_prompt_standard = f.read()
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message}
-        ],
-        web_search=False
-    )
-    content = response.choices[0].message.content
-    print("LLM raw output:", repr(content))
+    system_prompt = ( f"""
+        JSON standard converter description:
+        {system_prompt_standard}
 
-    # If content is already a dict, return it directly
-    if isinstance(content, dict):
-        return content
+        Instructions:
+        You are a strict JSON generator. 
+        Respond ONLY with valid JSON. No explanations or extra text. JSON MUST ALWAYS BE IN THE SAME LANGUAGE AS THE INPUT TEXT.
 
-    # Try to extract JSON from special tags if present
-    match = re.search(r"<json>(.*?)</json>", content, re.DOTALL)
-    if match:
-        content = match.group(1).strip()
+    """)
 
-    # Try to parse as JSON
+    contents = [
+        system_prompt,
+        text
+    ]
+
     try:
-        return json.loads(content)
-    except Exception:
-        pass
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+        )
+        collected = response.text
 
-    # Try to parse as Python dict (e.g. single quotes)
-    try:
-        parsed = ast.literal_eval(content)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
+        print("=== Raw LLM output ===")
+        print(collected)
+        print("=====================")
 
-    print("Error: LLM response is not valid JSON or dict.")
-    return None
+        # Try to extract JSON from ```json ... ``` block or fallback to full text
+        match = re.search(r"```json\s*(\{.*?\})\s*```", collected, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            json_str = collected
+
+        return json.loads(json_str)
+
+    except Exception as e:
+        print("Exception:", e)
+        return str(e)
+
+
+async def main():
+    sample_text = """
+    Create a JSON object describing a book with these fields:
+    title: "The Great Gatsby",
+    author: "F. Scott Fitzgerald",
+    year: 1925,
+    genres: ["Novel", "Historical"]
+    """
+    result = await llm_json_interpret(sample_text)
+    print("\n=== Parsed JSON Result ===")
+    print(result)
 
 
 if __name__ == "__main__":
-    result = llm_json_interpret("Вчера я поступил в БГУ, а сегодня я поступил в МГУ. Я учусь на факультете математики и физики в БГУ, а в МГУ на факультете информатики. Я живу в Минске и Москве.")
-    if result is not None:
-        with open("output.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        print("JSON written to output.json")
-    else:
-        print("No valid JSON to write.")
+    asyncio.run(main())

@@ -278,16 +278,16 @@ async def upload_kb_nlp_text(
     """
     try:
         text_data = request.text
-        llm_json_str = await run_in_threadpool(llm_json_interpret, text_data)
+        llm_json_result = await llm_json_interpret(text_data)
 
         # Accept both dict and str from llm_json_interpret
-        if isinstance(llm_json_str, dict):
-            json_kb = llm_json_str
+        if isinstance(llm_json_result, dict):
+            json_kb = llm_json_result
         else:
             try:
-                json_kb = json.loads(llm_json_str)
+                json_kb = json.loads(llm_json_result)
             except Exception as e:
-                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_str}")
+                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
 
         SERVER_URL = "ws://localhost:8090/ws_json"
         logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)

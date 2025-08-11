@@ -10,7 +10,6 @@ Standardized JSON structure for semantic representation of technical content wit
 ```json
 {
   "Source content": {
-    "full_text": "Complete original text...",
     "segments": {
       "seg_[SHA256]": "Text segment content..."
     }
@@ -32,14 +31,12 @@ Standardized JSON structure for semantic representation of technical content wit
 ### 3.1 Source Content (Required)
 ```json
 "Source content": {
-  "full_text": "C++ is a general-purpose...",
   "segments": {
     "seg_a1b2c3": "C++ was created by Bjarne Stroustrup...",
     "seg_d4e5f6": "Key features include..."
   }
 }
 ```
-- `full_text`: Complete original text
 - `segments`: Key-value pairs with SHA256 hashes as keys
 
 ### 3.2 Segment Relations
