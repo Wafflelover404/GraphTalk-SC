@@ -197,7 +197,7 @@ Generated JSON structures can be:
 - Used as intermediate representation for KB updates
 - Processed by semantic analysis tools
 - Integrated with existing knowledge graphs
-
+  
 ### Semantic Compatibility
 - **Node Identifiers**: Compatible with OSTIS keynodes
 - **Relationship Types**: Mappable to SC-arcs and connectors  

@@ -14,7 +14,7 @@ def llm_json_interpret(message):
     """
     client = Client()
     # Read the prompt from json-prompt.md
-    with open("json-prompt.md", "r", encoding="utf-8") as f:
+    with open("./docs/en/json-prompt.md", "r", encoding="utf-8") as f:
         base_prompt = f.read()
 
     # Add instruction to respond with JSON only

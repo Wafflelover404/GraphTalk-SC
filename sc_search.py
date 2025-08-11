@@ -1,60 +1,89 @@
-from sc_client.client import connect, is_connected, disconnect, search_links_by_contents_substrings, generate_elements
-from sc_client.models import ScConstruction, ScLinkContent, ScLinkContentType
+from sc_client.client import connect, is_connected, disconnect, search_links_by_contents_substrings, search_by_template
 from sc_client.constants import sc_type
+from sc_client.models import ScTemplate
 from sc_kpm.utils import get_element_system_identifier, get_link_content_data
 
-def kb_search(search_string):
+def search_outgoing_arcs(addr):
+    # Returns list of (arc_addr, src_addr, tgt_addr)
+    template = ScTemplate()
+    template.triple(addr, sc_type.VAR_PERM_POS_ARC, sc_type.VAR_NODE >> "_target")
+    results = search_by_template(template)
+    arcs = []
+    for result in results:
+        arc_addr = result[1]
+        src_addr = addr
+        tgt_addr = result.get("_target")
+        arcs.append((arc_addr, src_addr, tgt_addr))
+    return arcs
+
+def find_source_content(addr) -> str:
+    # Try to find outgoing arcs to a node or link with idtf or content for 'source_content'
+    try:
+        outgoing = search_outgoing_arcs(addr)
+        for arc in outgoing:
+            target = arc[2]
+            sys_idtf = get_element_system_identifier(target)
+            if sys_idtf and sys_idtf.lower() == "source_content":
+                # Try to get content from outgoing arcs of source_content node
+                content_links = search_outgoing_arcs(target)
+                for cl_arc in content_links:
+                    content = get_link_content_data(cl_arc[2])
+                    if content:
+                        return f"Source content: {content[:120]}..."
+                return "Source content node found, but no content attached."
+            # Also check if the target itself is a link with content
+            content = get_link_content_data(target)
+            if content and "Конституция Республики Беларусь" in content:
+                return f"Source content: {content[:120]}..."
+        return None
+    except Exception:
+        return None
+
+def kb_search(search_string: str) -> list:
     """
-    This function performs a quick and non-recursive search through the Knowledge Base graph using OSTIS technology libraries.
-    
+    Search the Knowledge Base for links containing the given string or its substrings.
     Args:
-        search_string (str): The search query to look for in the knowledge base
-        
+        search_string (str): The search query.
     Returns:
-        list: A list of unique strings containing the search results.
+        list: Sorted unique strings with search results.
     """
     url = "ws://localhost:8090/ws_json"
-    
+    if not search_string or not search_string.strip():
+        return ["Empty search query."]
     try:
-        # Establish connection
         connect(url)
-        
         if not is_connected():
             return ["Not connected to SC-machine"]
-            
-        # Create search context link
-        construction = ScConstruction()
-        link_content = ScLinkContent(search_string, ScLinkContentType.STRING)
-        construction.generate_link(sc_type.CONST_NODE_LINK, link_content)
-        generate_elements(construction)
-        
-        # Perform search
-        search_terms = search_string.split()
-        links_list = search_links_by_contents_substrings(*search_terms)
-        result_addrs = [addr for sublist in links_list for addr in sublist]
-        
-        # Deduplicate by address
-        unique_addrs = set(result_addrs)
 
-        # Process and display results, deduplicate by result string
+        search_terms = search_string.strip().split()
+        links_list = search_links_by_contents_substrings(*search_terms)
+        result_addrs = {addr for sublist in links_list for addr in sublist}
+
         decoded_results = set()
-        for addr in unique_addrs:
+        for addr in result_addrs:
             sys_idtf = get_element_system_identifier(addr)
             if sys_idtf:
-                decoded_results.add(f"Keynode: {sys_idtf}")
+                result = f"Keynode: {sys_idtf}"
             else:
                 content = get_link_content_data(addr)
                 if content:
-                    decoded_results.add(f"Link Content: {content}")
+                    result = f"Link Content: {content}"
                 else:
-                    decoded_results.add(f"Unknown Element: {addr}")
+                    result = f"Unknown Element: {addr}"
+            # Try to find source content for this addr
+            source = find_source_content(addr)
+            if source:
+                result += f"\n  -> {source}"
+            decoded_results.add(result)
 
-        return list(decoded_results)
-        
+        return sorted(decoded_results)
     except Exception as e:
         return [f"Error during search: {e}"]
     finally:
         disconnect()
 
 if __name__ == "__main__":
-    kb_search()
+    # Example usage:
+    results = kb_search("беларусь конституция")
+    for r in results:
+        print(r)

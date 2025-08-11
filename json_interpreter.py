@@ -7,8 +7,6 @@ from sc_kpm import ScServer
 import unicodedata
 import re
 
-
-
 def normalize_identifier(identifier: str) -> str:
     try:
         from unidecode import unidecode
@@ -20,7 +18,7 @@ def normalize_identifier(identifier: str) -> str:
     identifier = re.sub(r'[^a-z0-9_]', '', identifier)
     return identifier
 
-def create_node_with_label(original_text: str):
+def create_node_with_label(original_text: str, source_addr=None):
     norm_id = normalize_identifier(original_text)
     try:
         addr = ScKeynodes[norm_id]
@@ -39,6 +37,14 @@ def create_node_with_label(original_text: str):
         log += f" | Label attached"
     except Exception as e:
         log += f" | Label attach failed: {e}"
+        
+    # Connect to source content if not itself
+    if source_addr and addr != source_addr:
+        try:
+            generate_binary_relation(sc_type.CONST_PERM_POS_ARC, addr, source_addr)
+            log += f" | Connected to Source content"
+        except Exception as e:
+            log += f" | Source content link failed: {e}"
     return addr, log
 
 def load_data_to_sc(server_url: str, data: dict):
@@ -61,14 +67,14 @@ def load_data_to_sc(server_url: str, data: dict):
             for rel, subjects in data.items():
                 if rel in ('membership', 'Source content'):
                     continue
-                rel_addr, log = create_node_with_label(rel)
+                rel_addr, log = create_node_with_label(rel, content_addr)
                 logs.append(log)
                 for subj, objects in subjects.items():
-                    subj_addr, log = create_node_with_label(subj)
+                    subj_addr, log = create_node_with_label(subj, content_addr)
                     logs.append(log)
                     if isinstance(objects, list):
                         for obj in objects:
-                            obj_addr, log = create_node_with_label(obj)
+                            obj_addr, log = create_node_with_label(obj, content_addr)
                             logs.append(log)
                             try:
                                 generate_role_relation(subj_addr, obj_addr, rel_addr)
@@ -76,13 +82,12 @@ def load_data_to_sc(server_url: str, data: dict):
                             except Exception as e:
                                 logs.append(f"Relation failed: {subj} -[{rel}]-> {obj} | {e}")
                     elif isinstance(objects, dict):
-                        # Handle nested dicts (e.g., actions)
                         for obj_key, obj_val in objects.items():
-                            obj_key_addr, log = create_node_with_label(obj_key)
+                            obj_key_addr, log = create_node_with_label(obj_key, content_addr)
                             logs.append(log)
                             if isinstance(obj_val, list):
                                 for v in obj_val:
-                                    v_addr, log = create_node_with_label(v)
+                                    v_addr, log = create_node_with_label(v, content_addr)
                                     logs.append(log)
                                     try:
                                         generate_role_relation(obj_key_addr, v_addr, rel_addr)
@@ -95,7 +100,7 @@ def load_data_to_sc(server_url: str, data: dict):
                                 except Exception as e:
                                     logs.append(f"Relation failed: {subj} -[{rel}]-> {obj_key} | {e}")
                             else:
-                                obj_val_addr, log = create_node_with_label(obj_val)
+                                obj_val_addr, log = create_node_with_label(obj_val, content_addr)
                                 logs.append(log)
                                 try:
                                     generate_role_relation(obj_key_addr, obj_val_addr, rel_addr)
@@ -108,7 +113,7 @@ def load_data_to_sc(server_url: str, data: dict):
                                 except Exception as e:
                                     logs.append(f"Relation failed: {subj} -[{rel}]-> {obj_key} | {e}")
                     else:
-                        obj_addr, log = create_node_with_label(objects)
+                        obj_addr, log = create_node_with_label(objects, content_addr)
                         logs.append(log)
                         try:
                             generate_role_relation(subj_addr, obj_addr, rel_addr)
@@ -118,7 +123,7 @@ def load_data_to_sc(server_url: str, data: dict):
 
             # Ensure all membership nodes exist
             for item in data.get('membership', {}):
-                addr, log = create_node_with_label(item)
+                addr, log = create_node_with_label(item, content_addr)
                 logs.append(log)
 
             print("Data loaded successfully")
