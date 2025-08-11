@@ -19,20 +19,11 @@ def llm_json_interpret(message):
 
     # Add instruction to respond with JSON only
     system_prompt = (
-        f"{base_prompt}\n\n"
-        "IMPORTANT: Respond ONLY with a valid JSON object that strictly follows the SC-Machine JSON Standard. "
-        "Do not include any explanations, comments, or extra text. The JSON must adhere to the structure below:\n"
-        "{\n"
-        '  "[Connection Type]": {\n'
-        '    "[Subject Node]": "[Object Node]",\n'
-        '    "[Subject Node]": ["Object Node (Array if needed)"]\n'
-        "  },\n"
-        '  "membership": {\n'
-        '    "[Node]": ["Modifier 1", "Modifier 2"]\n'
-        "  },\n"
-        '  "Source content": "[Original Input Text]"\n'
-        "}\n"
-        "Ensure the output is strictly valid JSON."
+        f"""
+        System:
+        Use following standard to convert provided article to semantic JSON.
+        {base_prompt}
+        """
     )
 
     response = client.chat.completions.create(
