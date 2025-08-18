@@ -60,11 +60,24 @@ def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
     seg_rel_addr, log = create_node_with_label("nrel_segment")
     logs.append(log)
 
-    for seg_id, seg_text in segments.items():
+    # Always get main_keywords from source_content_addr if set, else empty
+    main_keywords = getattr(source_content_addr, 'main_keywords', [])
+
+    for seg_id, seg_data in segments.items():
+        # seg_data can be dict with 'content' and 'keywords'
+        seg_text = seg_data.get('content') if isinstance(seg_data, dict) else seg_data
+        seg_keywords = seg_data.get('keywords', []) if isinstance(seg_data, dict) else []
+
+        # Attach all main_keywords as tags directly to segment content
+        main_kw_tags = "\n".join([f"<main_keyword>{normalize_identifier(kw)}</main_keyword>" for kw in main_keywords])
+
         # Add <id> and <upload_id> tag to segment text
         tagged_text = f"{seg_text}\n<id>{seg_id}</id>"
         if upload_id:
             tagged_text += f"\n<upload_id>{upload_id}</upload_id>"
+        if main_kw_tags:
+            tagged_text += f"\n{main_kw_tags}"
+
         # Create node for segment ID
         seg_node, log = create_node_with_label(seg_id)
         logs.append(log)
@@ -74,6 +87,28 @@ def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
             seg_link = generate_link(tagged_text)
             generate_binary_relation(sc_type.CONST_PERM_POS_ARC, seg_node, seg_link)
             logs.append(f"Segment content attached: {seg_id}")
+
+            # Attach ALL normalized main_keywords to segment node
+            for kw in main_keywords:
+                norm_kw = normalize_identifier(kw)
+                kw_node, kw_log = create_node_with_label(norm_kw)
+                logs.append(kw_log)
+                try:
+                    generate_role_relation(seg_node, kw_node, sc_type.CONST_PERM_POS_ARC)
+                    logs.append(f"Main keyword attached to segment {seg_id}: {norm_kw}")
+                except Exception as e:
+                    logs.append(f"Main keyword attach failed for {seg_id}: {norm_kw} | {e}")
+
+            # Attach ALL normalized segment-specific keywords to segment node
+            for kw in seg_keywords:
+                norm_kw = normalize_identifier(kw)
+                kw_node, kw_log = create_node_with_label(norm_kw)
+                logs.append(kw_log)
+                try:
+                    generate_role_relation(seg_node, kw_node, sc_type.CONST_PERM_POS_ARC)
+                    logs.append(f"Segment keyword attached to segment {seg_id}: {norm_kw}")
+                except Exception as e:
+                    logs.append(f"Segment keyword attach failed for {seg_id}: {norm_kw} | {e}")
 
             # Connect segment to main source
             generate_role_relation(source_content_addr, seg_node, seg_rel_addr)
@@ -193,6 +228,7 @@ def load_data_to_sc(server_url: str, data: dict, upload_id=None):
                 source_content = data[source_content_id]
                 full_text = source_content.get('full_text', '')
                 segments = source_content.get('segments', {})
+                main_keywords = source_content.get('main_keywords', source_content.get('keywords', []))
 
                 # Attach full text
                 try:
@@ -201,6 +237,9 @@ def load_data_to_sc(server_url: str, data: dict, upload_id=None):
                     logs.append("Full source text attached")
                 except Exception as e:
                     logs.append(f"Full text attach failed: {e}")
+
+                # Attach main_keywords to source_content_addr for segment node use
+                setattr(source_content_addr, 'main_keywords', main_keywords)
 
                 # Create segment nodes
                 seg_nodes, seg_logs = create_segment_nodes(segments, source_content_addr, upload_id=upload_id)
