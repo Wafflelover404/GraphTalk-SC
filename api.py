@@ -14,7 +14,9 @@ import toml
 import bcrypt
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 from sc_search import kb_search
+from memloader import load_scs_directory
 
 
 # Import LLM and JSON interpretation from dedicated modules
@@ -33,8 +35,7 @@ app = FastAPI(
     openapi_url=None
 )
 
-# Constants and configurations
-UPLOAD_DIR = "uploaded_kbs"
+UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
 KB_BASE_DIR = "unpacked_kbs"
 
@@ -133,9 +134,7 @@ async def landing_page():
         "version": app.version,
         "endpoints": {
             "/query": {"method": "POST", "description": "Query the knowledge base"},
-            "/upload/kb_zip": {"method": "POST", "description": "Upload a knowledge base zip file"},
-            "/upload/kb_nlp": {"method": "POST", "description": "Convert plain text into sc and load it"},
-            "/upload/kb_json    ": {"method": "POST", "description": "Convert plain text into sc and load it"},
+            "/upload": {"method": "POST", "description": "Upload a .txt file to the KB"},
             "/create_token": {"method": "POST", "description": "Generate a new access token (only once)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
             
@@ -220,94 +219,129 @@ async def process_query(
             response=None
         )
 
-@app.post("/upload/kb_zip", response_model=APIResponse)
-async def upload_knowledge_base(
-    file: UploadFile = File(...),
-    _: bool = Depends(verify_token)
-):
-    """Upload and process a knowledge base zip file"""
-    if not file.filename.endswith('.zip'):
-        raise HTTPException(400, "Only zip files are accepted")
-    
-    # Create unique extraction directory
-    extract_dir = os.path.join(KB_BASE_DIR, f"kb_{uuid.uuid4().hex}")
-    os.makedirs(extract_dir, exist_ok=True)
-    
-    try:
-        # Save uploaded file
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):  # 1MB chunks
-                buffer.write(chunk)
-        
-        # Extract and process
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_dir)
-        
-        # Load SCS files
-        await run_in_threadpool(load_scs_directory, extract_dir)
-        
-        return APIResponse(
-            status="success",
-            message="Knowledge base processed",
-            response={"extract_dir": extract_dir}
-        )
-        
-    except Exception as e:
-        logger.exception("KB upload failed")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
-        
-    finally:
-        # Cleanup extracted files
-        if os.path.exists(extract_dir):
-            shutil.rmtree(extract_dir, ignore_errors=True)
+import datetime
 
-@app.post("/upload/kb_nlp_text", response_model=APIResponse)
-async def upload_kb_nlp_text(
-    request: QueryRequest,
+# Upload endpoint for .txt files
+@app.post("/upload", response_model=APIResponse)
+async def upload_txt_file(
+    file: UploadFile = File(...),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
-    # Explicitly check authentication
     verify_token(credentials)
-    """
-    Accepts plain text (in JSON body as {"text": ...}), processes it with LLM to JSON, and loads into SC-memory.
-    """
+    if not file.filename.endswith('.txt'):
+        raise HTTPException(400, "Only .txt files are accepted")
+
+    # Generate unique ID and file path
+    upload_id = str(uuid.uuid4())
+    timestamp = datetime.datetime.utcnow().isoformat()
+    file_path = os.path.join(UPLOAD_DIR, f"{upload_id}.txt")
+
+    # Save file
     try:
-        text_data = request.text
-        llm_json_result = await llm_json_interpret(text_data)
+        with open(file_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                buffer.write(chunk)
+    except Exception as e:
+        logger.exception("File upload failed")
+        raise HTTPException(500, f"Failed to save file: {e}")
 
-        # Accept both dict and str from llm_json_interpret
-        if isinstance(llm_json_result, dict):
-            json_kb = llm_json_result
+    # Update DB
+    db_path = os.path.join(UPLOAD_DIR, "db.json")
+    try:
+        if os.path.exists(db_path):
+            with open(db_path, "r") as db_file:
+                db = json.load(db_file)
         else:
-            try:
-                json_kb = json.loads(llm_json_result)
-            except Exception as e:
-                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
+            db = {"uploads": []}
+        db["uploads"].append({
+            "id": upload_id,
+            "filename": file.filename,
+            "path": file_path,
+            "timestamp": timestamp
+        })
+        with open(db_path, "w") as db_file:
+            json.dump(db, db_file, indent=2)
+    except Exception as e:
+        logger.exception("DB update failed")
+        raise HTTPException(500, f"Failed to update DB: {e}")
 
-        SERVER_URL = "ws://localhost:8090/ws_json"
-        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb)
+    return APIResponse(
+        status="success",
+        message="File uploaded successfully",
+        response={
+            "id": upload_id,
+            "filename": file.filename,
+            "path": file_path,
+            "timestamp": timestamp
+        }
+    )
 
+
+@app.get("/files/list", response_model=APIResponse)
+async def list_uploaded_files():
+    db_path = os.path.join(UPLOAD_DIR, "db.json")
+    try:
+        if os.path.exists(db_path):
+            with open(db_path, "r") as db_file:
+                db = json.load(db_file)
+            # Return only filenames and ids
+            files = [
+                {
+                    "id": entry["id"],
+                    "filename": entry["filename"],
+                    "timestamp": entry["timestamp"]
+                }
+                for entry in db.get("uploads", [])
+            ]
+        else:
+            files = []
         return APIResponse(
             status="success",
-            message="NLP knowledge base processed and loaded from text",
-            response={
-                "interpreted_json": json_kb,
-                "load_log": logs
-            }
+            message="List of uploaded files",
+            response={"files": files}
         )
     except Exception as e:
-        logger.exception("NLP KB upload (text) failed")
+        logger.exception("Failed to list uploads")
         return APIResponse(
             status="error",
             message=str(e),
             response=None
         )
 
+@app.get("/files/file_content", response_model=APIResponse)
+async def get_file_content(filename: str):
+    db_path = os.path.join(UPLOAD_DIR, "db.json")
+    try:
+        if os.path.exists(db_path):
+            with open(db_path, "r") as db_file:
+                db = json.load(db_file)
+            entry = next((item for item in db.get("uploads", []) if item["filename"] == filename), None)
+            if not entry:
+                raise HTTPException(404, "File not found")
+            file_path = entry["path"]
+            if not os.path.exists(file_path):
+                raise HTTPException(404, "File not found on disk")
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return APIResponse(
+                status="success",
+                message="File content returned",
+                response={
+                    "filename": filename,
+                    "content": content
+                }
+            )
+        else:
+            raise HTTPException(404, "No uploads found")
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.exception("Failed to get file content")
+        return APIResponse(
+            status="error",
+            message=str(e),
+            response=None
+        )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)
