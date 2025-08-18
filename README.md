@@ -28,6 +28,7 @@ GraphTalk provides a secure, feature-rich interface for interacting with OSTIS k
 - Python 3.9+
 - OSTIS SC-machine running locally (`ws://localhost:8090/ws_json`)
 - Required Python packages (see requirements.txt)
+- Google llm studio API 
 
 ## Installation
 1. Clone the repository:
@@ -41,7 +42,9 @@ cd GraphTalk
 pip install -r requirements.txt
 ```
 
-3. Verify OSTIS connection:
+3. Set up google tokens 
+
+4. Verify OSTIS connection:
 ```bash
 python socket-client.py
 ```

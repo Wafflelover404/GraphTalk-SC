@@ -32,9 +32,7 @@ def find_source_content(addr) -> str:
                         return f"Source content: {content[:120]}..."
                 return "Source content node found, but no content attached."
             # Also check if the target itself is a link with content
-            content = get_link_content_data(target)
-            if content and "Конституция Республики Беларусь" in content:
-                return f"Source content: {content[:120]}..."
+                content = get_link_content_data(target)
         return None
     except Exception:
         return None
@@ -84,6 +82,6 @@ def kb_search(search_string: str) -> list:
 
 if __name__ == "__main__":
     # Example usage:
-    results = kb_search("беларусь конституция")
+    results = kb_search("Any query text example: 'How to fix a car' ")
     for r in results:
         print(r)
