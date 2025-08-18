@@ -245,6 +245,34 @@ async def upload_txt_file(
         logger.exception("File upload failed")
         raise HTTPException(500, f"Failed to save file: {e}")
 
+    # Read text content for semantic processing
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            text_data = f.read()
+    except Exception as e:
+        logger.exception("Failed to read uploaded file for semantic processing")
+        raise HTTPException(500, f"Failed to read file: {e}")
+
+    # Process with LLM and load semantic structures
+    json_kb = None
+    logs = None
+    try:
+        llm_json_result = await llm_json_interpret(text_data)
+        if isinstance(llm_json_result, dict):
+            json_kb = llm_json_result
+        else:
+            try:
+                json_kb = json.loads(llm_json_result)
+            except Exception as e:
+                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
+
+        SERVER_URL = "ws://localhost:8090/ws_json"
+        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb, upload_id)
+    except Exception as e:
+        logger.exception("Semantic KB compilation failed")
+        logs = str(e)
+        json_kb = None
+
     # Update DB
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
@@ -267,12 +295,14 @@ async def upload_txt_file(
 
     return APIResponse(
         status="success",
-        message="File uploaded successfully",
+        message="File uploaded and semantic structures processed",
         response={
             "id": upload_id,
             "filename": file.filename,
             "path": file_path,
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "interpreted_json": json_kb,
+            "load_log": logs
         }
     )
 
