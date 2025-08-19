@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Union
 import uvicorn
@@ -26,6 +27,7 @@ from json_interpreter import load_data_to_sc
 import json
 
 # Initialize app with proper metadata
+
 app = FastAPI(
     title="SC-Machine API",
     description="Knowledge Base Query and Management System",
@@ -33,6 +35,15 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None
+)
+
+# CORS setup for Vue.js frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Add your frontend URL(s) here
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
 UPLOAD_DIR = "uploads"
