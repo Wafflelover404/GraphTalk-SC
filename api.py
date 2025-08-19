@@ -234,7 +234,9 @@ async def upload_txt_file(
     # Generate unique ID and file path
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
-    file_path = os.path.join(UPLOAD_DIR, f"{upload_id}.txt")
+    # Save file with original filename only
+    original_filename = file.filename
+    file_path = os.path.join(UPLOAD_DIR, original_filename)
 
     # Save file
     try:
@@ -283,7 +285,7 @@ async def upload_txt_file(
             db = {"uploads": []}
         db["uploads"].append({
             "id": upload_id,
-            "filename": file.filename,
+            "filename": original_filename,
             "path": file_path,
             "timestamp": timestamp
         })
@@ -308,7 +310,7 @@ async def upload_txt_file(
 
 
 @app.get("/files/list", response_model=APIResponse)
-async def list_uploaded_files():
+async def list_uploaded_files(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
         if os.path.exists(db_path):
@@ -339,25 +341,35 @@ async def list_uploaded_files():
         )
 
 @app.get("/files/file_content", response_model=APIResponse)
-async def get_file_content(filename: str):
+async def get_file_content(file_id: str = None, filename: str = None, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
         if os.path.exists(db_path):
             with open(db_path, "r") as db_file:
                 db = json.load(db_file)
-            entry = next((item for item in db.get("uploads", []) if item["filename"] == filename), None)
+            entry = None
+            # Try by id first
+            if file_id:
+                entry = next((item for item in db.get("uploads", []) if item["id"] == file_id), None)
+            # If not found by id, try by filename
+            if not entry and filename:
+                entry = next((item for item in db.get("uploads", []) if item["filename"] == filename), None)
+            # If neither found, try fallback: if only file_id is provided, try as filename
+            if not entry and file_id and not filename:
+                entry = next((item for item in db.get("uploads", []) if item["filename"] == file_id), None)
             if not entry:
-                raise HTTPException(404, "File not found")
+                raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
             file_path = entry["path"]
             if not os.path.exists(file_path):
-                raise HTTPException(404, "File not found on disk")
+                raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
             return APIResponse(
                 status="success",
                 message="File content returned",
                 response={
-                    "filename": filename,
+                    "id": entry["id"],
+                    "filename": entry["filename"],
                     "content": content
                 }
             )
