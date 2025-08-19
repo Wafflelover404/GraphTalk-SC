@@ -53,8 +53,31 @@ def kb_search(search_string: str) -> list:
         if not is_connected():
             return ["Not connected to SC-machine"]
 
-        search_terms = search_string.strip().split()
-        links_list = search_links_by_contents_substrings(*search_terms)
+        # Normalize and generate variants for search terms
+        def normalize_kw(kw):
+            import re
+            kw = kw.lower()
+            kw = re.sub(r'\s+', '_', kw)
+            kw = re.sub(r'[^a-zа-я0-9_]', '', kw)
+            return kw
+
+        def variants(kw):
+            norm = normalize_kw(kw)
+            cap = norm.capitalize()
+            upper = norm.upper()
+            orig = kw
+            return list({norm, cap, upper, orig})
+
+        raw_terms = search_string.strip().split()
+        search_terms = []
+        for term in raw_terms:
+            search_terms.extend(variants(term))
+
+        # Also search for <main_keyword>...</main_keyword> tags for all variants
+        tag_terms = [f"<main_keyword>{kw}</main_keyword>" for kw in search_terms]
+        all_terms = search_terms + tag_terms
+
+        links_list = search_links_by_contents_substrings(*all_terms)
         result_addrs = {addr for sublist in links_list for addr in sublist}
 
         decoded_results = set()
