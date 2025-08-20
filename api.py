@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 import secrets
 import toml
 import bcrypt
+from userdb import create_user, verify_user, update_access_token, get_user, get_allowed_files, get_user_by_token
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -61,6 +63,7 @@ logger = logging.getLogger(__name__)
 # Security setup
 security_scheme = HTTPBearer(auto_error=False)
 
+
 # Pydantic models
 class QueryRequest(BaseModel):
     text: str
@@ -75,82 +78,86 @@ class TokenResponse(BaseModel):
     message: str
     token: Optional[str] = None
 
-# Token management functions
-def create_secrets_file():
-    """Initialize secrets file if it doesn't exist"""
-    os.makedirs(os.path.dirname(SECRETS_PATH), exist_ok=True)
-    if not os.path.exists(SECRETS_PATH):
-        with open(SECRETS_PATH, "w") as f:
-            toml.dump({"access_token_hash": ""}, f)
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    role: str
+    allowed_files: Optional[List[str]] = None
 
-def token_exists() -> bool:
-    """Check if a token already exists"""
-    if not os.path.exists(SECRETS_PATH):
-        return False
-    
-    with open(SECRETS_PATH, "r") as f:
-        secrets_data = toml.load(f)
-    
-    stored_hash = secrets_data.get("access_token_hash", "")
-    return bool(stored_hash)
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
-def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
-    """Token verification dependency"""
-    # Require authentication for all protected endpoints
+
+
+# User authentication and authorization
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication credentials.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Check if token exists in system
-    if not token_exists():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No token exists. Please create one first.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Read token hash
+        raise HTTPException(status_code=401, detail="Missing authentication credentials.")
+    user = get_user_by_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=403, detail="Invalid or expired token.")
+    return user
+
+# Master key verification (legacy admin key)
+def verify_master_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing authentication credentials.")
+    # Use previous token_exists and hash check logic
+    import toml
+    if not os.path.exists(SECRETS_PATH):
+        raise HTTPException(status_code=401, detail="No master key exists.")
     with open(SECRETS_PATH, "r") as f:
         secrets_data = toml.load(f)
-    
     stored_hash = secrets_data.get("access_token_hash", "")
     if not stored_hash:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Token file corrupted",
-        )
-    
-    # Verify token
+        raise HTTPException(status_code=500, detail="Master key file corrupted.")
     token = credentials.credentials
     try:
         if bcrypt.checkpw(token.encode('utf-8'), stored_hash.encode('utf-8')):
             return True
     except Exception as e:
-        logger.error(f"Token verification failed: {str(e)}")
-    
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Invalid or missing token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+        logger.error(f"Master key verification failed: {str(e)}")
+    raise HTTPException(status_code=403, detail="Invalid or missing master key.")
 
 # Endpoints
+
 @app.get("/", include_in_schema=False)
 async def landing_page():
     return {
         "app": "SC-Machine API",
         "version": app.version,
         "endpoints": {
-            "/query": {"method": "POST", "description": "Query the knowledge base"},
-            "/upload": {"method": "POST", "description": "Upload a .txt file to the KB"},
-            "/create_token": {"method": "POST", "description": "Generate a new access token (only once)"},
+            "/register": {"method": "POST", "description": "Register a new user"},
+            "/login": {"method": "POST", "description": "Login and get access token"},
+            "/query": {"method": "POST", "description": "Query the knowledge base (auth required)"},
+            "/upload": {"method": "POST", "description": "Upload a .txt file to the KB (auth required)"},
+            "/files/list": {"method": "GET", "description": "List uploaded files (auth required)"},
+            "/files/file_content": {"method": "GET", "description": "Get file content (auth required)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
-            
         }
     }
+
+
+# User registration (requires master key)
+@app.post("/register", response_model=APIResponse)
+async def register_user(request: RegisterRequest, master=Depends(verify_master_key)):
+    if get_user(request.username):
+        return APIResponse(status="error", message="Username already exists", response=None)
+    if request.role not in ["user", "admin"]:
+        return APIResponse(status="error", message="Role must be 'user' or 'admin'", response=None)
+    create_user(request.username, request.password, request.role, request.allowed_files)
+    return APIResponse(status="success", message="User registered", response=None)
+
+# User login
+@app.post("/login", response_model=TokenResponse)
+async def login_user(request: LoginRequest):
+    if not verify_user(request.username, request.password):
+        return TokenResponse(status="error", message="Invalid username or password", token=None)
+    # Generate new token for session
+    token = secrets.token_urlsafe(32)
+    update_access_token(request.username, token)
+    return TokenResponse(status="success", message="Login successful", token=token)
 
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
@@ -200,35 +207,22 @@ async def get_openapi_schema():
 async def process_query(
     request: QueryRequest,
     humanize: bool = Query(False),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+    user=Depends(get_current_user)
 ):
-    # Explicitly check authentication
-    verify_token(credentials)
-    """Process a knowledge base query"""
+    """Process a knowledge base query, restrict to allowed files"""
     try:
-        # Perform knowledge base search
-        kb_results = kb_search(request.text)
-        
-        # Humanize response if requested
+        allowed_files = get_allowed_files(user[1])
+        # You should modify kb_search to accept allowed_files and restrict search
+        kb_results = kb_search(request.text, allowed_files=allowed_files)
         if humanize:
             context = "\n".join(kb_results) if isinstance(kb_results, list) else kb_results
             response = llm_call(request.text, context)
         else:
             response = kb_results
-            
-        return APIResponse(
-            status="success",
-            message="Query processed",
-            response=response
-        )
-        
+        return APIResponse(status="success", message="Query processed", response=response)
     except Exception as e:
         logger.exception("Query processing error")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
+        return APIResponse(status="error", message=str(e), response=None)
 
 import datetime
 
@@ -236,20 +230,14 @@ import datetime
 @app.post("/upload", response_model=APIResponse)
 async def upload_txt_file(
     file: UploadFile = File(...),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+    master=Depends(verify_master_key)
 ):
-    verify_token(credentials)
     if not file.filename.endswith('.txt'):
         raise HTTPException(400, "Only .txt files are accepted")
-
-    # Generate unique ID and file path
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
-    # Save file with original filename only
     original_filename = file.filename
     file_path = os.path.join(UPLOAD_DIR, original_filename)
-
-    # Save file
     try:
         with open(file_path, "wb") as buffer:
             while chunk := await file.read(1024 * 1024):
@@ -257,16 +245,12 @@ async def upload_txt_file(
     except Exception as e:
         logger.exception("File upload failed")
         raise HTTPException(500, f"Failed to save file: {e}")
-
-    # Read text content for semantic processing
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             text_data = f.read()
     except Exception as e:
         logger.exception("Failed to read uploaded file for semantic processing")
         raise HTTPException(500, f"Failed to read file: {e}")
-
-    # Process with LLM and load semantic structures
     json_kb = None
     logs = None
     try:
@@ -278,15 +262,12 @@ async def upload_txt_file(
                 json_kb = json.loads(llm_json_result)
             except Exception as e:
                 raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
-
         SERVER_URL = "ws://localhost:8090/ws_json"
         logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb, upload_id)
     except Exception as e:
         logger.exception("Semantic KB compilation failed")
         logs = str(e)
         json_kb = None
-
-    # Update DB
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
         if os.path.exists(db_path):
@@ -305,7 +286,6 @@ async def upload_txt_file(
     except Exception as e:
         logger.exception("DB update failed")
         raise HTTPException(500, f"Failed to update DB: {e}")
-
     return APIResponse(
         status="success",
         message="File uploaded and semantic structures processed",
@@ -321,80 +301,60 @@ async def upload_txt_file(
 
 
 @app.get("/files/list", response_model=APIResponse)
-async def list_uploaded_files(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+async def list_uploaded_files(user=Depends(get_current_user)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
         if os.path.exists(db_path):
             with open(db_path, "r") as db_file:
                 db = json.load(db_file)
-            # Return only filenames and ids
+            allowed = get_allowed_files(user[1])
             files = [
                 {
                     "id": entry["id"],
                     "filename": entry["filename"],
                     "timestamp": entry["timestamp"]
                 }
-                for entry in db.get("uploads", [])
+                for entry in db.get("uploads", []) if entry["filename"] in allowed or user[3] == "admin"
             ]
         else:
             files = []
-        return APIResponse(
-            status="success",
-            message="List of uploaded files",
-            response={"files": files}
-        )
+        return APIResponse(status="success", message="List of uploaded files", response={"files": files})
     except Exception as e:
         logger.exception("Failed to list uploads")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
+        return APIResponse(status="error", message=str(e), response=None)
 
 @app.get("/files/file_content", response_model=APIResponse)
-async def get_file_content(file_id: str = None, filename: str = None, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+async def get_file_content(file_id: str = None, filename: str = None, user=Depends(get_current_user)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
         if os.path.exists(db_path):
             with open(db_path, "r") as db_file:
                 db = json.load(db_file)
             entry = None
-            # Try by id first
             if file_id:
                 entry = next((item for item in db.get("uploads", []) if item["id"] == file_id), None)
-            # If not found by id, try by filename
             if not entry and filename:
                 entry = next((item for item in db.get("uploads", []) if item["filename"] == filename), None)
-            # If neither found, try fallback: if only file_id is provided, try as filename
             if not entry and file_id and not filename:
                 entry = next((item for item in db.get("uploads", []) if item["filename"] == file_id), None)
             if not entry:
                 raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
+            allowed = get_allowed_files(user[1])
+            if entry["filename"] not in allowed and user[3] != "admin":
+                raise HTTPException(403, "You are not allowed to access this file")
             file_path = entry["path"]
             if not os.path.exists(file_path):
                 raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            return APIResponse(
-                status="success",
-                message="File content returned",
-                response={
-                    "id": entry["id"],
-                    "filename": entry["filename"],
-                    "content": content
-                }
-            )
+            return APIResponse(status="success", message="File content returned", response={"id": entry["id"], "filename": entry["filename"], "content": content})
         else:
             raise HTTPException(404, "No uploads found")
     except HTTPException as he:
         raise he
     except Exception as e:
         logger.exception("Failed to get file content")
-        return APIResponse(
-            status="error",
-            message=str(e),
-            response=None
-        )
+        return APIResponse(status="error", message=str(e), response=None)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)
