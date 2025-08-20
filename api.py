@@ -162,25 +162,24 @@ async def login_user(request: LoginRequest):
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
     """Create a new access token (only allowed once)"""
-    if token_exists():
-        return TokenResponse(
-            status="error",
-            message="Token already exists. Only one token can be created.",
-            token=None
-        )
-    
+    # Check if master key already exists
+    if os.path.exists(SECRETS_PATH):
+        with open(SECRETS_PATH, "r") as f:
+            secrets_data = toml.load(f)
+        stored_hash = secrets_data.get("access_token_hash", "")
+        if stored_hash:
+            return TokenResponse(
+                status="error",
+                message="Token already exists. Only one token can be created.",
+                token=None
+            )
     token = secrets.token_urlsafe(64)
     token_bytes = token.encode('utf-8')
-    #print("token: ", token)
-    
-    # Hash and store the token
     salt = bcrypt.gensalt(rounds=12)
     hashed_token = bcrypt.hashpw(token_bytes, salt).decode('utf-8')
-    
-    create_secrets_file()
+    os.makedirs(os.path.dirname(SECRETS_PATH), exist_ok=True)
     with open(SECRETS_PATH, "w") as f:
         toml.dump({"access_token_hash": hashed_token}, f)
-    
     return TokenResponse(
         status="success",
         message="Token created successfully. Save this token as it won't be shown again.",
