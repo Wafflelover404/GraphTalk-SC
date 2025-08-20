@@ -57,7 +57,10 @@ def verify_user(username: str, password: str):
 def get_allowed_files(username: str):
     user = get_user(username)
     if user:
-        return user[5].split(',') if user[5] else []
+        files = user[5].split(',') if user[5] else []
+        if 'all' in files or user[3] == 'admin':
+            return None  # None means all files allowed
+        return files
     return []
 
 def get_user_by_token(token: str):

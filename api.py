@@ -211,7 +211,6 @@ async def process_query(
     """Process a knowledge base query, restrict to allowed files"""
     try:
         allowed_files = get_allowed_files(user[1])
-        # You should modify kb_search to accept allowed_files and restrict search
         kb_results = kb_search(request.text, allowed_files=allowed_files)
         if humanize:
             context = "\n".join(kb_results) if isinstance(kb_results, list) else kb_results
@@ -307,14 +306,24 @@ async def list_uploaded_files(user=Depends(get_current_user)):
             with open(db_path, "r") as db_file:
                 db = json.load(db_file)
             allowed = get_allowed_files(user[1])
-            files = [
-                {
-                    "id": entry["id"],
-                    "filename": entry["filename"],
-                    "timestamp": entry["timestamp"]
-                }
-                for entry in db.get("uploads", []) if entry["filename"] in allowed or user[3] == "admin"
-            ]
+            if allowed is None:
+                files = [
+                    {
+                        "id": entry["id"],
+                        "filename": entry["filename"],
+                        "timestamp": entry["timestamp"]
+                    }
+                    for entry in db.get("uploads", [])
+                ]
+            else:
+                files = [
+                    {
+                        "id": entry["id"],
+                        "filename": entry["filename"],
+                        "timestamp": entry["timestamp"]
+                    }
+                    for entry in db.get("uploads", []) if entry["filename"] in allowed or user[3] == "admin"
+                ]
         else:
             files = []
         return APIResponse(status="success", message="List of uploaded files", response={"files": files})
@@ -339,7 +348,7 @@ async def get_file_content(file_id: str = None, filename: str = None, user=Depen
             if not entry:
                 raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
             allowed = get_allowed_files(user[1])
-            if entry["filename"] not in allowed and user[3] != "admin":
+            if allowed is not None and entry["filename"] not in allowed and user[3] != "admin":
                 raise HTTPException(403, "You are not allowed to access this file")
             file_path = entry["path"]
             if not os.path.exists(file_path):

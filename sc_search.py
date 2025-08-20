@@ -37,11 +37,12 @@ def find_source_content(addr) -> str:
     except Exception:
         return None
 
-def kb_search(search_string: str) -> list:
+def kb_search(search_string: str, allowed_files=None) -> list:
     """
     Search the Knowledge Base for links containing the given string or its substrings.
     Args:
         search_string (str): The search query.
+        allowed_files (list or None): List of allowed filenames, or None for all.
     Returns:
         list: Sorted unique strings with search results.
     """
@@ -53,7 +54,6 @@ def kb_search(search_string: str) -> list:
         if not is_connected():
             return ["Not connected to SC-machine"]
 
-        # Normalize and generate variants for search terms
         def normalize_kw(kw):
             import re
             kw = kw.lower()
@@ -73,7 +73,6 @@ def kb_search(search_string: str) -> list:
         for term in raw_terms:
             search_terms.extend(variants(term))
 
-        # Also search for <main_keyword>...</main_keyword> tags for all variants
         tag_terms = [f"<main_keyword>{kw}</main_keyword>" for kw in search_terms]
         all_terms = search_terms + tag_terms
 
@@ -83,15 +82,28 @@ def kb_search(search_string: str) -> list:
         decoded_results = set()
         for addr in result_addrs:
             sys_idtf = get_element_system_identifier(addr)
+            content = get_link_content_data(addr)
+            # If allowed_files is set, filter by filename
+            if allowed_files is not None and allowed_files:
+                # Only allow if sys_idtf or content matches allowed files
+                allowed = False
+                if sys_idtf and sys_idtf in allowed_files:
+                    allowed = True
+                elif content:
+                    # Try to match filename in content (if content is filename)
+                    for fname in allowed_files:
+                        if fname in content:
+                            allowed = True
+                            break
+                if not allowed:
+                    continue
+            # ...existing result formatting...
             if sys_idtf:
                 result = f"Keynode: {sys_idtf}"
+            elif content:
+                result = f"Link Content: {content}"
             else:
-                content = get_link_content_data(addr)
-                if content:
-                    result = f"Link Content: {content}"
-                else:
-                    result = f"Unknown Element: {addr}"
-            # Try to find source content for this addr
+                result = f"Unknown Element: {addr}"
             source = find_source_content(addr)
             if source:
                 result += f"\n  -> {source}"
