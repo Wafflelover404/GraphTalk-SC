@@ -14,7 +14,9 @@ from fastapi.concurrency import run_in_threadpool
 import secrets
 import toml
 import bcrypt
-from userdb import create_user, verify_user, update_access_token, get_user, get_allowed_files, get_user_by_token
+import aiofiles
+import aiofiles.os
+from userdb import create_user, verify_user, update_access_token, get_user, get_allowed_files, get_user_by_token, list_users
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -42,7 +44,7 @@ app = FastAPI(
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Add your frontend URL(s) here
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app"],  # Add your frontend URL(s) here
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -78,6 +80,12 @@ class TokenResponse(BaseModel):
     message: str
     token: Optional[str] = None
 
+class TokenRoleResponse(BaseModel):
+    status: str
+    message: str
+    token: Optional[str] = None
+    role: Optional[str] = None
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
@@ -91,34 +99,20 @@ class LoginRequest(BaseModel):
 
 
 # User authentication and authorization
-def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing authentication credentials.")
-    user = get_user_by_token(credentials.credentials)
+    user = await get_user_by_token(credentials.credentials)
     if not user:
         raise HTTPException(status_code=403, detail="Invalid or expired token.")
     return user
 
-# Master key verification (legacy admin key)
-def verify_master_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Missing authentication credentials.")
-    # Use previous token_exists and hash check logic
-    import toml
-    if not os.path.exists(SECRETS_PATH):
-        raise HTTPException(status_code=401, detail="No master key exists.")
-    with open(SECRETS_PATH, "r") as f:
-        secrets_data = toml.load(f)
-    stored_hash = secrets_data.get("access_token_hash", "")
-    if not stored_hash:
-        raise HTTPException(status_code=500, detail="Master key file corrupted.")
-    token = credentials.credentials
-    try:
-        if bcrypt.checkpw(token.encode('utf-8'), stored_hash.encode('utf-8')):
-            return True
-    except Exception as e:
-        logger.error(f"Master key verification failed: {str(e)}")
-    raise HTTPException(status_code=403, detail="Invalid or missing master key.")
+
+async def get_user_role(username: str):
+    user = await get_user(username)
+    if user:
+        return user[3]  # role
+    return None
 
 # Endpoints
 
@@ -141,23 +135,27 @@ async def landing_page():
 
 # User registration (requires master key)
 @app.post("/register", response_model=APIResponse)
-async def register_user(request: RegisterRequest, master=Depends(verify_master_key)):
-    if get_user(request.username):
-        return APIResponse(status="error", message="Username already exists", response=None)
+async def register_user(request: RegisterRequest, current_user=Depends(get_current_user)):
+    # Only admins can create new users
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    if await get_user(request.username):
+        return APIResponse(status="error", message="Username already exists", response={})
     if request.role not in ["user", "admin"]:
-        return APIResponse(status="error", message="Role must be 'user' or 'admin'", response=None)
-    create_user(request.username, request.password, request.role, request.allowed_files)
-    return APIResponse(status="success", message="User registered", response=None)
+        return APIResponse(status="error", message="Role must be 'user' or 'admin'", response={})
+    await create_user(request.username, request.password, request.role, request.allowed_files)
+    return APIResponse(status="success", message="User registered", response={})
 
 # User login
-@app.post("/login", response_model=TokenResponse)
+@app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest):
-    if not verify_user(request.username, request.password):
-        return TokenResponse(status="error", message="Invalid username or password", token=None)
+    if not await verify_user(request.username, request.password):
+        return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     # Generate new token for session
     token = secrets.token_urlsafe(32)
-    update_access_token(request.username, token)
-    return TokenResponse(status="success", message="Login successful", token=token)
+    await update_access_token(request.username, token)
+    role = await get_user_role(request.username)
+    return TokenRoleResponse(status="success", message="Login successful", token=token, role=role)
 
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
@@ -210,11 +208,11 @@ async def process_query(
 ):
     """Process a knowledge base query, restrict to allowed files"""
     try:
-        allowed_files = get_allowed_files(user[1])
-        kb_results = kb_search(request.text, allowed_files=allowed_files)
+        allowed_files = await get_allowed_files(user[1])
+        kb_results = await kb_search(request.text, allowed_files=allowed_files)
         if humanize:
             context = "\n".join(kb_results) if isinstance(kb_results, list) else kb_results
-            response = llm_call(request.text, context)
+            response = await llm_call(request.text, context)
         else:
             response = kb_results
         return APIResponse(status="success", message="Query processed", response=response)
@@ -228,8 +226,10 @@ import datetime
 @app.post("/upload", response_model=APIResponse)
 async def upload_txt_file(
     file: UploadFile = File(...),
-    master=Depends(verify_master_key)
+    current_user=Depends(get_current_user)
 ):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
     if not file.filename.endswith('.txt'):
         raise HTTPException(400, "Only .txt files are accepted")
     upload_id = str(uuid.uuid4())
@@ -237,15 +237,15 @@ async def upload_txt_file(
     original_filename = file.filename
     file_path = os.path.join(UPLOAD_DIR, original_filename)
     try:
-        with open(file_path, "wb") as buffer:
+        async with aiofiles.open(file_path, "wb") as buffer:
             while chunk := await file.read(1024 * 1024):
-                buffer.write(chunk)
+                await buffer.write(chunk)
     except Exception as e:
         logger.exception("File upload failed")
         raise HTTPException(500, f"Failed to save file: {e}")
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            text_data = f.read()
+        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+            text_data = await f.read()
     except Exception as e:
         logger.exception("Failed to read uploaded file for semantic processing")
         raise HTTPException(500, f"Failed to read file: {e}")
@@ -268,9 +268,10 @@ async def upload_txt_file(
         json_kb = None
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
-        if os.path.exists(db_path):
-            with open(db_path, "r") as db_file:
-                db = json.load(db_file)
+        if await aiofiles.os.path.exists(db_path):
+            async with aiofiles.open(db_path, "r") as db_file:
+                db_content = await db_file.read()
+                db = json.loads(db_content)
         else:
             db = {"uploads": []}
         db["uploads"].append({
@@ -279,8 +280,8 @@ async def upload_txt_file(
             "path": file_path,
             "timestamp": timestamp
         })
-        with open(db_path, "w") as db_file:
-            json.dump(db, db_file, indent=2)
+        async with aiofiles.open(db_path, "w") as db_file:
+            await db_file.write(json.dumps(db, indent=2))
     except Exception as e:
         logger.exception("DB update failed")
         raise HTTPException(500, f"Failed to update DB: {e}")
@@ -302,10 +303,11 @@ async def upload_txt_file(
 async def list_uploaded_files(user=Depends(get_current_user)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
-        if os.path.exists(db_path):
-            with open(db_path, "r") as db_file:
-                db = json.load(db_file)
-            allowed = get_allowed_files(user[1])
+        if await aiofiles.os.path.exists(db_path):
+            async with aiofiles.open(db_path, "r") as db_file:
+                db_content = await db_file.read()
+                db = json.loads(db_content)
+            allowed = await get_allowed_files(user[1])
             if allowed is None:
                 files = [
                     {
@@ -335,9 +337,10 @@ async def list_uploaded_files(user=Depends(get_current_user)):
 async def get_file_content(file_id: str = None, filename: str = None, user=Depends(get_current_user)):
     db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
-        if os.path.exists(db_path):
-            with open(db_path, "r") as db_file:
-                db = json.load(db_file)
+        if await aiofiles.os.path.exists(db_path):
+            async with aiofiles.open(db_path, "r") as db_file:
+                db_content = await db_file.read()
+                db = json.loads(db_content)
             entry = None
             if file_id:
                 entry = next((item for item in db.get("uploads", []) if item["id"] == file_id), None)
@@ -347,14 +350,14 @@ async def get_file_content(file_id: str = None, filename: str = None, user=Depen
                 entry = next((item for item in db.get("uploads", []) if item["filename"] == file_id), None)
             if not entry:
                 raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
-            allowed = get_allowed_files(user[1])
+            allowed = await get_allowed_files(user[1])
             if allowed is not None and entry["filename"] not in allowed and user[3] != "admin":
                 raise HTTPException(403, "You are not allowed to access this file")
             file_path = entry["path"]
-            if not os.path.exists(file_path):
+            if not await aiofiles.os.path.exists(file_path):
                 raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+                content = await f.read()
             return APIResponse(status="success", message="File content returned", response={"id": entry["id"], "filename": entry["filename"], "content": content})
         else:
             raise HTTPException(404, "No uploads found")
@@ -363,6 +366,17 @@ async def get_file_content(file_id: str = None, filename: str = None, user=Depen
     except Exception as e:
         logger.exception("Failed to get file content")
         return APIResponse(status="error", message=str(e), response=None)
+
+@app.get("/accounts", response_model=List[dict])
+async def get_accounts(current_user=Depends(get_current_user)):
+    """
+    List all accounts with their username, role, and last login.
+    Requires admin authentication.
+    """
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    users = await list_users()
+    return users
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)

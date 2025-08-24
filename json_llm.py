@@ -19,7 +19,7 @@ async def llm_json_interpret(text: str) -> dict | str:
 
         Instructions:
         You are a strict JSON generator. 
-        Respond ONLY with valid JSON. No explanations or extra text. JSON MUST ALWAYS BE IN THE SAME LANGUAGE AS THE INPUT TEXT.
+        Respond ONLY with valid JSON. No explanations or extra text. JSON MUST ALWAYS BE IN THE SAME LANGUAGE AS THE INPUT TEXT, NO EXCEPTIONS, ALL NODES, CONNECTIONS, ETC. IN SAME LANGUAGE INPUT. 
 
     """)
 
