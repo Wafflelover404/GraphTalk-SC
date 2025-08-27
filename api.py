@@ -1,3 +1,6 @@
+
+# Debug/test endpoint: delete SC elements by address (no DB/file changes)
+from fastapi import APIRouter
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -29,6 +32,11 @@ from json_llm import llm_json_interpret
 from llm import llm_call
 from json_interpreter import load_data_to_sc
 import json
+import re
+from uploadsdb import init_uploads_db, add_upload, list_uploads, get_upload_by_id, get_upload_by_filename, update_upload_logs_and_addresses
+from sc_remove import remove_by_identifier
+import aiofiles.os
+from fastapi import Body
 
 # Initialize app with proper metadata
 
@@ -222,7 +230,8 @@ async def process_query(
 
 import datetime
 
-# Upload endpoint for .txt files
+
+# Upload endpoint for .txt files (SQLite version)
 @app.post("/upload", response_model=APIResponse)
 async def upload_txt_file(
     file: UploadFile = File(...),
@@ -230,8 +239,8 @@ async def upload_txt_file(
 ):
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
-    if not file.filename.endswith('.txt'):
-        raise HTTPException(400, "Only .txt files are accepted")
+    # if not file.filename.endswith('.txt'):
+    #     raise HTTPException(400, "Only .txt files are accepted")
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
     original_filename = file.filename
@@ -243,14 +252,26 @@ async def upload_txt_file(
     except Exception as e:
         logger.exception("File upload failed")
         raise HTTPException(500, f"Failed to save file: {e}")
+
+    # Step 1: Insert DB entry immediately (empty logs, sc_addresses)
+    try:
+        await init_uploads_db()
+        await add_upload(upload_id, original_filename, file_path, timestamp, None, None)
+    except Exception as e:
+        logger.exception("DB insert failed")
+        raise HTTPException(500, f"Failed to insert DB entry: {e}")
+
+    # Step 2: Process file with AI, update logs and sc_addresses
+    logs = None
+    sc_addresses = None
+    json_kb = None
     try:
         async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
             text_data = await f.read()
     except Exception as e:
         logger.exception("Failed to read uploaded file for semantic processing")
+        await update_upload_logs_and_addresses(upload_id, logs=str(e), sc_addresses=None)
         raise HTTPException(500, f"Failed to read file: {e}")
-    json_kb = None
-    logs = None
     try:
         llm_json_result = await llm_json_interpret(text_data)
         if isinstance(llm_json_result, dict):
@@ -259,32 +280,33 @@ async def upload_txt_file(
             try:
                 json_kb = json.loads(llm_json_result)
             except Exception as e:
+                await update_upload_logs_and_addresses(upload_id, logs=f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}", sc_addresses=None)
                 raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
         SERVER_URL = "ws://localhost:8090/ws_json"
-        logs = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb, upload_id)
+        result = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb, upload_id)
+        if isinstance(result, tuple) and len(result) == 2:
+            logs, sc_addresses = result
+        else:
+            logs = result
+            sc_addresses = None
+        # Convert logs to JSON string if needed
+        if logs is not None and not isinstance(logs, str):
+            logs = json.dumps(logs, ensure_ascii=False)
+        # Extract SC addresses from logs if not provided
+        from fix_sc_addresses import extract_sc_addrs_from_logs
+        if sc_addresses is None and logs:
+            sc_addresses = extract_sc_addrs_from_logs(json.loads(logs) if isinstance(logs, str) else logs)
+        if sc_addresses is not None:
+            try:
+                sc_addresses = json.dumps(sc_addresses, ensure_ascii=False)
+            except Exception:
+                sc_addresses = str(sc_addresses)
+        await update_upload_logs_and_addresses(upload_id, logs=logs, sc_addresses=sc_addresses)
     except Exception as e:
         logger.exception("Semantic KB compilation failed")
         logs = str(e)
+        await update_upload_logs_and_addresses(upload_id, logs=logs, sc_addresses=None)
         json_kb = None
-    db_path = os.path.join(UPLOAD_DIR, "db.json")
-    try:
-        if await aiofiles.os.path.exists(db_path):
-            async with aiofiles.open(db_path, "r") as db_file:
-                db_content = await db_file.read()
-                db = json.loads(db_content)
-        else:
-            db = {"uploads": []}
-        db["uploads"].append({
-            "id": upload_id,
-            "filename": original_filename,
-            "path": file_path,
-            "timestamp": timestamp
-        })
-        async with aiofiles.open(db_path, "w") as db_file:
-            await db_file.write(json.dumps(db, indent=2))
-    except Exception as e:
-        logger.exception("DB update failed")
-        raise HTTPException(500, f"Failed to update DB: {e}")
     return APIResponse(
         status="success",
         message="File uploaded and semantic structures processed",
@@ -294,73 +316,55 @@ async def upload_txt_file(
             "path": file_path,
             "timestamp": timestamp,
             "interpreted_json": json_kb,
-            "load_log": logs
+            "load_log": logs,
+            "sc_addresses": sc_addresses
         }
     )
 
 
+
 @app.get("/files/list", response_model=APIResponse)
 async def list_uploaded_files(user=Depends(get_current_user)):
-    db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
-        if await aiofiles.os.path.exists(db_path):
-            async with aiofiles.open(db_path, "r") as db_file:
-                db_content = await db_file.read()
-                db = json.loads(db_content)
-            allowed = await get_allowed_files(user[1])
-            if allowed is None:
-                files = [
-                    {
-                        "id": entry["id"],
-                        "filename": entry["filename"],
-                        "timestamp": entry["timestamp"]
-                    }
-                    for entry in db.get("uploads", [])
-                ]
-            else:
-                files = [
-                    {
-                        "id": entry["id"],
-                        "filename": entry["filename"],
-                        "timestamp": entry["timestamp"]
-                    }
-                    for entry in db.get("uploads", []) if entry["filename"] in allowed or user[3] == "admin"
-                ]
+        await init_uploads_db()
+        uploads = await list_uploads()
+        allowed = await get_allowed_files(user[1])
+        if allowed is None:
+            files = [
+                {"id": row[0], "filename": row[1], "timestamp": row[3]} for row in uploads
+            ]
         else:
-            files = []
+            files = [
+                {"id": row[0], "filename": row[1], "timestamp": row[3]} for row in uploads if row[1] in allowed or user[3] == "admin"
+            ]
         return APIResponse(status="success", message="List of uploaded files", response={"files": files})
     except Exception as e:
         logger.exception("Failed to list uploads")
         return APIResponse(status="error", message=str(e), response=None)
 
+
 @app.get("/files/file_content", response_model=APIResponse)
 async def get_file_content(file_id: str = None, filename: str = None, user=Depends(get_current_user)):
-    db_path = os.path.join(UPLOAD_DIR, "db.json")
     try:
-        if await aiofiles.os.path.exists(db_path):
-            async with aiofiles.open(db_path, "r") as db_file:
-                db_content = await db_file.read()
-                db = json.loads(db_content)
-            entry = None
-            if file_id:
-                entry = next((item for item in db.get("uploads", []) if item["id"] == file_id), None)
-            if not entry and filename:
-                entry = next((item for item in db.get("uploads", []) if item["filename"] == filename), None)
-            if not entry and file_id and not filename:
-                entry = next((item for item in db.get("uploads", []) if item["filename"] == file_id), None)
-            if not entry:
-                raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
-            allowed = await get_allowed_files(user[1])
-            if allowed is not None and entry["filename"] not in allowed and user[3] != "admin":
-                raise HTTPException(403, "You are not allowed to access this file")
-            file_path = entry["path"]
-            if not await aiofiles.os.path.exists(file_path):
-                raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
-            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-                content = await f.read()
-            return APIResponse(status="success", message="File content returned", response={"id": entry["id"], "filename": entry["filename"], "content": content})
-        else:
-            raise HTTPException(404, "No uploads found")
+        await init_uploads_db()
+        entry = None
+        if file_id:
+            entry = await get_upload_by_id(file_id)
+        if not entry and filename:
+            entry = await get_upload_by_filename(filename)
+        if not entry and file_id and not filename:
+            entry = await get_upload_by_filename(file_id)
+        if not entry:
+            raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
+        allowed = await get_allowed_files(user[1])
+        if allowed is not None and entry[1] not in allowed and user[3] != "admin":
+            raise HTTPException(403, "You are not allowed to access this file")
+        file_path = entry[2]
+        if not await aiofiles.os.path.exists(file_path):
+            raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
+        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+            content = await f.read()
+        return APIResponse(status="success", message="File content returned", response={"id": entry[0], "filename": entry[1], "content": content})
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -380,3 +384,133 @@ async def get_accounts(current_user=Depends(get_current_user)):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)
+
+
+@app.delete("/files/delete", response_model=APIResponse)
+async def delete_file_and_semantics(
+    filename: str = Body(..., embed=True),
+    current_user=Depends(get_current_user)
+):
+    """
+    Delete file, all semantic data (recursively), and DB entry. Maximally robust.
+    """
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    await init_uploads_db()
+    entry = await get_upload_by_filename(filename)
+    if not entry:
+        raise HTTPException(404, f"File not found: {filename}")
+    upload_id = entry[0]
+    file_path = entry[2]
+    sc_addresses = entry[5]
+    semantic_deleted = []
+    semantic_errors = []
+    # 1. Remove all semantic structures (root addresses)
+    if sc_addresses:
+        try:
+            addresses = json.loads(sc_addresses)
+            if isinstance(addresses, dict):
+                addresses = list(addresses.values())
+            elif not isinstance(addresses, list):
+                addresses = [addresses]
+        except Exception as e:
+            semantic_errors.append({"error": f"Failed to parse sc_addresses: {e}"})
+            addresses = []
+        # Remove each root address (erase_elements is recursive)
+        for addr in addresses:
+            try:
+                remove_by_identifier(str(addr))
+                semantic_deleted.append(addr)
+            except Exception as e:
+                semantic_errors.append({"addr": addr, "error": str(e)})
+        # Optionally: verify deletion (best effort)
+        try:
+            from sc_client.client import connect, is_connected, disconnect
+            from sc_client.models import ScAddr
+            url = "ws://localhost:8090/ws_json"
+            connect(url)
+            if is_connected():
+                from sc_client.client import check_element
+                for addr in addresses:
+                    try:
+                        exists = check_element(ScAddr(int(addr)))
+                        if exists:
+                            semantic_errors.append({"addr": addr, "error": "Address still exists after deletion!"})
+                    except Exception as e:
+                        semantic_errors.append({"addr": addr, "error": f"Verification error: {e}"})
+                disconnect()
+        except Exception as e:
+            semantic_errors.append({"error": f"Post-delete verification failed: {e}"})
+    # 2. Remove file from disk
+    file_deleted = False
+    if await aiofiles.os.path.exists(file_path):
+        try:
+            await aiofiles.os.remove(file_path)
+            file_deleted = True
+        except Exception as e:
+            file_deleted = False
+            semantic_errors.append({"error": f"Failed to delete file: {e}"})
+    # 3. Remove DB entry
+    import aiosqlite
+    from uploadsdb import DB_PATH
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('DELETE FROM uploads WHERE id = ?', (upload_id,))
+        await conn.commit()
+    return APIResponse(
+        status="success",
+        message=f"Deleted file '{filename}', semantic data, and DB entry.",
+        response={
+            "file_deleted": file_deleted,
+            "semantic_deleted": semantic_deleted,
+            "semantic_errors": semantic_errors
+        }
+    )
+
+
+
+# Test endpoint: delete SC addresses for a file by filename (no DB or file changes)
+# @app.post("/test/delete_file_semantics", response_model=APIResponse)
+# async def test_delete_file_semantics(
+#     filename: str = Body(..., embed=True),
+#     current_user=Depends(get_current_user)
+# ):
+#     if current_user[3] != "admin":
+#         raise HTTPException(status_code=403, detail="Admin privileges required.")
+#     await init_uploads_db()
+#     entry = await get_upload_by_filename(filename)
+#     if not entry:
+#         raise HTTPException(404, f"File not found: {filename}")
+#     sc_addresses = entry[5]
+#     semantic_deleted = []
+#     semantic_errors = []
+#     if sc_addresses:
+#         # Parse addresses first, then connect
+#         try:
+#             addresses = json.loads(sc_addresses)
+#             if isinstance(addresses, dict):
+#                 addresses = list(addresses.values())
+#         except Exception as e:
+#             semantic_errors.append({"error": f"Failed to parse sc_addresses: {e}"})
+#             addresses = []
+#         if addresses:
+#             def delete_addrs():
+#                 for addr in addresses:
+#                     try:
+#                         remove_by_identifier(str(addr))  # This will now use erase_elements under the hood
+#                         semantic_deleted.append(addr)
+#                     except Exception as e:
+#                         semantic_errors.append({"addr": addr, "error": str(e)})
+#             for addr in addresses:
+#                 try:
+#                     remove_by_identifier(str(addr))
+#                     semantic_deleted.append(addr)
+#                 except Exception as e:
+#                     semantic_errors.append({"addr": addr, "error": str(e)})
+#     return APIResponse(
+#         status="success",
+#         message=f"Tried to delete semantics for file '{filename}'.",
+#         response={
+#             "semantic_deleted": semantic_deleted,
+#             "semantic_errors": semantic_errors
+#         }
+#     )
