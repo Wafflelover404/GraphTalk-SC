@@ -3,14 +3,14 @@ from google import genai
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-def llm_call(message, data):
+async def llm_call(message, data):
     """
     Calls Gemini LLM to analyze KB data and answer user's message.
     Args:
         message (str): User's query
         data (str): Knowledge base search results
     Returns:
-        str: LLM response
+        str: LLM response always in same language as user request is, not the provided data.
     """
     system_prompt = (
         "You are an AI assistant. You receive a bunch of data from a knowledge base. "
@@ -23,9 +23,15 @@ def llm_call(message, data):
         f"User request: {message}"
     ]
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
+        # Run the potentially blocking operation in a thread pool
+        import asyncio
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+            )
         )
         return response.text
     except Exception as e:
