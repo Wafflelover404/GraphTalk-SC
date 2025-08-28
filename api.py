@@ -143,10 +143,29 @@ async def landing_page():
 
 # User registration (requires master key)
 @app.post("/register", response_model=APIResponse)
-async def register_user(request: RegisterRequest, current_user=Depends(get_current_user)):
-    # Only admins can create new users
-    if current_user[3] != "admin":
-        raise HTTPException(status_code=403, detail="Admin privileges required.")
+async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    # Allow registration if admin is authenticated or valid master key is provided via Bearer
+    is_admin = False
+    is_master = False
+    if credentials:
+        user = await get_user_by_token(credentials.credentials)
+        if user and user[3] == "admin":
+            is_admin = True
+        # If not admin, check if Bearer token is master key
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
     if await get_user(request.username):
         return APIResponse(status="error", message="Username already exists", response={})
     if request.role not in ["user", "admin"]:
