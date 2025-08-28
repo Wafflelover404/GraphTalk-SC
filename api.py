@@ -142,8 +142,11 @@ async def landing_page():
 
 
 # User registration (requires master key)
+from userdb import init_db
+
 @app.post("/register", response_model=APIResponse)
 async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    await init_db()
     # Allow registration if admin is authenticated or valid master key is provided via Bearer
     is_admin = False
     is_master = False
@@ -176,6 +179,7 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
 # User login
 @app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest):
+    await init_db()
     if not await verify_user(request.username, request.password):
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     # Generate new token for session
@@ -392,6 +396,7 @@ async def get_file_content(file_id: str = None, filename: str = None, user=Depen
 
 @app.get("/accounts", response_model=List[dict])
 async def get_accounts(current_user=Depends(get_current_user)):
+    await init_db()
     """
     List all accounts with their username, role, and last login.
     Requires admin authentication.
