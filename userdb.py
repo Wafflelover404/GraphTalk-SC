@@ -22,7 +22,15 @@ async def init_db():
         await conn.commit()
 
 # Initialize database on import
-asyncio.create_task(init_db()) if asyncio.get_running_loop() else asyncio.run(init_db())
+try:
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(init_db())
+    except RuntimeError:
+        # No event loop running, run in new loop
+        asyncio.run(init_db())
+except Exception as e:
+    print(f"Warning: Could not initialize user database on import: {e}")
 
 async def create_user(username: str, password: str, role: str, allowed_files: Optional[List[str]] = None):
     password_hash = bcrypt.hash(password)

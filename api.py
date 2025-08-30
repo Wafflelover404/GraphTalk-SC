@@ -1,7 +1,5 @@
 
-# Debug/test endpoint: delete SC elements by address (no DB/file changes)
-from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +8,6 @@ from typing import Optional, List, Union
 import uvicorn
 import logging
 import os
-import zipfile
 import shutil
 import uuid
 from fastapi.concurrency import run_in_threadpool
@@ -23,26 +20,23 @@ from userdb import create_user, verify_user, update_access_token, get_user, get_
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from sc_search import kb_search
-from memloader import load_scs_directory
-
-
-# Import LLM and JSON interpretation from dedicated modules
-from json_llm import llm_json_interpret
+# Import LLM functionality
 from llm import llm_call
-from json_interpreter import load_data_to_sc
+
+# Import RAG functionality
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
+from rag_api.pydantic_models import QueryInput, QueryResponse, DocumentInfo, DeleteFileRequest, ModelName
+from rag_api.langchain_utils import get_rag_chain
+from rag_api.db_utils import insert_application_logs, get_chat_history, get_all_documents, insert_document_record, delete_document_record
+from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
 import json
-import re
-from uploadsdb import init_uploads_db, add_upload, list_uploads, get_upload_by_id, get_upload_by_filename, update_upload_logs_and_addresses
-from sc_remove import remove_by_identifier
-import aiofiles.os
-from fastapi import Body
+import datetime
 
 # Initialize app with proper metadata
-
 app = FastAPI(
-    title="SC-Machine API",
-    description="Knowledge Base Query and Management System",
+    title="RAG API",
+    description="Knowledge Base Query and Management System with RAG",
     version="1.0.0",
     docs_url=None,
     redoc_url=None,
@@ -52,7 +46,7 @@ app = FastAPI(
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app"],  # Add your frontend URL(s) here
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -60,11 +54,9 @@ app.add_middleware(
 
 UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
-KB_BASE_DIR = "unpacked_kbs"
 
 # Ensure directories exist
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(KB_BASE_DIR, exist_ok=True)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -73,10 +65,11 @@ logger = logging.getLogger(__name__)
 # Security setup
 security_scheme = HTTPBearer(auto_error=False)
 
-
 # Pydantic models
 class QueryRequest(BaseModel):
     text: str
+    model: Optional[str] = "llama3.2"
+    session_id: Optional[str] = None
 
 class APIResponse(BaseModel):
     status: str
@@ -104,7 +97,10 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-
+class RAGQueryRequest(BaseModel):
+    question: str
+    model: Optional[str] = "llama3.2"
+    session_id: Optional[str] = None
 
 # User authentication and authorization
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
@@ -115,7 +111,6 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         raise HTTPException(status_code=403, detail="Invalid or expired token.")
     return user
 
-
 async def get_user_role(username: str):
     user = await get_user(username)
     if user:
@@ -123,30 +118,26 @@ async def get_user_role(username: str):
     return None
 
 # Endpoints
-
 @app.get("/", include_in_schema=False)
 async def landing_page():
     return {
-        "app": "SC-Machine API",
+        "app": "RAG API",
         "version": app.version,
         "endpoints": {
             "/register": {"method": "POST", "description": "Register a new user"},
             "/login": {"method": "POST", "description": "Login and get access token"},
-            "/query": {"method": "POST", "description": "Query the knowledge base (auth required)"},
-            "/upload": {"method": "POST", "description": "Upload a .txt file to the KB (auth required)"},
-            "/files/list": {"method": "GET", "description": "List uploaded files (auth required)"},
-            "/files/file_content": {"method": "GET", "description": "Get file content (auth required)"},
+            "/query": {"method": "POST", "description": "Query using RAG (auth required)"},
+            "/chat": {"method": "POST", "description": "Chat using RAG with history (auth required)"},
+            "/upload": {"method": "POST", "description": "Upload a document to RAG (auth required)"},
+            "/files/list": {"method": "GET", "description": "List uploaded documents (auth required)"},
+            "/files/delete": {"method": "DELETE", "description": "Delete document from RAG (auth required)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
         }
     }
 
-
 # User registration (requires master key)
-from userdb import init_db
-
 @app.post("/register", response_model=APIResponse)
 async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
-    await init_db()
     # Allow registration if admin is authenticated or valid master key is provided via Bearer
     is_admin = False
     is_master = False
@@ -179,7 +170,6 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
 # User login
 @app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest):
-    await init_db()
     if not await verify_user(request.username, request.password):
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     # Generate new token for session
@@ -215,7 +205,6 @@ async def generate_token():
         token=token
     )
 
-
 # Whitelist /docs endpoint (no authentication required)
 @app.get("/docs", include_in_schema=False)
 async def get_documentation():
@@ -225,178 +214,206 @@ async def get_documentation():
         title=app.title + " - Swagger UI"
     )
 
-
 # Whitelist /openapi.json endpoint (no authentication required)
 @app.get("/openapi.json", include_in_schema=False)
 async def get_openapi_schema():
     return app.openapi()
 
+# RAG Query endpoint (simple, like the original /query but with RAG)
 @app.post("/query", response_model=APIResponse)
-async def process_query(
-    request: QueryRequest,
-    humanize: bool = Query(False),
+async def process_rag_query(
+    request: RAGQueryRequest,
+    humanize: bool = Query(True),
     user=Depends(get_current_user)
 ):
-    """Process a knowledge base query, restrict to allowed files"""
+    """Process a query using RAG"""
     try:
-        allowed_files = await get_allowed_files(user[1])
-        kb_results = await kb_search(request.text, allowed_files=allowed_files)
+        session_id = request.session_id or str(uuid.uuid4())
+        
         if humanize:
-            context = "\n".join(kb_results) if isinstance(kb_results, list) else kb_results
-            response = await llm_call(request.text, context)
+            # Use RAG chain for contextualized response
+            try:
+                chat_history = get_chat_history(session_id)
+                rag_chain = get_rag_chain(request.model)
+                response = rag_chain.invoke({
+                    "input": request.question,
+                    "chat_history": chat_history
+                })['answer']
+                
+                # Log the interaction
+                insert_application_logs(session_id, request.question, response, request.model)
+            except Exception as e:
+                logger.error(f"RAG chain error: {e}")
+                # Fallback to basic LLM call
+                response = await llm_call(request.question, "No context available from RAG")
         else:
-            response = kb_results
-        return APIResponse(status="success", message="Query processed", response=response)
+            # Just return raw context without LLM processing
+            from rag_api.chroma_utils import vectorstore
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+            docs = retriever.get_relevant_documents(request.question)
+            response = [doc.page_content for doc in docs]
+        
+        return APIResponse(
+            status="success", 
+            message="Query processed with RAG", 
+            response={
+                "answer": response,
+                "session_id": session_id,
+                "model": request.model
+            }
+        )
     except Exception as e:
-        logger.exception("Query processing error")
+        logger.exception("RAG query processing error")
         return APIResponse(status="error", message=str(e), response=None)
 
-import datetime
+# Chat endpoint with history (from RAG API)
+@app.post("/chat", response_model=APIResponse)
+async def chat(
+    request: RAGQueryRequest,
+    user=Depends(get_current_user)
+):
+    """Chat using RAG with conversation history"""
+    try:
+        session_id = request.session_id or str(uuid.uuid4())
+        logger.info(f"Session ID: {session_id}, User Query: {request.question}, Model: {request.model}")
+        
+        chat_history = get_chat_history(session_id)
+        rag_chain = get_rag_chain(request.model)
+        answer = rag_chain.invoke({
+            "input": request.question,
+            "chat_history": chat_history
+        })['answer']
 
+        insert_application_logs(session_id, request.question, answer, request.model)
+        logger.info(f"Session ID: {session_id}, AI Response: {answer}")
+        
+        return APIResponse(
+            status="success",
+            message="Chat response generated",
+            response={
+                "answer": answer,
+                "session_id": session_id,
+                "model": request.model
+            }
+        )
+    except Exception as e:
+        logger.exception("Chat processing error")
+        return APIResponse(status="error", message=str(e), response=None)
 
-# Upload endpoint for .txt files (SQLite version)
+# Upload endpoint for documents (using RAG indexing)
 @app.post("/upload", response_model=APIResponse)
-async def upload_txt_file(
+async def upload_document(
     file: UploadFile = File(...),
     current_user=Depends(get_current_user)
 ):
+    """Upload and index document in RAG"""
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
-    # if not file.filename.endswith('.txt'):
-    #     raise HTTPException(400, "Only .txt files are accepted")
+    
+    allowed_extensions = ['.pdf', '.docx', '.html', '.txt']
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type. Allowed types are: {', '.join(allowed_extensions)}"
+        )
+    
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
     original_filename = file.filename
-    file_path = os.path.join(UPLOAD_DIR, original_filename)
+    temp_file_path = f"temp_{original_filename}"
+    
     try:
-        async with aiofiles.open(file_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
-                await buffer.write(chunk)
+        # Save uploaded file temporarily
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Insert document record and get file_id
+        file_id = insert_document_record(original_filename)
+        
+        # Index document to Chroma
+        success = index_document_to_chroma(temp_file_path, file_id)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message=f"File {original_filename} has been successfully uploaded and indexed.",
+                response={
+                    "file_id": file_id,
+                    "filename": original_filename,
+                    "upload_id": upload_id,
+                    "timestamp": timestamp
+                }
+            )
+        else:
+            delete_document_record(file_id)
+            raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
+            
     except Exception as e:
         logger.exception("File upload failed")
-        raise HTTPException(500, f"Failed to save file: {e}")
+        if 'file_id' in locals():
+            delete_document_record(file_id)
+        raise HTTPException(500, f"Failed to upload file: {e}")
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
-    # Step 1: Insert DB entry immediately (empty logs, sc_addresses)
-    try:
-        await init_uploads_db()
-        await add_upload(upload_id, original_filename, file_path, timestamp, None, None)
-    except Exception as e:
-        logger.exception("DB insert failed")
-        raise HTTPException(500, f"Failed to insert DB entry: {e}")
-
-    # Step 2: Process file with AI, update logs and sc_addresses
-    logs = None
-    sc_addresses = None
-    json_kb = None
-    try:
-        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-            text_data = await f.read()
-    except Exception as e:
-        logger.exception("Failed to read uploaded file for semantic processing")
-        await update_upload_logs_and_addresses(upload_id, logs=str(e), sc_addresses=None)
-        raise HTTPException(500, f"Failed to read file: {e}")
-    try:
-        llm_json_result = await llm_json_interpret(text_data)
-        if isinstance(llm_json_result, dict):
-            json_kb = llm_json_result
-        else:
-            try:
-                json_kb = json.loads(llm_json_result)
-            except Exception as e:
-                await update_upload_logs_and_addresses(upload_id, logs=f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}", sc_addresses=None)
-                raise HTTPException(400, f"LLM did not return valid JSON: {e}\nRaw LLM output: {llm_json_result}")
-        SERVER_URL = "ws://localhost:8090/ws_json"
-        result = await run_in_threadpool(load_data_to_sc, SERVER_URL, json_kb, upload_id)
-        if isinstance(result, tuple) and len(result) == 2:
-            logs, sc_addresses = result
-        else:
-            logs = result
-            sc_addresses = None
-        # Convert logs to JSON string if needed
-        if logs is not None and not isinstance(logs, str):
-            logs = json.dumps(logs, ensure_ascii=False)
-        # Extract SC addresses from logs if not provided
-        from fix_sc_addresses import extract_sc_addrs_from_logs
-        if sc_addresses is None and logs:
-            sc_addresses = extract_sc_addrs_from_logs(json.loads(logs) if isinstance(logs, str) else logs)
-        if sc_addresses is not None:
-            try:
-                sc_addresses = json.dumps(sc_addresses, ensure_ascii=False)
-            except Exception:
-                sc_addresses = str(sc_addresses)
-        await update_upload_logs_and_addresses(upload_id, logs=logs, sc_addresses=sc_addresses)
-    except Exception as e:
-        logger.exception("Semantic KB compilation failed")
-        logs = str(e)
-        await update_upload_logs_and_addresses(upload_id, logs=logs, sc_addresses=None)
-        json_kb = None
-    return APIResponse(
-        status="success",
-        message="File uploaded and semantic structures processed",
-        response={
-            "id": upload_id,
-            "filename": file.filename,
-            "path": file_path,
-            "timestamp": timestamp,
-            "interpreted_json": json_kb,
-            "load_log": logs,
-            "sc_addresses": sc_addresses
-        }
-    )
-
-
-
+# List documents endpoint
 @app.get("/files/list", response_model=APIResponse)
-async def list_uploaded_files(user=Depends(get_current_user)):
+async def list_documents(user=Depends(get_current_user)):
+    """List all uploaded documents"""
     try:
-        await init_uploads_db()
-        uploads = await list_uploads()
-        allowed = await get_allowed_files(user[1])
-        if allowed is None:
-            files = [
-                {"id": row[0], "filename": row[1], "timestamp": row[3]} for row in uploads
-            ]
+        documents = get_all_documents()
+        return APIResponse(
+            status="success", 
+            message="List of uploaded documents", 
+            response={"documents": documents}
+        )
+    except Exception as e:
+        logger.exception("Failed to list documents")
+        return APIResponse(status="error", message=str(e), response=None)
+
+# Delete document endpoint
+@app.delete("/files/delete", response_model=APIResponse)
+async def delete_document(
+    request: DeleteFileRequest,
+    current_user=Depends(get_current_user)
+):
+    """Delete document from RAG system"""
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    
+    try:
+        chroma_delete_success = delete_doc_from_chroma(request.file_id)
+        
+        if chroma_delete_success:
+            db_delete_success = delete_document_record(request.file_id)
+            if db_delete_success:
+                return APIResponse(
+                    status="success",
+                    message=f"Successfully deleted document with file_id {request.file_id}",
+                    response={"file_id": request.file_id}
+                )
+            else:
+                return APIResponse(
+                    status="error",
+                    message=f"Deleted from Chroma but failed to delete document with file_id {request.file_id} from database",
+                    response=None
+                )
         else:
-            files = [
-                {"id": row[0], "filename": row[1], "timestamp": row[3]} for row in uploads if row[1] in allowed or user[3] == "admin"
-            ]
-        return APIResponse(status="success", message="List of uploaded files", response={"files": files})
+            return APIResponse(
+                status="error",
+                message=f"Failed to delete document with file_id {request.file_id} from Chroma",
+                response=None
+            )
     except Exception as e:
-        logger.exception("Failed to list uploads")
+        logger.exception("Document deletion failed")
         return APIResponse(status="error", message=str(e), response=None)
 
-
-@app.get("/files/file_content", response_model=APIResponse)
-async def get_file_content(file_id: str = None, filename: str = None, user=Depends(get_current_user)):
-    try:
-        await init_uploads_db()
-        entry = None
-        if file_id:
-            entry = await get_upload_by_id(file_id)
-        if not entry and filename:
-            entry = await get_upload_by_filename(filename)
-        if not entry and file_id and not filename:
-            entry = await get_upload_by_filename(file_id)
-        if not entry:
-            raise HTTPException(404, f"File not found for id: {file_id} or filename: {filename}")
-        allowed = await get_allowed_files(user[1])
-        if allowed is not None and entry[1] not in allowed and user[3] != "admin":
-            raise HTTPException(403, "You are not allowed to access this file")
-        file_path = entry[2]
-        if not await aiofiles.os.path.exists(file_path):
-            raise HTTPException(404, f"File found in DB but not on disk: {file_path}")
-        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-            content = await f.read()
-        return APIResponse(status="success", message="File content returned", response={"id": entry[0], "filename": entry[1], "content": content})
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logger.exception("Failed to get file content")
-        return APIResponse(status="error", message=str(e), response=None)
-
+# Get user accounts (admin only)
 @app.get("/accounts", response_model=List[dict])
 async def get_accounts(current_user=Depends(get_current_user)):
-    await init_db()
     """
     List all accounts with their username, role, and last login.
     Requires admin authentication.
@@ -407,134 +424,4 @@ async def get_accounts(current_user=Depends(get_current_user)):
     return users
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=9001, reload=True)
-
-
-@app.delete("/files/delete", response_model=APIResponse)
-async def delete_file_and_semantics(
-    filename: str = Body(..., embed=True),
-    current_user=Depends(get_current_user)
-):
-    """
-    Delete file, all semantic data (recursively), and DB entry. Maximally robust.
-    """
-    if current_user[3] != "admin":
-        raise HTTPException(status_code=403, detail="Admin privileges required.")
-    await init_uploads_db()
-    entry = await get_upload_by_filename(filename)
-    if not entry:
-        raise HTTPException(404, f"File not found: {filename}")
-    upload_id = entry[0]
-    file_path = entry[2]
-    sc_addresses = entry[5]
-    semantic_deleted = []
-    semantic_errors = []
-    # 1. Remove all semantic structures (root addresses)
-    if sc_addresses:
-        try:
-            addresses = json.loads(sc_addresses)
-            if isinstance(addresses, dict):
-                addresses = list(addresses.values())
-            elif not isinstance(addresses, list):
-                addresses = [addresses]
-        except Exception as e:
-            semantic_errors.append({"error": f"Failed to parse sc_addresses: {e}"})
-            addresses = []
-        # Remove each root address (erase_elements is recursive)
-        for addr in addresses:
-            try:
-                remove_by_identifier(str(addr))
-                semantic_deleted.append(addr)
-            except Exception as e:
-                semantic_errors.append({"addr": addr, "error": str(e)})
-        # Optionally: verify deletion (best effort)
-        try:
-            from sc_client.client import connect, is_connected, disconnect
-            from sc_client.models import ScAddr
-            url = "ws://localhost:8090/ws_json"
-            connect(url)
-            if is_connected():
-                from sc_client.client import check_element
-                for addr in addresses:
-                    try:
-                        exists = check_element(ScAddr(int(addr)))
-                        if exists:
-                            semantic_errors.append({"addr": addr, "error": "Address still exists after deletion!"})
-                    except Exception as e:
-                        semantic_errors.append({"addr": addr, "error": f"Verification error: {e}"})
-                disconnect()
-        except Exception as e:
-            semantic_errors.append({"error": f"Post-delete verification failed: {e}"})
-    # 2. Remove file from disk
-    file_deleted = False
-    if await aiofiles.os.path.exists(file_path):
-        try:
-            await aiofiles.os.remove(file_path)
-            file_deleted = True
-        except Exception as e:
-            file_deleted = False
-            semantic_errors.append({"error": f"Failed to delete file: {e}"})
-    # 3. Remove DB entry
-    import aiosqlite
-    from uploadsdb import DB_PATH
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute('DELETE FROM uploads WHERE id = ?', (upload_id,))
-        await conn.commit()
-    return APIResponse(
-        status="success",
-        message=f"Deleted file '{filename}', semantic data, and DB entry.",
-        response={
-            "file_deleted": file_deleted,
-            "semantic_deleted": semantic_deleted,
-            "semantic_errors": semantic_errors
-        }
-    )
-
-
-
-# Test endpoint: delete SC addresses for a file by filename (no DB or file changes)
-# @app.post("/test/delete_file_semantics", response_model=APIResponse)
-# async def test_delete_file_semantics(
-#     filename: str = Body(..., embed=True),
-#     current_user=Depends(get_current_user)
-# ):
-#     if current_user[3] != "admin":
-#         raise HTTPException(status_code=403, detail="Admin privileges required.")
-#     await init_uploads_db()
-#     entry = await get_upload_by_filename(filename)
-#     if not entry:
-#         raise HTTPException(404, f"File not found: {filename}")
-#     sc_addresses = entry[5]
-#     semantic_deleted = []
-#     semantic_errors = []
-#     if sc_addresses:
-#         # Parse addresses first, then connect
-#         try:
-#             addresses = json.loads(sc_addresses)
-#             if isinstance(addresses, dict):
-#                 addresses = list(addresses.values())
-#         except Exception as e:
-#             semantic_errors.append({"error": f"Failed to parse sc_addresses: {e}"})
-#             addresses = []
-#         if addresses:
-#             def delete_addrs():
-#                 for addr in addresses:
-#                     try:
-#                         remove_by_identifier(str(addr))  # This will now use erase_elements under the hood
-#                         semantic_deleted.append(addr)
-#                     except Exception as e:
-#                         semantic_errors.append({"addr": addr, "error": str(e)})
-#             for addr in addresses:
-#                 try:
-#                     remove_by_identifier(str(addr))
-#                     semantic_deleted.append(addr)
-#                 except Exception as e:
-#                     semantic_errors.append({"addr": addr, "error": str(e)})
-#     return APIResponse(
-#         status="success",
-#         message=f"Tried to delete semantics for file '{filename}'.",
-#         response={
-#             "semantic_deleted": semantic_deleted,
-#             "semantic_errors": semantic_errors
-#         }
-#     )
+    uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)

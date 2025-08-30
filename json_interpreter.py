@@ -23,33 +23,39 @@ def normalize_identifier(identifier: str) -> str:
 def create_node_with_label(original_text: str, source_addr=None):
     """Create SC-node with attached text label"""
     norm_id = normalize_identifier(original_text)
+    logs = []
     try:
+        logs.append(f"[SC] Attempting to get node: {norm_id} (from '{original_text}')")
         addr = ScKeynodes[norm_id]
-        log = f"Node exists: {norm_id} (from '{original_text}') -> {addr}"
+        logs.append(f"[SC] Node exists: {norm_id} (from '{original_text}') -> {addr}")
     except Exception as e:
         try:
+            logs.append(f"[SC] Node not found, creating: {norm_id} (from '{original_text}')")
             addr = generate_node(sc_type.CONST_NODE)
-            log = f"Node created: {norm_id} (from '{original_text}') -> {addr}"
+            logs.append(f"[SC] Node created: {norm_id} (from '{original_text}') -> {addr}")
         except Exception as e2:
-            log = f"Failed to create node: {norm_id} (from '{original_text}') | {e2}"
-            return None, log
-    
+            logs.append(f"[SC] Failed to create node: {norm_id} (from '{original_text}') | {e2}")
+            return None, '\n'.join(logs)
+
     # Attach original text as link content
     try:
+        logs.append(f"[SC] Creating label link for node {norm_id}: '{original_text}'")
         label_link = generate_link(original_text)
+        logs.append(f"[SC] Label link created: {label_link}")
         generate_binary_relation(sc_type.CONST_PERM_POS_ARC, addr, label_link)
-        log += f" | Label attached"
+        logs.append(f"[SC] Label attached to node {norm_id} -> {label_link}")
     except Exception as e:
-        log += f" | Label attach failed: {e}"
-        
+        logs.append(f"[SC] Label attach failed for node {norm_id}: {e}")
+
     # Connect to source if provided and different
     if source_addr and addr != source_addr:
         try:
+            logs.append(f"[SC] Connecting node {norm_id} to source {source_addr}")
             generate_binary_relation(sc_type.CONST_PERM_POS_ARC, addr, source_addr)
-            log += f" | Connected to source"
+            logs.append(f"[SC] Connected node {norm_id} to source {source_addr}")
         except Exception as e:
-            log += f" | Source connection failed: {e}"
-    return addr, log
+            logs.append(f"[SC] Source connection failed for node {norm_id}: {e}")
+    return addr, '\n'.join(logs)
 
 def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
     """Create nodes for text segments and attach content"""
@@ -84,9 +90,11 @@ def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
 
         # Create and attach segment content
         try:
+            logs.append(f"[SC] Creating segment link for {seg_id} with content: {tagged_text}")
             seg_link = generate_link(tagged_text)
+            logs.append(f"[SC] Segment link created: {seg_link}")
             generate_binary_relation(sc_type.CONST_PERM_POS_ARC, seg_node, seg_link)
-            logs.append(f"Segment content attached: {seg_id}")
+            logs.append(f"[SC] Segment content attached: {seg_id} -> {seg_link}")
 
             # Attach ALL normalized main_keywords to segment node
             for kw in main_keywords:
@@ -94,10 +102,11 @@ def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
                 kw_node, kw_log = create_node_with_label(norm_kw)
                 logs.append(kw_log)
                 try:
+                    logs.append(f"[SC] Attaching main keyword {norm_kw} to segment {seg_id}")
                     generate_role_relation(seg_node, kw_node, sc_type.CONST_PERM_POS_ARC)
-                    logs.append(f"Main keyword attached to segment {seg_id}: {norm_kw}")
+                    logs.append(f"[SC] Main keyword attached to segment {seg_id}: {norm_kw}")
                 except Exception as e:
-                    logs.append(f"Main keyword attach failed for {seg_id}: {norm_kw} | {e}")
+                    logs.append(f"[SC] Main keyword attach failed for {seg_id}: {norm_kw} | {e}")
 
             # Attach ALL normalized segment-specific keywords to segment node
             for kw in seg_keywords:
@@ -105,16 +114,18 @@ def create_segment_nodes(segments: dict, source_content_addr, upload_id=None):
                 kw_node, kw_log = create_node_with_label(norm_kw)
                 logs.append(kw_log)
                 try:
+                    logs.append(f"[SC] Attaching segment keyword {norm_kw} to segment {seg_id}")
                     generate_role_relation(seg_node, kw_node, sc_type.CONST_PERM_POS_ARC)
-                    logs.append(f"Segment keyword attached to segment {seg_id}: {norm_kw}")
+                    logs.append(f"[SC] Segment keyword attached to segment {seg_id}: {norm_kw}")
                 except Exception as e:
-                    logs.append(f"Segment keyword attach failed for {seg_id}: {norm_kw} | {e}")
+                    logs.append(f"[SC] Segment keyword attach failed for {seg_id}: {norm_kw} | {e}")
 
             # Connect segment to main source
+            logs.append(f"[SC] Connecting segment {seg_id} to source content via nrel_segment")
             generate_role_relation(source_content_addr, seg_node, seg_rel_addr)
-            logs.append(f"Segment connected: {seg_id} → Source content")
+            logs.append(f"[SC] Segment connected: {seg_id} → Source content")
         except Exception as e:
-            logs.append(f"Segment processing failed: {seg_id} | {e}")
+            logs.append(f"[SC] Segment processing failed: {seg_id} | {e}")
 
         segment_nodes[seg_id] = seg_node
 
@@ -143,14 +154,15 @@ def process_relations(data: dict, source_content_addr, segment_nodes):
                 logs.append(log)
                 
                 try:
+                    logs.append(f"[SC] Creating segment relation: {concept_addr} (concept) → {segment_nodes[seg_id]} (segment) via {seg_relation_addr}")
                     generate_role_relation(
                         concept_addr, 
                         segment_nodes[seg_id], 
                         seg_relation_addr
                     )
-                    logs.append(f"Segment relation: {concept} → {seg_id}")
+                    logs.append(f"[SC] Segment relation: {concept} → {seg_id}")
                 except Exception as e:
-                    logs.append(f"Segment relation failed: {concept} → {seg_id} | {e}")
+                    logs.append(f"[SC] Segment relation failed: {concept} → {seg_id} | {e}")
     
     # Process other semantic relations
     for rel, subjects in data.items():
@@ -169,18 +181,20 @@ def process_relations(data: dict, source_content_addr, segment_nodes):
                     obj_addr, log = create_node_with_label(obj, source_content_addr)
                     logs.append(log)
                     try:
+                        logs.append(f"[SC] Creating relation: {subj_addr} (subj) -[{rel_addr}]-> {obj_addr} (obj)")
                         generate_role_relation(subj_addr, obj_addr, rel_addr)
-                        logs.append(f"Relation: {subj} -[{rel}]-> {obj}")
+                        logs.append(f"[SC] Relation: {subj} -[{rel}]-> {obj}")
                     except Exception as e:
-                        logs.append(f"Relation failed: {subj} -[{rel}]-> {obj} | {e}")
+                        logs.append(f"[SC] Relation failed: {subj} -[{rel}]-> {obj} | {e}")
             else:
                 obj_addr, log = create_node_with_label(objects, source_content_addr)
                 logs.append(log)
                 try:
+                    logs.append(f"[SC] Creating relation: {subj_addr} (subj) -[{rel_addr}]-> {obj_addr} (obj)")
                     generate_role_relation(subj_addr, obj_addr, rel_addr)
-                    logs.append(f"Relation: {subj} -[{rel}]-> {objects}")
+                    logs.append(f"[SC] Relation: {subj} -[{rel}]-> {objects}")
                 except Exception as e:
-                    logs.append(f"Relation failed: {subj} -[{rel}]-> {objects} | {e}")
+                    logs.append(f"[SC] Relation failed: {subj} -[{rel}]-> {objects} | {e}")
     
     return logs
 
@@ -203,10 +217,11 @@ def process_membership(data: dict, source_content_addr):
             logs.append(log)
             
             try:
+                logs.append(f"[SC] Creating membership: {node_addr} (node) → {attr_addr} (attr) via {member_rel_addr}")
                 generate_role_relation(node_addr, attr_addr, member_rel_addr)
-                logs.append(f"Membership: {node} → {attr}")
+                logs.append(f"[SC] Membership: {node} → {attr}")
             except Exception as e:
-                logs.append(f"Membership failed: {node} → {attr} | {e}")
+                logs.append(f"[SC] Membership failed: {node} → {attr} | {e}")
     
     return logs
 
@@ -232,11 +247,13 @@ def load_data_to_sc(server_url: str, data: dict, upload_id=None):
 
                 # Attach full text
                 try:
+                    logs.append(f"[SC] Creating full text link for source content: {full_text}")
                     content_link = generate_link(full_text)
+                    logs.append(f"[SC] Full text link created: {content_link}")
                     generate_binary_relation(sc_type.CONST_PERM_POS_ARC, source_content_addr, content_link)
-                    logs.append("Full source text attached")
+                    logs.append("[SC] Full source text attached")
                 except Exception as e:
-                    logs.append(f"Full text attach failed: {e}")
+                    logs.append(f"[SC] Full text attach failed: {e}")
 
                 # Attach main_keywords to source_content_addr for segment node use
                 setattr(source_content_addr, 'main_keywords', main_keywords)
@@ -248,11 +265,13 @@ def load_data_to_sc(server_url: str, data: dict, upload_id=None):
             else:
                 # Old format (single string)
                 try:
+                    logs.append(f"[SC] Creating source content link (old format): {data[source_content_id]}")
                     content_link = generate_link(data[source_content_id])
+                    logs.append(f"[SC] Source content link created: {content_link}")
                     generate_binary_relation(sc_type.CONST_PERM_POS_ARC, source_content_addr, content_link)
-                    logs.append("Source content attached (old format)")
+                    logs.append("[SC] Source content attached (old format)")
                 except Exception as e:
-                    logs.append(f"Source content attach failed: {e}")
+                    logs.append(f"[SC] Source content attach failed: {e}")
 
             # Process semantic relations
             rel_logs = process_relations(data, source_content_addr, segment_nodes)
