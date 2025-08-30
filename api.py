@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -16,6 +15,7 @@ import toml
 import bcrypt
 import aiofiles
 import aiofiles.os
+
 from userdb import (
     create_user, verify_user, update_access_token, get_user, get_allowed_files, 
     get_user_by_token, list_users, create_session, get_user_by_session_id, 
@@ -99,7 +99,7 @@ class LoginRequest(BaseModel):
 
 class RAGQueryRequest(BaseModel):
     question: str
-    use_local: Optional[bool] = False  # True = local llama3.2, False = server gemini
+    humanize: Optional[bool] = True  # True = return LLM response, False = return raw RAG chunks
 
 # User authentication and authorization using session_id
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
@@ -279,48 +279,96 @@ async def process_secure_rag_query(
     try:
         username = user[1]  # Extract username from user tuple
         session_id = str(uuid.uuid4())  # Generate session for this query
-        model_type = "local" if request.use_local else "server"  # local = llama3.2, server = gemini
-        
+        # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
+        model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+
         # Clean up expired sessions periodically
         await cleanup_expired_sessions()
-        
+
         # Use secure RAG retriever that respects file permissions
         secure_retriever = SecureRAGRetriever(username)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             None, request.question, [], model_type  # Empty chat history for single queries
         )
-        
+
         response = rag_result["answer"]
         source_docs = rag_result.get("source_documents", [])
         security_filtered = rag_result.get("security_filtered", False)
-        
+
         # Log the interaction with security info
         insert_application_logs(
-            session_id, 
-            request.question, 
+            session_id,
+            request.question,
             f"{response} [Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
             model_type
         )
-        
+
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
-        
-        return APIResponse(
-            status="success", 
-            message=f"Query processed with secure RAG using {model_type} model", 
-            response={
-                "answer": response,
-                "model": model_type,
-                "security_info": {
-                    "user_filtered": True,
-                    "username": username,
-                    "source_documents_count": len(source_docs),
-                    "security_filtered": security_filtered
+
+        # If humanize is True (default): return LLM response as before
+        if request.humanize is None or request.humanize:
+            return APIResponse(
+                status="success",
+                message=f"Query processed with secure RAG using {model_type} model",
+                response={
+                    "answer": response,
+                    "model": model_type,
+                    "security_info": {
+                        "user_filtered": True,
+                        "username": username,
+                        "source_documents_count": len(source_docs),
+                        "security_filtered": security_filtered
+                    }
                 }
-            }
-        )
+            )
+        else:
+            # If humanize is False: return array of RAG chunks with <filename></filename> tag
+            rag_chunks = []
+            for doc in source_docs:
+                # Try to get filename from doc metadata, fallback to 'unknown'
+                fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
+                chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                rag_chunks.append(f"{chunk}\n<filename>{fname}</filename>")
+            return APIResponse(
+                status="success",
+                message=f"Query processed with secure RAG (raw chunks)",
+                response={
+                    "chunks": rag_chunks,
+                    "model": model_type,
+                    "security_info": {
+                        "user_filtered": True,
+                        "username": username,
+                        "source_documents_count": len(source_docs),
+                        "security_filtered": security_filtered
+                    }
+                }
+            )
     except Exception as e:
         logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
         return APIResponse(status="error", message=str(e), response=None)
+from fastapi.responses import PlainTextResponse
+
+# Endpoint to return file content by filename
+@app.get("/files/content/{filename}", response_class=PlainTextResponse)
+async def get_file_content(filename: str, user=Depends(get_current_user)):
+    """
+    Return the content of a file by its name (if user has access).
+    """
+    # Check if user has access to the file
+    allowed_files = await get_allowed_files(user[1])
+    if allowed_files is not None and filename not in allowed_files and user[3] != "admin":
+        raise HTTPException(status_code=403, detail="You do not have access to this file.")
+    # Try to find file in uploads directory
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    try:
+        async with aiofiles.open(file_path, mode="r") as f:
+            content = await f.read()
+        return content
+    except Exception as e:
+        logger.exception(f"Failed to read file {filename}")
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
 
 # SECURE Chat endpoint with history and file access control
 @app.post("/chat", response_model=APIResponse)
@@ -332,7 +380,8 @@ async def secure_chat(
     """Secure chat using RAG with conversation history and file access control"""
     try:
         username = user[1]  # Extract username from user tuple
-        model_type = "local" if request.use_local else "server"  # local = llama3.2, server = gemini
+        # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
+        model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
         
         logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Query: {request.question}, Model: {model_type}")
         
@@ -454,7 +503,7 @@ async def list_documents(user=Depends(get_current_user)):
         return APIResponse(status="error", message=str(e), response=None)
 
 # Delete document endpoint
-@app.delete("/files/delete", response_model=APIResponse)
+@app.delete("/files/delete_by_fileid", response_model=APIResponse)
 async def delete_document(
     request: DeleteFileRequest,
     current_user=Depends(get_current_user)
@@ -489,6 +538,54 @@ async def delete_document(
     except Exception as e:
         logger.exception("Document deletion failed")
         return APIResponse(status="error", message=str(e), response=None)
+
+# Endpoint to delete a file by its filename (admin only)
+@app.delete("/files/delete_by_filename", response_model=APIResponse)
+async def delete_file_by_filename(filename: str, current_user=Depends(get_current_user)):
+    """
+    Delete a file by its filename (admin only). Removes from uploads, Chroma, and DB.
+    """
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    # Find file_id by filename
+    documents = get_all_documents()
+    file_id = None
+    for doc in documents:
+        # doc is expected to be a dict or tuple with filename and file_id
+        if (isinstance(doc, dict) and doc.get("filename") == filename):
+            file_id = doc.get("file_id")
+            break
+        elif (isinstance(doc, (list, tuple)) and len(doc) > 1 and doc[1] == filename):
+            file_id = doc[0]
+            break
+    if not file_id:
+        raise HTTPException(status_code=404, detail="File not found in database.")
+    # Delete from Chroma
+    chroma_delete_success = delete_doc_from_chroma(file_id)
+    # Delete from DB
+    db_delete_success = delete_document_record(file_id)
+    # Delete from uploads directory
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    file_deleted = False
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            file_deleted = True
+        except Exception as e:
+            logger.warning(f"Failed to delete file from uploads: {e}")
+    if chroma_delete_success and db_delete_success:
+        return APIResponse(
+            status="success",
+            message=f"Successfully deleted file {filename} (file_id {file_id}) from system.",
+            response={"file_id": file_id, "filename": filename, "file_deleted": file_deleted}
+        )
+    else:
+        return APIResponse(
+            status="error",
+            message=f"Failed to fully delete file {filename}. Chroma: {chroma_delete_success}, DB: {db_delete_success}",
+            response={"file_id": file_id, "filename": filename, "file_deleted": file_deleted}
+        )
+
 
 # Get user accounts (admin only)
 @app.get("/accounts", response_model=List[dict])

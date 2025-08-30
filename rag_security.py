@@ -175,10 +175,11 @@ class SecureRAGRetriever:
         """Get relevant documents filtered by user permissions."""
         return await get_filtered_rag_context(query, self.username, k)
     
-    async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server"):
+    async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
         """
         Invoke RAG chain with security filtering and model selection.
         model_type: "local" for llama3.2 or "server" for gemini
+        humanize: True = return LLM response, False = return raw RAG chunks with filename tags
         """
         try:
             # Get user-filtered documents
@@ -194,10 +195,32 @@ class SecureRAGRetriever:
                     "security_filtered": True
                 }
             
-            # Create a custom context string from filtered docs
+            # If humanize is False, return raw chunks with filename tags
+            if not humanize:
+                raw_chunks = []
+                for doc in filtered_docs:
+                    filename = "unknown"
+                    if hasattr(doc, 'metadata') and doc.metadata:
+                        source = doc.metadata.get('source', '')
+                        if source:
+                            filename = os.path.basename(source)
+                        if not filename or filename == "unknown":
+                            filename = doc.metadata.get('filename', 'unknown')
+                    
+                    chunk_with_filename = f"{doc.page_content}\n<filename>{filename}</filename>"
+                    raw_chunks.append(chunk_with_filename)
+                
+                return {
+                    "answer": raw_chunks,  # Return array of chunks with filename tags
+                    "source_documents": filtered_docs,
+                    "security_filtered": len(filtered_docs) > 0,
+                    "raw_mode": True
+                }
+            
+            # Create a custom context string from filtered docs for LLM processing
             context = "\n".join([doc.page_content for doc in filtered_docs])
             
-            # Choose model based on type
+            # Choose model based on type for humanized response
             if model_type == "local":
                 # Use local llama3.2 model via RAG chain
                 try:
