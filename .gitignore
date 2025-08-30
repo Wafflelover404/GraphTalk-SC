@@ -64,6 +64,13 @@ db.sqlite3-journal
 
 # Database files
 *.db
+chroma_db/
+rag_api/chroma_db/
+
+# API keys and secrets
+.env.local
+api_keys.py
+secrets.json
 
 # Flask stuff:
 instance/

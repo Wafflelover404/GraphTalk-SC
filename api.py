@@ -16,7 +16,12 @@ import toml
 import bcrypt
 import aiofiles
 import aiofiles.os
-from userdb import create_user, verify_user, update_access_token, get_user, get_allowed_files, get_user_by_token, list_users
+from userdb import (
+    create_user, verify_user, update_access_token, get_user, get_allowed_files, 
+    get_user_by_token, list_users, create_session, get_user_by_session_id, 
+    logout_session_by_id, cleanup_expired_sessions, check_file_access
+)
+from rag_security import SecureRAGRetriever, get_filtered_rag_context
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -66,11 +71,6 @@ logger = logging.getLogger(__name__)
 security_scheme = HTTPBearer(auto_error=False)
 
 # Pydantic models
-class QueryRequest(BaseModel):
-    text: str
-    model: Optional[str] = "llama3.2"
-    session_id: Optional[str] = None
-
 class APIResponse(BaseModel):
     status: str
     message: str
@@ -84,7 +84,7 @@ class TokenResponse(BaseModel):
 class TokenRoleResponse(BaseModel):
     status: str
     message: str
-    token: Optional[str] = None
+    token: Optional[str] = None  # This is session_id for backward compatibility
     role: Optional[str] = None
 
 class RegisterRequest(BaseModel):
@@ -99,16 +99,22 @@ class LoginRequest(BaseModel):
 
 class RAGQueryRequest(BaseModel):
     question: str
-    model: Optional[str] = "llama3.2"
-    session_id: Optional[str] = None
+    use_local: Optional[bool] = False  # True = local llama3.2, False = server gemini
 
-# User authentication and authorization
+# User authentication and authorization using session_id
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing authentication credentials.")
+    
+    # Try session_id authentication first (most secure)
+    user = await get_user_by_session_id(credentials.credentials)
+    if user:
+        return user
+    
+    # Fallback to token-based authentication for backward compatibility
     user = await get_user_by_token(credentials.credentials)
     if not user:
-        raise HTTPException(status_code=403, detail="Invalid or expired token.")
+        raise HTTPException(status_code=403, detail="Invalid or expired session_id or token.")
     return user
 
 async def get_user_role(username: str):
@@ -121,16 +127,19 @@ async def get_user_role(username: str):
 @app.get("/", include_in_schema=False)
 async def landing_page():
     return {
-        "app": "RAG API",
+        "app": "Secure RAG API",
         "version": app.version,
+        "security": "Session-based authentication with file access control",
         "endpoints": {
-            "/register": {"method": "POST", "description": "Register a new user"},
-            "/login": {"method": "POST", "description": "Login and get access token"},
-            "/query": {"method": "POST", "description": "Query using RAG (auth required)"},
-            "/chat": {"method": "POST", "description": "Chat using RAG with history (auth required)"},
-            "/upload": {"method": "POST", "description": "Upload a document to RAG (auth required)"},
-            "/files/list": {"method": "GET", "description": "List uploaded documents (auth required)"},
-            "/files/delete": {"method": "DELETE", "description": "Delete document from RAG (auth required)"},
+            "/register": {"method": "POST", "description": "Register a new user (admin/master key required)"},
+            "/login": {"method": "POST", "description": "Login and get session token"},
+            "/logout": {"method": "POST", "description": "Logout and invalidate session (auth required)"},
+            "/query": {"method": "POST", "description": "Secure RAG query with file access control (auth required)"},
+            "/chat": {"method": "POST", "description": "Secure RAG chat with history and file access control (auth required)"},
+            "/upload": {"method": "POST", "description": "Upload document to RAG (admin only)"},
+            "/files/list": {"method": "GET", "description": "List accessible documents (auth required)"},
+            "/files/delete": {"method": "DELETE", "description": "Delete document from RAG (admin only)"},
+            "/accounts": {"method": "GET", "description": "List user accounts (admin only)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
         }
     }
@@ -167,16 +176,57 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
     await create_user(request.username, request.password, request.role, request.allowed_files)
     return APIResponse(status="success", message="User registered", response={})
 
-# User login
+# User login with session_id management
 @app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest):
     if not await verify_user(request.username, request.password):
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
-    # Generate new token for session
-    token = secrets.token_urlsafe(32)
-    await update_access_token(request.username, token)
+    
+    # Generate new session_id (UUID-based for better security)
+    session_id = str(uuid.uuid4())
+    
+    # Create session in database with session_id as primary key
+    await create_session(request.username, session_id, expires_hours=24)
+    
+    # Also update legacy access token for backward compatibility
+    await update_access_token(request.username, session_id)
+    
     role = await get_user_role(request.username)
-    return TokenRoleResponse(status="success", message="Login successful", token=token, role=role)
+    logger.info(f"User {request.username} logged in successfully with session_id: {session_id[:8]}...")
+    
+    return TokenRoleResponse(
+        status="success", 
+        message="Login successful - session_id created", 
+        token=session_id,  # Return session_id as token for compatibility
+        role=role
+    )
+
+# User logout using session_id
+@app.post("/logout", response_model=APIResponse)
+async def logout_user(user=Depends(get_current_user), credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
+    """Logout user and invalidate session_id"""
+    try:
+        session_id = credentials.credentials
+        
+        # Logout from session by deleting session_id from database
+        success = await logout_session_by_id(session_id)
+        
+        # Also clear legacy access token
+        await update_access_token(user[1], None)  # user[1] is username
+        
+        logger.info(f"User {user[1]} logged out successfully, session_id {session_id[:8]}... removed")
+        
+        return APIResponse(
+            status="success",
+            message="Session terminated successfully",
+            response={
+                "logged_out": True,
+                "session_id_removed": session_id[:8] + "..."
+            }
+        )
+    except Exception as e:
+        logger.exception("Logout error")
+        return APIResponse(status="error", message=str(e), response=None)
 
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
@@ -219,85 +269,114 @@ async def get_documentation():
 async def get_openapi_schema():
     return app.openapi()
 
-# RAG Query endpoint (simple, like the original /query but with RAG)
+# SECURE RAG Query endpoint with file access control
 @app.post("/query", response_model=APIResponse)
-async def process_rag_query(
+async def process_secure_rag_query(
     request: RAGQueryRequest,
-    humanize: bool = Query(True),
     user=Depends(get_current_user)
 ):
-    """Process a query using RAG"""
+    """Process a query using RAG with file access security"""
     try:
-        session_id = request.session_id or str(uuid.uuid4())
+        username = user[1]  # Extract username from user tuple
+        session_id = str(uuid.uuid4())  # Generate session for this query
+        model_type = "local" if request.use_local else "server"  # local = llama3.2, server = gemini
         
-        if humanize:
-            # Use RAG chain for contextualized response
-            try:
-                chat_history = get_chat_history(session_id)
-                rag_chain = get_rag_chain(request.model)
-                response = rag_chain.invoke({
-                    "input": request.question,
-                    "chat_history": chat_history
-                })['answer']
-                
-                # Log the interaction
-                insert_application_logs(session_id, request.question, response, request.model)
-            except Exception as e:
-                logger.error(f"RAG chain error: {e}")
-                # Fallback to basic LLM call
-                response = await llm_call(request.question, "No context available from RAG")
-        else:
-            # Just return raw context without LLM processing
-            from rag_api.chroma_utils import vectorstore
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-            docs = retriever.get_relevant_documents(request.question)
-            response = [doc.page_content for doc in docs]
+        # Clean up expired sessions periodically
+        await cleanup_expired_sessions()
+        
+        # Use secure RAG retriever that respects file permissions
+        secure_retriever = SecureRAGRetriever(username)
+        rag_result = await secure_retriever.invoke_secure_rag_chain(
+            None, request.question, [], model_type  # Empty chat history for single queries
+        )
+        
+        response = rag_result["answer"]
+        source_docs = rag_result.get("source_documents", [])
+        security_filtered = rag_result.get("security_filtered", False)
+        
+        # Log the interaction with security info
+        insert_application_logs(
+            session_id, 
+            request.question, 
+            f"{response} [Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
+            model_type
+        )
+        
+        logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
         
         return APIResponse(
             status="success", 
-            message="Query processed with RAG", 
+            message=f"Query processed with secure RAG using {model_type} model", 
             response={
                 "answer": response,
-                "session_id": session_id,
-                "model": request.model
+                "model": model_type,
+                "security_info": {
+                    "user_filtered": True,
+                    "username": username,
+                    "source_documents_count": len(source_docs),
+                    "security_filtered": security_filtered
+                }
             }
         )
     except Exception as e:
-        logger.exception("RAG query processing error")
+        logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Chat endpoint with history (from RAG API)
+# SECURE Chat endpoint with history and file access control
 @app.post("/chat", response_model=APIResponse)
-async def chat(
+async def secure_chat(
     request: RAGQueryRequest,
+    session_id: str = Query(..., description="Session ID for chat history"),
     user=Depends(get_current_user)
 ):
-    """Chat using RAG with conversation history"""
+    """Secure chat using RAG with conversation history and file access control"""
     try:
-        session_id = request.session_id or str(uuid.uuid4())
-        logger.info(f"Session ID: {session_id}, User Query: {request.question}, Model: {request.model}")
+        username = user[1]  # Extract username from user tuple
+        model_type = "local" if request.use_local else "server"  # local = llama3.2, server = gemini
         
+        logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Query: {request.question}, Model: {model_type}")
+        
+        # Use secure RAG retriever that respects file permissions
+        secure_retriever = SecureRAGRetriever(username)
         chat_history = get_chat_history(session_id)
-        rag_chain = get_rag_chain(request.model)
-        answer = rag_chain.invoke({
-            "input": request.question,
-            "chat_history": chat_history
-        })['answer']
-
-        insert_application_logs(session_id, request.question, answer, request.model)
-        logger.info(f"Session ID: {session_id}, AI Response: {answer}")
+        
+        # Get secure RAG response with file access control
+        rag_result = await secure_retriever.invoke_secure_rag_chain(
+            None, request.question, chat_history, model_type
+        )
+        
+        answer = rag_result["answer"]
+        source_docs = rag_result.get("source_documents", [])
+        security_filtered = rag_result.get("security_filtered", False)
+        
+        # Log the secure interaction
+        insert_application_logs(
+            session_id, 
+            request.question, 
+            f"{answer} [Secure chat - Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
+            model_type
+        )
+        
+        logger.info(f"Secure chat for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
         
         return APIResponse(
             status="success",
-            message="Chat response generated",
+            message=f"Secure chat response generated using {model_type} model",
             response={
                 "answer": answer,
                 "session_id": session_id,
-                "model": request.model
+                "model": model_type,
+                "security_info": {
+                    "user_filtered": True,
+                    "username": username,
+                    "source_documents_count": len(source_docs),
+                    "security_filtered": security_filtered
+                }
             }
         )
     except Exception as e:
-        logger.exception("Chat processing error")
+        username = user[1] if user and len(user) > 1 else "unknown"
+        logger.exception(f"Secure chat processing error for user {username}")
         return APIResponse(status="error", message=str(e), response=None)
 
 # Upload endpoint for documents (using RAG indexing)

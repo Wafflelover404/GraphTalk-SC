@@ -15,8 +15,21 @@ async def init_db():
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('user', 'admin')),
                 access_token TEXT,
-                allowed_files TEXT
-                   , last_login TEXT
+                allowed_files TEXT,
+                last_login TEXT
+            )
+        ''')
+        
+        # Create sessions table for session_id based authentication
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                session_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_activity TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                FOREIGN KEY (username) REFERENCES users (username)
             )
         ''')
         await conn.commit()
@@ -91,3 +104,109 @@ async def get_user_by_token(token: str):
         async with conn.execute('SELECT * FROM users WHERE access_token = ?', (token,)) as cursor:
             user = await cursor.fetchone()
             return user
+
+# Session management functions using session_id
+async def create_session(username: str, session_id: str, expires_hours: int = 24):
+    """Create a new user session with session_id"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(hours=expires_hours)
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Deactivate any existing sessions for this user
+        await conn.execute('UPDATE user_sessions SET is_active = FALSE WHERE username = ?', (username,))
+        
+        # Create new session with session_id as primary key
+        await conn.execute('''
+            INSERT INTO user_sessions (session_id, username, created_at, last_activity, expires_at, is_active)
+            VALUES (?, ?, ?, ?, ?, TRUE)
+        ''', (session_id, username, now.isoformat(), now.isoformat(), expires_at.isoformat()))
+        await conn.commit()
+
+async def get_user_by_session_id(session_id: str):
+    """Get user by session_id, checking expiration and activity"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute('''
+            SELECT u.*, s.created_at, s.last_activity, s.expires_at
+            FROM users u 
+            JOIN user_sessions s ON u.username = s.username 
+            WHERE s.session_id = ? AND s.is_active = TRUE AND s.expires_at > ?
+        ''', (session_id, now.isoformat())) as cursor:
+            result = await cursor.fetchone()
+            
+            if result:
+                # Update last activity
+                await conn.execute(
+                    'UPDATE user_sessions SET last_activity = ? WHERE session_id = ?',
+                    (now.isoformat(), session_id)
+                )
+                await conn.commit()
+                return result
+            return None
+
+async def logout_session_by_id(session_id: str):
+    """Deactivate a session by session_id (logout)"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'DELETE FROM user_sessions WHERE session_id = ?',  # Delete instead of deactivate for cleaner DB
+            (session_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+# Keep backward compatibility functions
+async def get_user_by_session(session_token: str):
+    """Backward compatibility wrapper"""
+    return await get_user_by_session_id(session_token)
+
+async def logout_session(session_token: str):
+    """Backward compatibility wrapper"""
+    return await logout_session_by_id(session_token)
+
+async def cleanup_expired_sessions():
+    """Remove expired sessions from database"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'DELETE FROM user_sessions WHERE expires_at < ? OR is_active = FALSE',
+            (now.isoformat(),)
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+async def get_user_allowed_filenames(username: str) -> Optional[List[str]]:
+    """Get list of filenames user is allowed to access"""
+    user = await get_user(username)
+    if not user:
+        return []
+    
+    # Admin can access all files
+    if user[3] == 'admin':  # role
+        return None  # None means all files allowed
+    
+    # Parse allowed files
+    allowed_files_str = user[5]  # allowed_files column
+    if not allowed_files_str:
+        return []
+    
+    files = [f.strip() for f in allowed_files_str.split(',') if f.strip()]
+    if 'all' in files:
+        return None  # None means all files allowed
+    
+    return files
+
+async def check_file_access(username: str, filename: str) -> bool:
+    """Check if user has access to a specific file"""
+    allowed_files = await get_user_allowed_filenames(username)
+    
+    # None means all files allowed (admin or 'all' permission)
+    if allowed_files is None:
+        return True
+    
+    # Check if filename is in allowed list
+    return filename in allowed_files
