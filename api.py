@@ -101,6 +101,19 @@ class RAGQueryRequest(BaseModel):
     question: str
     humanize: Optional[bool] = True  # True = return LLM response, False = return raw RAG chunks
 
+class UserEditRequest(BaseModel):
+    username: str
+    new_username: str = ""
+    password: str = ""
+    role: str = ""
+
+class UserEditRequest(BaseModel):
+    username: str
+    new_username: str = ""
+    password: str = ""
+    role: str = ""
+
+
 # User authentication and authorization using session_id
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
@@ -428,7 +441,7 @@ async def secure_chat(
         logger.exception(f"Secure chat processing error for user {username}")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Upload endpoint for documents (using RAG indexing)
+# Upload endpoint for documents (using RAG indexing) (admin only)
 @app.post("/upload", response_model=APIResponse)
 async def upload_document(
     file: UploadFile = File(...),
@@ -502,7 +515,7 @@ async def list_documents(user=Depends(get_current_user)):
         logger.exception("Failed to list documents")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Delete document endpoint
+# Delete document endpoint (admin only)
 @app.delete("/files/delete_by_fileid", response_model=APIResponse)
 async def delete_document(
     request: DeleteFileRequest,
@@ -601,3 +614,105 @@ async def get_accounts(current_user=Depends(get_current_user)):
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
+
+@app.delete("/user/delete", response_model=APIResponse)
+async def delete_user_endpoint(
+    username: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+):
+    """
+    Delete a user by username. Requires admin or master key.
+    """
+    is_admin = False
+    is_master = False
+    if credentials:
+        user = await get_user_by_token(credentials.credentials)
+        if user and user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    user = await get_user(username)
+    if not user:
+        return APIResponse(status="error", message="User not found", response={})
+    # Remove user from DB
+    import userdb
+    await userdb.delete_user(username)
+    return APIResponse(status="success", message=f"User {username} deleted", response={})
+
+# User edit endpoint (admin or master key required)
+@app.post("/user/edit", response_model=APIResponse)
+async def edit_user_endpoint(
+    request: UserEditRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+):
+    """
+    Edit user fields. Only provided fields are changed. Requires admin or master key.
+    """
+    is_admin = False
+    is_master = False
+    if credentials:
+        user = await get_user_by_token(credentials.credentials)
+        if user and user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    user = await get_user(request.username)
+    if not user:
+        return APIResponse(status="error", message="User not found", response={})
+    logs = []
+    import userdb
+    # Change username
+    if request.new_username:
+        await userdb.update_username(request.username, request.new_username)
+        logs.append(f"Username changed to {request.new_username}")
+        request.username = request.new_username
+    # Change password
+    if request.password:
+        await userdb.update_password(request.username, request.password)
+        logs.append("Password updated")
+    # Change role
+    if request.role:
+        await userdb.update_role(request.username, request.role)
+        logs.append(f"Role changed to {request.role}")
+    if not logs:
+        return APIResponse(status="success", message="No changes made", response={})
+    return APIResponse(status="success", message="; ".join(logs), response={})
+
+# Disrupt all sessions for a user by access token (user self-service)
+class DisruptSessionsRequest(BaseModel):
+    access_token: str
+
+@app.post("/user/disrupt_sessions", response_model=APIResponse)
+async def disrupt_sessions_endpoint(request: DisruptSessionsRequest):
+    """
+    Remove all active sessions for the user that owns the provided access token (logout everywhere for that user).
+    """
+    user = await get_user_by_token(request.access_token)
+    if not user:
+        raise HTTPException(status_code=403, detail="Invalid access token.")
+    from userdb import disrupt_sessions_for_user
+    username = user[1]
+    count = await disrupt_sessions_for_user(username)
+    return APIResponse(status="success", message=f"Disrupted {count} sessions for user {username}", response={"sessions_removed": count})

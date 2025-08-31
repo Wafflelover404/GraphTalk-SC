@@ -206,3 +206,5 @@ cython_debug/
 
 # Upload files
 uploads/
+chroma_db/
+*.db

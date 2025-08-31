@@ -113,15 +113,22 @@ async def create_session(username: str, session_id: str, expires_hours: int = 24
     expires_at = now + datetime.timedelta(hours=expires_hours)
     
     async with aiosqlite.connect(DB_PATH) as conn:
-        # Deactivate any existing sessions for this user
-        await conn.execute('UPDATE user_sessions SET is_active = FALSE WHERE username = ?', (username,))
-        
-        # Create new session with session_id as primary key
+        # Allow multiple active sessions per user (do not deactivate previous sessions)
         await conn.execute('''
             INSERT INTO user_sessions (session_id, username, created_at, last_activity, expires_at, is_active)
             VALUES (?, ?, ?, ?, ?, TRUE)
         ''', (session_id, username, now.isoformat(), now.isoformat(), expires_at.isoformat()))
         await conn.commit()
+
+# Disrupt all sessions for a user (logout everywhere)
+async def disrupt_sessions_for_user(username: str):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'DELETE FROM user_sessions WHERE username = ?',
+            (username,)
+        )
+        await conn.commit()
+        return cursor.rowcount
 
 async def get_user_by_session_id(session_id: str):
     """Get user by session_id, checking expiration and activity"""
