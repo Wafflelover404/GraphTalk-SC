@@ -22,9 +22,10 @@ def create_application_logs():
 def create_document_store():
 	conn = get_db_connection()
 	conn.execute('''CREATE TABLE IF NOT EXISTS document_store
-					(id INTEGER PRIMARY KEY AUTOINCREMENT,
-					 filename TEXT,
-					 upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+				   (id INTEGER PRIMARY KEY AUTOINCREMENT,
+					filename TEXT,
+					content BLOB,
+					upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 	conn.close()
 
 def insert_application_logs(session_id, user_query, gpt_response, model):
@@ -47,14 +48,23 @@ def get_chat_history(session_id):
 	conn.close()
 	return messages
 
-def insert_document_record(filename):
+def insert_document_record(filename, content_bytes):
 	conn = get_db_connection()
 	cursor = conn.cursor()
-	cursor.execute('INSERT INTO document_store (filename) VALUES (?)', (filename,))
+	cursor.execute('INSERT INTO document_store (filename, content) VALUES (?, ?)', (filename, content_bytes))
 	file_id = cursor.lastrowid
 	conn.commit()
 	conn.close()
 	return file_id
+def get_file_content_by_filename(filename):
+	conn = get_db_connection()
+	cursor = conn.cursor()
+	cursor.execute('SELECT content FROM document_store WHERE filename = ?', (filename,))
+	row = cursor.fetchone()
+	conn.close()
+	if row:
+		return row['content']
+	return None
 
 def delete_document_record(file_id):
 	conn = get_db_connection()

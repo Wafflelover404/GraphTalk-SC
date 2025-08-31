@@ -33,7 +33,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
 from rag_api.pydantic_models import QueryInput, QueryResponse, DocumentInfo, DeleteFileRequest, ModelName
 from rag_api.langchain_utils import get_rag_chain
-from rag_api.db_utils import insert_application_logs, get_chat_history, get_all_documents, insert_document_record, delete_document_record
+from rag_api.db_utils import insert_application_logs, get_chat_history, get_all_documents, insert_document_record, delete_document_record, get_file_content_by_filename
 from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
 import json
 import datetime
@@ -180,6 +180,8 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
                     except Exception:
                         pass
 
+    request.username = request.username.replace(" ", "_")
+    request.password = request.password.replace(" ", "_")
     if not (is_admin or is_master):
         raise HTTPException(status_code=403, detail="Admin or valid master key required.")
     if await get_user(request.username):
@@ -360,28 +362,35 @@ async def process_secure_rag_query(
         logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
         return APIResponse(status="error", message=str(e), response=None)
 from fastapi.responses import PlainTextResponse
+from urllib.parse import unquote
 
-# Endpoint to return file content by filename
+# Endpoint to return file content by filename (from DB)
 @app.get("/files/content/{filename}", response_class=PlainTextResponse)
 async def get_file_content(filename: str, user=Depends(get_current_user)):
     """
-    Return the content of a file by its name (if user has access).
+    Return the content of a file by its name (if user has access). Supports percent-encoded (e.g. Russian) filenames. Reads from DB.
     """
-    # Check if user has access to the file
+    decoded_filename = unquote(filename)
     allowed_files = await get_allowed_files(user[1])
-    if allowed_files is not None and filename not in allowed_files and user[3] != "admin":
-        raise HTTPException(status_code=403, detail="You do not have access to this file.")
-    # Try to find file in uploads directory
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(file_path):
+    logger.info(f"User {user[1]} requests file: {decoded_filename}. Allowed files: {allowed_files}")
+    # Admins can access any file
+    if user[3] != "admin":
+        if allowed_files is None or decoded_filename not in allowed_files:
+            raise HTTPException(status_code=403, detail="You do not have access to this file.")
+    content_bytes = get_file_content_by_filename(decoded_filename)
+    if content_bytes is None:
+        logger.warning(f"File not found in DB: {decoded_filename}")
         raise HTTPException(status_code=404, detail="File not found.")
     try:
-        async with aiofiles.open(file_path, mode="r") as f:
-            content = await f.read()
+        # Try decode as utf-8, fallback to latin1 if needed
+        try:
+            content = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            content = content_bytes.decode("latin1")
         return content
     except Exception as e:
-        logger.exception(f"Failed to read file {filename}")
-        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
+        logger.exception(f"Failed to decode file {decoded_filename}")
+        raise HTTPException(status_code=500, detail=f"Failed to decode file: {e}")
 
 # SECURE Chat endpoint with history and file access control
 @app.post("/chat", response_model=APIResponse)
@@ -441,41 +450,47 @@ async def secure_chat(
         logger.exception(f"Secure chat processing error for user {username}")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Upload endpoint for documents (using RAG indexing) (admin only)
+# Upload endpoint for documents (using RAG indexing) (admin only, stores in DB)
 @app.post("/upload", response_model=APIResponse)
 async def upload_document(
     file: UploadFile = File(...),
     current_user=Depends(get_current_user)
 ):
-    """Upload and index document in RAG"""
+    """Upload and index document in RAG (stores file in DB)"""
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
-    
+
     allowed_extensions = ['.pdf', '.docx', '.html', '.txt']
     file_extension = os.path.splitext(file.filename)[1].lower()
-    
+
     if file_extension not in allowed_extensions:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported file type. Allowed types are: {', '.join(allowed_extensions)}"
         )
-    
+
+    # Check if file with the same name already exists in DB
+    from rag_api.db_utils import get_file_content_by_filename
+    if get_file_content_by_filename(file.filename) is not None:
+        raise HTTPException(status_code=400, detail="A file with this name already exists.")
+
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
     original_filename = file.filename
-    temp_file_path = f"temp_{original_filename}"
-    
+
     try:
-        # Save uploaded file temporarily
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
+        # Read file content as bytes
+        content_bytes = await file.read()
         # Insert document record and get file_id
-        file_id = insert_document_record(original_filename)
-        
-        # Index document to Chroma
+        file_id = insert_document_record(original_filename, content_bytes)
+
+        # Optionally, index document to Chroma (if needed, save to temp file)
+        temp_file_path = f"temp_{original_filename}"
+        with open(temp_file_path, "wb") as buffer:
+            buffer.write(content_bytes)
         success = index_document_to_chroma(temp_file_path, file_id)
-        
+        os.remove(temp_file_path)
+
         if success:
             return APIResponse(
                 status="success",
@@ -490,26 +505,30 @@ async def upload_document(
         else:
             delete_document_record(file_id)
             raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
-            
+
     except Exception as e:
         logger.exception("File upload failed")
         if 'file_id' in locals():
             delete_document_record(file_id)
         raise HTTPException(500, f"Failed to upload file: {e}")
-    finally:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
 
 # List documents endpoint
 @app.get("/files/list", response_model=APIResponse)
 async def list_documents(user=Depends(get_current_user)):
-    """List all uploaded documents"""
+    """List all uploaded documents the user has access to"""
     try:
         documents = get_all_documents()
+        allowed_files = await get_allowed_files(user[1])
+        logger.info(f"User {user[1]} role {user[3]} allowed files: {allowed_files}")
+        # Admins see all files, others only their allowed
+        if user[3] == "admin" or allowed_files is None:
+            filtered_docs = documents
+        else:
+            filtered_docs = [doc for doc in documents if doc.get('filename') in allowed_files]
         return APIResponse(
-            status="success", 
-            message="List of uploaded documents", 
-            response={"documents": documents}
+            status="success",
+            message="List of uploaded documents",
+            response={"documents": filtered_docs}
         )
     except Exception as e:
         logger.exception("Failed to list documents")
@@ -560,15 +579,19 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
     """
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
+    
+    # Decode percent-encoded filename
+    filename = unquote(filename) 
+    print(f"Deleting file by filename: {filename}")
     # Find file_id by filename
     documents = get_all_documents()
     file_id = None
     for doc in documents:
-        # doc is expected to be a dict or tuple with filename and file_id
-        if (isinstance(doc, dict) and doc.get("filename") == filename):
-            file_id = doc.get("file_id")
+        # doc is a dict with keys: id, filename, upload_timestamp
+        if isinstance(doc, dict) and doc.get("filename") == filename:
+            file_id = doc.get("id")
             break
-        elif (isinstance(doc, (list, tuple)) and len(doc) > 1 and doc[1] == filename):
+        elif isinstance(doc, (list, tuple)) and len(doc) > 1 and doc[1] == filename:
             file_id = doc[0]
             break
     if not file_id:
