@@ -39,6 +39,7 @@ import json
 import datetime
 
 # Initialize app with proper metadata
+from reports_api import router as reports_router
 app = FastAPI(
     title="RAG API",
     description="Knowledge Base Query and Management System with RAG",
@@ -47,6 +48,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None
 )
+app.include_router(reports_router)
 
 # CORS setup for Vue.js frontend
 app.add_middleware(
@@ -106,13 +108,7 @@ class UserEditRequest(BaseModel):
     new_username: str = ""
     password: str = ""
     role: str = ""
-
-class UserEditRequest(BaseModel):
-    username: str
-    new_username: str = ""
-    password: str = ""
-    role: str = ""
-
+    allowed_files: Optional[List[str]] = None
 
 # User authentication and authorization using session_id
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
@@ -319,6 +315,18 @@ async def process_secure_rag_query(
         )
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
+
+        # If no response, auto-submit report
+        if not response or (isinstance(response, str) and not response.strip()):
+            from reports_db import submit_report
+            permitted_files = await get_allowed_files(username)
+            if permitted_files is None:
+                permitted_files = []
+            submit_report(
+                user=username,
+                permitted_files=permitted_files,
+                issue=f"No response from knowledge base for query: {request.question}"
+            )
 
         # If humanize is True (default): return LLM response as before
         if request.humanize is None or request.humanize:
@@ -719,6 +727,11 @@ async def edit_user_endpoint(
     if request.role:
         await userdb.update_role(request.username, request.role)
         logs.append(f"Role changed to {request.role}")
+    # Change allowed files
+    if request.allowed_files is not None:
+        await userdb.update_allowed_files(request.username, request.allowed_files)
+        logs.append(f"Allowed files updated to {request.allowed_files}")
+
     if not logs:
         return APIResponse(status="success", message="No changes made", response={})
     return APIResponse(status="success", message="; ".join(logs), response={})
@@ -739,3 +752,4 @@ async def disrupt_sessions_endpoint(request: DisruptSessionsRequest):
     username = user[1]
     count = await disrupt_sessions_for_user(username)
     return APIResponse(status="success", message=f"Disrupted {count} sessions for user {username}", response={"sessions_removed": count})
+

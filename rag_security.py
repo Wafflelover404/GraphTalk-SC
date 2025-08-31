@@ -52,6 +52,15 @@ async def filter_documents_by_user_access(documents: List[Any], username: str) -
                     filtered_docs.append(doc)
                 else:
                     logger.warning(f"User {username} denied access to document from file: {filename}")
+                    try:
+                        from reports_db import submit_report
+                        submit_report(
+                            user=username,
+                            permitted_files=[filename],
+                            issue=f"Denied access to document from file: {filename}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to save denied access report for user {username}: {e}")
             else:
                 # If no filename found, be conservative and exclude
                 logger.warning(f"Document has no filename metadata, excluding for user {username}")

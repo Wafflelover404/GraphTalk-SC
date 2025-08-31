@@ -164,7 +164,68 @@ async def logout_session_by_id(session_id: str):
         await conn.commit()
         return cursor.rowcount > 0
 
+async def delete_user(username: str) -> bool:
+    """Delete a user and all their sessions from the database by username."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Delete user sessions first
+        await conn.execute('DELETE FROM user_sessions WHERE username = ?', (username,))
+        # Delete user
+        cursor = await conn.execute('DELETE FROM users WHERE username = ?', (username,))
+        await conn.commit()
+        return cursor.rowcount > 0
+
 # Keep backward compatibility functions
+async def update_username(old_username: str, new_username: str) -> bool:
+    """Update a user's username in the database."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Update username in users table
+        cursor = await conn.execute(
+            'UPDATE users SET username = ? WHERE username = ?',
+            (new_username, old_username)
+        )
+        # Update username in user_sessions table as well
+        await conn.execute(
+            'UPDATE user_sessions SET username = ? WHERE username = ?',
+            (new_username, old_username)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    
+async def update_password(username: str, new_password: str) -> bool:
+    """Update a user's password in the database."""
+    new_password_hash = bcrypt.hash(new_password)
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'UPDATE users SET password_hash = ? WHERE username = ?',
+            (new_password_hash, username)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    
+async def update_role(username: str, new_role: str) -> bool:
+    """Update a user's role in the database."""
+    if new_role not in ('user', 'admin'):
+        raise ValueError("Role must be 'user' or 'admin'")
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'UPDATE users SET role = ? WHERE username = ?',
+            (new_role, username)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    
+async def update_allowed_files(username: str, allowed_files: Optional[List[str]]) -> bool:
+    """Update a user's allowed files in the database."""
+    allowed_files_str = ','.join(allowed_files) if allowed_files else ''
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            'UPDATE users SET allowed_files = ? WHERE username = ?',
+            (allowed_files_str, username)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
 async def get_user_by_session(session_token: str):
     """Backward compatibility wrapper"""
     return await get_user_by_session_id(session_token)
