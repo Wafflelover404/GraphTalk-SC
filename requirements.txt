@@ -67,7 +67,15 @@ propcache==0.3.1
 yarl==1.18.3
 attrs==25.3.0
 
-# Optional: Streamlit (if needed for UI)
+
+# RAG system dependencies
+langchain
+langchain-core
+langchain_community
+langchain_chroma
+docx2txt
+pypdf
+sentence-transformers
 streamlit==1.38.0
 streamlit-code-editor==0.1.22
 altair==5.5.0
