@@ -53,7 +53,7 @@ app.include_router(reports_router)
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "https://meet-tadpole-resolved.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -468,7 +468,7 @@ async def upload_document(
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
 
-    allowed_extensions = ['.pdf', '.docx', '.html', '.txt']
+    allowed_extensions = ['.pdf', '.docx', '.html', '.txt', '.md']
     file_extension = os.path.splitext(file.filename)[1].lower()
 
     if file_extension not in allowed_extensions:
@@ -771,16 +771,16 @@ async def edit_file_content(
         file_ids = update_document_record(filename, new_content.encode("utf-8"))
         if not file_ids:
             return APIResponse(status="error", message="File not found in DB", response=None)
-        # Overwrite file on disk if exists
-        file_path = os.path.join(UPLOAD_DIR, filename)
-        if os.path.exists(file_path):
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
+        # Write new content to a temp file for reindexing (like upload)
+        temp_file_path = f"temp_{filename}"
+        with open(temp_file_path, "w", encoding="utf-8") as buffer:
+            buffer.write(new_content)
         # Remove old Chroma indexes and reindex for each file_id
         for file_id in file_ids:
             delete_doc_from_chroma(file_id)
-            index_document_to_chroma(file_path, file_id)
-        return APIResponse(status="success", message="File updated and reindexed", response={"file_ids": file_ids})
+            index_document_to_chroma(temp_file_path, file_id)
+        os.remove(temp_file_path)
+        return APIResponse(status="success", message="File updated and reindexed", response={"file_ids": file_ids, "filename": filename})
     except Exception as e:
         return APIResponse(status="error", message=str(e), response=None)
 
