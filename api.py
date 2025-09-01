@@ -753,3 +753,34 @@ async def disrupt_sessions_endpoint(request: DisruptSessionsRequest):
     count = await disrupt_sessions_for_user(username)
     return APIResponse(status="success", message=f"Disrupted {count} sessions for user {username}", response={"sessions_removed": count})
 
+# Edit file content and reindex endpoint (admin only)
+@app.post("/files/edit", response_model=APIResponse)
+async def edit_file_content(
+    filename: str = Body(..., embed=True),
+    new_content: str = Body(..., embed=True),
+    user=Depends(get_current_user)
+):
+    """Edit a file's content and reindex it (admin only)."""
+    if user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only.")
+    try:
+        from rag_api.db_utils import update_document_record
+        from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
+        import os
+        # Update DB
+        file_ids = update_document_record(filename, new_content.encode("utf-8"))
+        if not file_ids:
+            return APIResponse(status="error", message="File not found in DB", response=None)
+        # Overwrite file on disk if exists
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if os.path.exists(file_path):
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+        # Remove old Chroma indexes and reindex for each file_id
+        for file_id in file_ids:
+            delete_doc_from_chroma(file_id)
+            index_document_to_chroma(file_path, file_id)
+        return APIResponse(status="success", message="File updated and reindexed", response={"file_ids": file_ids})
+    except Exception as e:
+        return APIResponse(status="error", message=str(e), response=None)
+
