@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List
-from reports_db import get_reports
+from reports_db import get_reports, delete_reports
 from userdb import get_user_by_token
 
 router = APIRouter()
@@ -64,7 +64,7 @@ async def submit_report_endpoint(
         raise HTTPException(status_code=500, detail=f"Failed to submit report: {e}")
     
 @router.delete("/report/clear/auto", tags=["reports"])
-async def delete_report_endpoint(
+async def delete_auto_report_endpoint(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     if credentials is None or not credentials.credentials:
@@ -72,4 +72,28 @@ async def delete_report_endpoint(
     user = await get_user_by_token(credentials.credentials)
     if not user:
         raise HTTPException(status_code=403, detail="Valid user required to submit reports.")
+    if not is_admin_or_master(user, credentials):
+        raise HTTPException(status_code=403, detail="Admin or master key required.")
+    try:
+        deleted_count = delete_reports(report_type='auto')
+        return {"status": f"Deleted {deleted_count} auto reports."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete reports: {e}")
     
+
+@router.delete("/report/clear/manual", tags=["reports"])
+async def delete_manual_report_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing authentication credentials.")
+    user = await get_user_by_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=403, detail="Valid user required to submit reports.")
+    if not is_admin_or_master(user, credentials):
+        raise HTTPException(status_code=403, detail="Admin or master key required.")
+    try:
+        deleted_count = delete_reports(report_type='manual')
+        return {"status": f"Deleted {deleted_count} manual reports."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete reports: {e}")
