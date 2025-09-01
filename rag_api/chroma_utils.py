@@ -21,7 +21,7 @@ def load_and_split_document(file_path: str) -> List[Document]:
 		loader = Docx2txtLoader(file_path)
 	elif file_path.endswith('.html'):
 		loader = UnstructuredHTMLLoader(file_path)
-	elif file_path.endswith('.txt'):
+	elif file_path.endswith('.txt') or file_path.endswith('.md'):
 		# Handle .txt files by reading content and creating Document manually
 		with open(file_path, 'r', encoding='utf-8') as f:
 			content = f.read()
@@ -36,10 +36,8 @@ def load_and_split_document(file_path: str) -> List[Document]:
 def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 	try:
 		splits = load_and_split_document(file_path)
-
 		for split in splits:
 			split.metadata['file_id'] = file_id
-
 		vectorstore.add_documents(splits)
 		return True
 	except Exception as e:

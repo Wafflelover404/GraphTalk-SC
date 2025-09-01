@@ -62,3 +62,14 @@ async def submit_report_endpoint(
         return {"status": "Report submitted successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to submit report: {e}")
+    
+@router.delete("/report/clear/auto", tags=["reports"])
+async def delete_report_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing authentication credentials.")
+    user = await get_user_by_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=403, detail="Valid user required to submit reports.")
+    

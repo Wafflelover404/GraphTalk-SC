@@ -81,5 +81,19 @@ def get_all_documents():
 	conn.close()
 	return [dict(doc) for doc in documents]
 
+def update_document_record(filename, new_content_bytes):
+	conn = get_db_connection()
+	cursor = conn.cursor()
+	cursor.execute('SELECT id FROM document_store WHERE filename = ?', (filename,))
+	rows = cursor.fetchall()
+	if not rows:
+		conn.close()
+		return []
+	file_ids = [row['id'] for row in rows]
+	cursor.execute('UPDATE document_store SET content = ? WHERE filename = ?', (new_content_bytes, filename))
+	conn.commit()
+	conn.close()
+	return file_ids
+
 create_application_logs()
 create_document_store()

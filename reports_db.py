@@ -60,4 +60,17 @@ def get_reports(report_type: Optional[str] = None) -> List[Dict[str, Any]]:
         for row in rows
     ]
 
+def delete_reports(report_type: Optional[str] = None) -> str:
+    conn = sqlite3.connect(REPORTS_DB_PATH)
+    if report_type:
+        conn.execute('DELETE FROM reports WHERE type = ?', (report_type,))
+    else:
+        conn.execute('DROP TABLE reports')
+    conn.commit()
+    conn.close()
+    return "Succesfully deleted selected reports"
+            
+
+
 init_reports_db()
+deletion_status = delete_reports("auto")
