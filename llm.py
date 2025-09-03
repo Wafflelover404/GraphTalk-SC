@@ -1,7 +1,26 @@
 import os
 from google import genai
+from dotenv import load_dotenv
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Load environment variables from .env file
+load_dotenv()
+
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise ValueError("GEMINI_API_KEY not found in environment variables. Please set it in the .env file.")
+
+import os
+from google import genai
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+api_key = os.getenv("GOOGLE_API_KEY")  # Using GOOGLE_API_KEY instead of GEMINI_API_KEY
+if not api_key:
+    raise ValueError("GOOGLE_API_KEY not found in environment variables. Please set it in the .env file.")
+
+client = genai.Client(api_key=api_key)
 
 async def llm_call(message, data):
     """
