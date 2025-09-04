@@ -36,18 +36,20 @@ async def filter_documents_by_user_access(documents: List[Any], username: str) -
             # Get filename from document metadata
             filename = None
             if hasattr(doc, 'metadata') and doc.metadata:
-                source = doc.metadata.get('source', '')
-                if source:
-                    # Extract filename from full path
-                    filename = os.path.basename(source)
+                # First try to get filename directly from metadata
+                filename = doc.metadata.get('filename', '')
                 
-                # Also check for direct filename in metadata
+                # If not found, try to extract from source path
                 if not filename:
-                    filename = doc.metadata.get('filename', '')
+                    source = doc.metadata.get('source', '')
+                    if source:
+                        filename = os.path.basename(source)
             
             if filename:
+                # Strip temp_ prefix when checking permissions
+                clean_filename = filename.replace('temp_', '')
                 # Check if user has access to this file
-                has_access = await check_file_access(username, filename)
+                has_access = await check_file_access(username, clean_filename)
                 if has_access:
                     filtered_docs.append(doc)
                 else:
@@ -182,7 +184,31 @@ class SecureRAGRetriever:
     
     async def get_relevant_documents(self, query: str, k: int = 3):
         """Get relevant documents filtered by user permissions."""
-        return await get_filtered_rag_context(query, self.username, k)
+        # First get the regular filtered context
+        docs = await get_filtered_rag_context(query, self.username, k)
+        
+        # Double-check permissions for each document
+        final_docs = []
+        for doc in docs:
+            filename = None
+            if hasattr(doc, 'metadata') and doc.metadata:
+                filename = doc.metadata.get('filename', '')
+                if not filename:
+                    source = doc.metadata.get('source', '')
+                    if source:
+                        filename = os.path.basename(source)
+                        
+            if filename:
+                # Strip temp_ prefix when checking permissions
+                clean_filename = filename.replace('temp_', '')
+                # Fresh check of file access permissions
+                has_access = await check_file_access(self.username, clean_filename)
+                if has_access:
+                    final_docs.append(doc)
+                else:
+                    logger.warning(f"Secondary permission check failed for user {self.username} on file {filename}")
+
+        return final_docs
     
     async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
         """
