@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body
+from typing import Optional, List, Union, Dict, Any
+import datetime
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Union
 import uvicorn
 import logging
 import os
@@ -38,8 +39,17 @@ from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chrom
 import json
 import datetime
 
+# Import metrics functionality
+from metricsdb import init_metrics_db, log_event, log_query, log_file_access, log_security_event
+from metrics_middleware import MetricsMiddleware
+
+# Initialize metrics database
+init_metrics_db()
+
 # Initialize app with proper metadata
 from reports_api import router as reports_router
+from metrics_api import router as metrics_router
+from metrics_user_api import router as metrics_user_router
 app = FastAPI(
     title="RAG API",
     description="Knowledge Base Query and Management System with RAG",
@@ -49,15 +59,20 @@ app = FastAPI(
     openapi_url=None
 )
 app.include_router(reports_router)
+app.include_router(metrics_router)
+app.include_router(metrics_user_router)
 
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "https://meet-tadpole-resolved.ngrok-free.app"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://wikiai.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware)
 
 UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
@@ -189,8 +204,18 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
 
 # User login with session_id management
 @app.post("/login", response_model=TokenRoleResponse)
-async def login_user(request: LoginRequest):
+async def login_user(request: LoginRequest, request_obj: Request):
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
     if not await verify_user(request.username, request.password):
+        # Log failed login attempt
+        log_security_event(
+            event_type="failed_login",
+            ip_address=client_ip,
+            user_id=request.username,
+            details={"reason": "Invalid credentials"},
+            severity="medium"
+        )
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     
     # Generate new session_id (UUID-based for better security)
@@ -205,6 +230,17 @@ async def login_user(request: LoginRequest):
     role = await get_user_role(request.username)
     logger.info(f"User {request.username} logged in successfully with session_id: {session_id[:8]}...")
     
+    # Log successful login
+    log_event(
+        event_type="login",
+        user_id=request.username,
+        session_id=session_id,
+        ip_address=client_ip,
+        role=role,
+        success=True,
+        details={"session_type": "new"}
+    )
+    
     return TokenRoleResponse(
         status="success", 
         message="Login successful - session_id created", 
@@ -214,16 +250,32 @@ async def login_user(request: LoginRequest):
 
 # User logout using session_id
 @app.post("/logout", response_model=APIResponse)
-async def logout_user(user=Depends(get_current_user), credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
+async def logout_user(
+    request_obj: Request,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
     """Logout user and invalidate session_id"""
     try:
         session_id = credentials.credentials
+        client_ip = request_obj.client.host if request_obj and request_obj.client else None
         
         # Logout from session by deleting session_id from database
         success = await logout_session_by_id(session_id)
         
         # Also clear legacy access token
         await update_access_token(user[1], None)  # user[1] is username
+        
+        # Log logout event
+        log_event(
+            event_type="logout",
+            user_id=user[1],
+            session_id=session_id,
+            ip_address=client_ip,
+            role=user[3],
+            success=success,
+            details={"method": "user_initiated"}
+        )
         
         logger.info(f"User {user[1]} logged out successfully, session_id {session_id[:8]}... removed")
         
@@ -284,14 +336,19 @@ async def get_openapi_schema():
 @app.post("/query", response_model=APIResponse)
 async def process_secure_rag_query(
     request: RAGQueryRequest,
+    request_obj: Request,
     user=Depends(get_current_user)
 ):
     """Process a query using RAG with file access security"""
     try:
         username = user[1]  # Extract username from user tuple
+        role = user[3]  # Get user role
         session_id = str(uuid.uuid4())  # Generate session for this query
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+        
+        # Start time for response time tracking
+        start_time = datetime.datetime.now()
 
         # Clean up expired sessions periodically
         await cleanup_expired_sessions()
@@ -305,6 +362,47 @@ async def process_secure_rag_query(
         response = rag_result["answer"]
         source_docs = rag_result.get("source_documents", [])
         security_filtered = rag_result.get("security_filtered", False)
+        
+        # Calculate response time
+        response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+        
+        # Get client IP
+        client_ip = request_obj.client.host if request_obj.client else None
+        
+        # Extract source filenames
+        source_filenames = [
+            doc.metadata.get("source", "unknown") 
+            for doc in source_docs 
+            if hasattr(doc, "metadata")
+        ]
+
+        # Log metrics
+        log_query(
+            session_id=session_id,
+            user_id=username,
+            role=role,
+            question=request.question,
+            answer=response,
+            model_type=model_type,
+            humanize=request.humanize if request.humanize is not None else True,
+            source_document_count=len(source_docs),
+            security_filtered=security_filtered,
+            source_filenames=source_filenames,
+            ip_address=client_ip,
+            response_time_ms=int(response_time)
+        )
+
+        # Log file access for each source document
+        for filename in source_filenames:
+            log_file_access(
+                user_id=username,
+                role=role,
+                filename=filename,
+                access_type="retrieved_in_rag",
+                session_id=session_id,
+                ip_address=client_ip,
+                query_context=request.question[:100]  # First 100 chars of query
+            )
 
         # Log the interaction with security info
         insert_application_logs(
@@ -374,16 +472,32 @@ from urllib.parse import unquote
 
 # Endpoint to return file content by filename (from DB)
 @app.get("/files/content/{filename}", response_class=PlainTextResponse)
-async def get_file_content(filename: str, user=Depends(get_current_user)):
+async def get_file_content(
+    filename: str,
+    request_obj: Request,
+    user = Depends(get_current_user)
+):
     """
     Return the content of a file by its name (if user has access). Supports percent-encoded (e.g. Russian) filenames. Reads from DB.
     """
     decoded_filename = unquote(filename)
     allowed_files = await get_allowed_files(user[1])
     logger.info(f"User {user[1]} requests file: {decoded_filename}. Allowed files: {allowed_files}")
+    
+    # Get client IP for metrics
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
     # Admins can access any file
     if user[3] != "admin":
         if allowed_files is None or decoded_filename not in allowed_files:
+            # Log security event for unauthorized access attempt
+            log_security_event(
+                event_type="unauthorized_file_access",
+                ip_address=client_ip,
+                user_id=user[1],
+                details={"filename": decoded_filename},
+                severity="medium"
+            )
             raise HTTPException(status_code=403, detail="You do not have access to this file.")
     content_bytes = get_file_content_by_filename(decoded_filename)
     if content_bytes is None:
@@ -395,6 +509,17 @@ async def get_file_content(filename: str, user=Depends(get_current_user)):
             content = content_bytes.decode("utf-8")
         except UnicodeDecodeError:
             content = content_bytes.decode("latin1")
+            
+        # Log successful file view
+        log_file_access(
+            user_id=user[1],
+            role=user[3],
+            filename=decoded_filename,
+            access_type="view",
+            session_id=None,
+            ip_address=client_ip
+        )
+            
         return content
     except Exception as e:
         logger.exception(f"Failed to decode file {decoded_filename}")
@@ -404,14 +529,19 @@ async def get_file_content(filename: str, user=Depends(get_current_user)):
 @app.post("/chat", response_model=APIResponse)
 async def secure_chat(
     request: RAGQueryRequest,
+    request_obj: Request,
     session_id: str = Query(..., description="Session ID for chat history"),
     user=Depends(get_current_user)
 ):
     """Secure chat using RAG with conversation history and file access control"""
     try:
         username = user[1]  # Extract username from user tuple
+        role = user[3]  # Get user role
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+        
+        # Start time for response time tracking
+        start_time = datetime.datetime.now()
         
         logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Query: {request.question}, Model: {model_type}")
         
@@ -427,6 +557,47 @@ async def secure_chat(
         answer = rag_result["answer"]
         source_docs = rag_result.get("source_documents", [])
         security_filtered = rag_result.get("security_filtered", False)
+
+        # Calculate response time
+        response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+        
+        # Get client IP
+        client_ip = request_obj.client.host if request_obj and request_obj.client else None
+        
+        # Extract source filenames
+        source_filenames = [
+            doc.metadata.get("source", "unknown") 
+            for doc in source_docs 
+            if hasattr(doc, "metadata")
+        ]
+
+        # Log metrics
+        log_query(
+            session_id=session_id,
+            user_id=username,
+            role=role,
+            question=request.question,
+            answer=answer,
+            model_type=model_type,
+            humanize=True,  # Chat always uses humanized responses
+            source_document_count=len(source_docs),
+            security_filtered=security_filtered,
+            source_filenames=source_filenames,
+            ip_address=client_ip,
+            response_time_ms=int(response_time)
+        )
+
+        # Log file access for each source document
+        for filename in source_filenames:
+            log_file_access(
+                user_id=username,
+                role=role,
+                filename=filename,
+                access_type="retrieved_in_rag",
+                session_id=session_id,
+                ip_address=client_ip,
+                query_context=request.question[:100]  # First 100 chars of query
+            )
         
         # Log the secure interaction
         insert_application_logs(
@@ -729,8 +900,33 @@ async def edit_user_endpoint(
         logs.append(f"Role changed to {request.role}")
     # Change allowed files
     if request.allowed_files is not None:
+        previous_files = await userdb.get_allowed_files(request.username)
         await userdb.update_allowed_files(request.username, request.allowed_files)
         logs.append(f"Allowed files updated to {request.allowed_files}")
+
+        # Reindex any newly accessible files in Chroma to ensure they're searchable
+        if previous_files and request.allowed_files:
+            new_files = set(request.allowed_files) - set(previous_files if previous_files else [])
+            if new_files:
+                from rag_api.db_utils import get_file_content_by_filename
+                from rag_api.chroma_utils import index_document_to_chroma
+                import tempfile
+                import os
+
+                for filename in new_files:
+                    try:
+                        content = get_file_content_by_filename(filename)
+                        if content:
+                            # Create temporary file for indexing
+                            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+                                temp_file.write(content)
+                                temp_path = temp_file.name
+
+                            # Index the file in Chroma
+                            index_document_to_chroma(temp_path, filename)
+                            os.unlink(temp_path)  # Clean up temp file
+                    except Exception as e:
+                        logger.error(f"Error reindexing file {filename} after permission update: {e}")
 
     if not logs:
         return APIResponse(status="success", message="No changes made", response={})

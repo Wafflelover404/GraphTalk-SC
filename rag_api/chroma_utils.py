@@ -1,3 +1,4 @@
+import os
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredHTMLLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 try:
@@ -14,7 +15,7 @@ embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2"
 
 vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embedding_function)
 
-def load_and_split_document(file_path: str) -> List[Document]:
+def load_and_split_document(file_path: str, filename: str) -> List[Document]:
 	if file_path.endswith('.pdf'):
 		loader = PyPDFLoader(file_path)
 	elif file_path.endswith('.docx'):
@@ -25,19 +26,25 @@ def load_and_split_document(file_path: str) -> List[Document]:
 		# Handle .txt files by reading content and creating Document manually
 		with open(file_path, 'r', encoding='utf-8') as f:
 			content = f.read()
-		document = Document(page_content=content, metadata={"source": file_path})
+		document = Document(page_content=content, metadata={"source": file_path, "filename": filename})
 		return text_splitter.split_documents([document])
 	else:
 		raise ValueError(f"Unsupported file type: {file_path}")
 
 	documents = loader.load()
+	# Add filename to metadata
+	for doc in documents:
+		doc.metadata["filename"] = filename
 	return text_splitter.split_documents(documents)
 
 def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 	try:
-		splits = load_and_split_document(file_path)
+		# Extract just the filename from the path
+		filename = os.path.basename(file_path)
+		splits = load_and_split_document(file_path, filename)
 		for split in splits:
 			split.metadata['file_id'] = file_id
+			split.metadata['filename'] = filename  # Ensure filename is in metadata
 		vectorstore.add_documents(splits)
 		return True
 	except Exception as e:
