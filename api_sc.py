@@ -52,7 +52,7 @@ app = FastAPI(
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app"],  # Add your frontend URL(s) here
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://wikiAi.vercel.app"],  # Add your frontend URL(s) here
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]

@@ -1,6 +1,7 @@
 import aiosqlite
 import asyncio
 import os
+import datetime
 from typing import List, Optional
 from passlib.hash import bcrypt
 
@@ -278,3 +279,18 @@ async def check_file_access(username: str, filename: str) -> bool:
     
     # Check if filename is in allowed list
     return filename in allowed_files
+
+async def get_active_sessions_count(username: str) -> int:
+    """Get count of active sessions for a user"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Get current time
+        now = datetime.datetime.utcnow()
+        
+        # Count active non-expired sessions
+        async with conn.execute('''
+            SELECT COUNT(*) as count 
+            FROM user_sessions 
+            WHERE username = ? AND is_active = TRUE AND expires_at > ?
+        ''', (username, now.isoformat())) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0
