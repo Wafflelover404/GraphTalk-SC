@@ -4,7 +4,15 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from chroma_utils import vectorstore
 
-retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+retriever = vectorstore.as_retriever(
+    search_type="mmr",  # Use Maximum Marginal Relevance for better diversity
+    search_kwargs={
+        "k": 10,  # Return 10 documents as requested
+        "fetch_k": 30,  # Fetch more candidates for better diversity
+        "lambda_mult": 0.5,  # Equal balance between relevance (0.5) and diversity (0.5)
+        "score_threshold": 0.4  # Include more semantically related results
+    }
+)
 
 contextualize_q_system_prompt = (
 	"Given a chat history and the latest user question "

@@ -50,6 +50,7 @@ init_metrics_db()
 from reports_api import router as reports_router
 from metrics_api import router as metrics_router
 from metrics_user_api import router as metrics_user_router
+
 app = FastAPI(
     title="RAG API",
     description="Knowledge Base Query and Management System with RAG",
@@ -58,6 +59,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None
 )
+
 app.include_router(reports_router)
 app.include_router(metrics_router)
 app.include_router(metrics_user_router)
@@ -65,7 +67,7 @@ app.include_router(metrics_user_router)
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://wikiai.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]

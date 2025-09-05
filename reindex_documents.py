@@ -9,6 +9,11 @@ def get_db_connection():
 
 def reindex_all_documents():
     """Reindex all documents in Chroma with proper filename metadata"""
+    import shutil
+    # Clean up old Chroma DB
+    if os.path.exists("./chroma_db"):
+        print("Removing old Chroma database...")
+        shutil.rmtree("./chroma_db")
     try:
         # Get all documents from the database
         conn = get_db_connection()
