@@ -355,15 +355,17 @@ async def process_secure_rag_query(
         # Clean up expired sessions periodically
         await cleanup_expired_sessions()
 
+        # Initialize the RAG chain
+        from rag_api.langchain_utils import get_rag_chain
+        rag_chain = get_rag_chain()
+        
         # Use secure RAG retriever that respects file permissions
-        # Note: Using empty chat history for single queries
-        chat_history = []  # Explicitly using empty chat history
         secure_retriever = SecureRAGRetriever(username)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
-            None,  # No session ID for single queries
-            request.question, 
-            chat_history,  # Explicitly passing empty list
-            model_type
+            rag_chain=rag_chain,
+            query=request.question,
+            model_type=model_type,
+            humanize=request.humanize if hasattr(request, 'humanize') else True
         )
 
         response = rag_result["answer"]

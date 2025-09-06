@@ -13,8 +13,50 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
 
 from userdb import get_user_allowed_filenames, check_file_access
 from rag_api.chroma_utils import vectorstore
+from typing import List, Dict, Any
+import os
 
 logger = logging.getLogger(__name__)
+
+async def get_relevant_files_for_query(username: str, query: str, k: int = 5) -> List[Dict[str, Any]]:
+    """Get list of relevant files for a query that the user has access to."""
+    try:
+        # Get all files user has access to
+        allowed_files = await get_user_allowed_filenames(username)
+        
+        # Get relevant documents from the vector store
+        docs = vectorstore.similarity_search_with_score(query, k=20)
+        
+        # Filter and rank files based on relevance and access
+        relevant_files = []
+        seen_files = set()
+        
+        for doc, score in docs:
+            file_source = doc.metadata.get("source", "")
+            file_name = os.path.basename(file_source)
+            
+            # Check if user has access to this file
+            has_access = (allowed_files is None or  # Admin has access to all files
+                        file_name in allowed_files or 
+                        file_source in allowed_files)
+            
+            if has_access and file_source and file_source not in seen_files:
+                seen_files.add(file_source)
+                relevant_files.append({
+                    "file_path": file_source,
+                    "file_name": file_name,
+                    "relevance_score": float(score),  # Ensure score is serializable
+                    "content": doc.page_content[:500]  # First 500 chars as preview
+                })
+        
+        # Sort by relevance score (lower is better)
+        relevant_files.sort(key=lambda x: x["relevance_score"])
+        
+        return relevant_files[:k]  # Return top k files
+        
+    except Exception as e:
+        logger.error(f"Error getting relevant files: {str(e)}")
+        return []
 
 async def filter_documents_by_user_access(documents: List[Any], username: str) -> List[Any]:
     """
@@ -177,110 +219,116 @@ async def get_user_accessible_file_ids(username: str) -> Optional[List[int]]:
 class SecureRAGRetriever:
     """
     A secure RAG retriever that respects user file access permissions.
+    Uses file-based retrieval without chat history.
     """
     
     def __init__(self, username: str):
         self.username = username
+        self.rag_chain = None
     
-    async def get_relevant_documents(self, query: str, k: int = 3):
-        """Get relevant documents filtered by user permissions."""
-        # First get the regular filtered context
-        docs = await get_filtered_rag_context(query, self.username, k)
-        
-        # Double-check permissions for each document
-        final_docs = []
-        for doc in docs:
-            filename = None
-            if hasattr(doc, 'metadata') and doc.metadata:
-                filename = doc.metadata.get('filename', '')
-                if not filename:
-                    source = doc.metadata.get('source', '')
-                    if source:
-                        filename = os.path.basename(source)
-                        
-            if filename:
-                # Strip temp_ prefix when checking permissions
-                clean_filename = filename.replace('temp_', '')
-                # Fresh check of file access permissions
-                has_access = await check_file_access(self.username, clean_filename)
-                if has_access:
-                    final_docs.append(doc)
-                else:
-                    logger.warning(f"Secondary permission check failed for user {self.username} on file {filename}")
-
-        return final_docs
+    async def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get relevant documents for a query that the user has access to.
+        Returns a list of document dictionaries with metadata.
+        """
+        return await get_relevant_files_for_query(self.username, query, k)
     
     async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
         """
-        Invoke RAG chain with security filtering and model selection.
-        model_type: "local" for llama3.2 or "server" for gemini
-        humanize: True = return LLM response, False = return raw RAG chunks with filename tags
+        Invoke RAG chain with security filtering.
+        Returns a dictionary with answer, source documents, and relevant files.
         """
         try:
-            # Get user-filtered documents
-            filtered_docs = await self.get_relevant_documents(query)
+            # Get relevant files for the query
+            relevant_files = await self.get_relevant_documents(query)
             
-            if not filtered_docs:
+            if not relevant_files:
                 return {
-                    "answer": (
-                        "I don't have access to relevant information to answer your question "
-                        "based on the documents you're authorized to view."
-                    ),
+                    "answer": "I couldn't find any relevant information in the documents you have access to.",
                     "source_documents": [],
+                    "relevant_files": [],
                     "security_filtered": True
                 }
             
-            # If humanize is False, return raw chunks with filename tags
-            if not humanize:
-                raw_chunks = []
-                for doc in filtered_docs:
-                    filename = "unknown"
-                    if hasattr(doc, 'metadata') and doc.metadata:
-                        source = doc.metadata.get('source', '')
-                        if source:
-                            filename = os.path.basename(source)
-                        if not filename or filename == "unknown":
-                            filename = doc.metadata.get('filename', 'unknown')
+            # Prepare context for the RAG chain
+            context = [{
+                'page_content': file['content'],
+                'metadata': {
+                    'source': file['file_path'],
+                    'filename': file['file_name']
+                }
+            } for file in relevant_files]
+            
+            # Format the context as a string for the prompt
+            context_str = "\n\n".join([
+                f"File: {file['file_name']}\nContent: {file['content']}"
+                for file in relevant_files
+            ])
+            
+            try:
+                # Get answer using the RAG chain
+                result = await rag_chain["answer"]({
+                    "input": query,
+                    "context": context_str
+                })
+                
+                # Extract the answer from the result
+                answer = result
+                if isinstance(result, dict):
+                    answer = result.get('answer', 'No answer generated.')
+                elif hasattr(result, 'content'):
+                    answer = result.content
+                
+                # Ensure answer is a string
+                if not isinstance(answer, str):
+                    answer = str(answer)
+                
+                # Clean up the answer
+                answer = answer.strip()
+                
+                # Format the source documents for display
+                formatted_sources = []
+                for doc in relevant_files:
+                    # Clean up the filename by removing 'temp_' and the extension
+                    clean_name = doc.get('file_name', 'Unknown Document')
+                    if clean_name.startswith('temp_'):
+                        clean_name = clean_name[5:]  # Remove 'temp_' prefix
+                    if '.' in clean_name:
+                        clean_name = clean_name.rsplit('.', 1)[0]  # Remove file extension
                     
-                    chunk_with_filename = f"{doc.page_content}\n<filename>{filename}</filename>"
-                    raw_chunks.append(chunk_with_filename)
+                    formatted_sources.append({
+                        'title': clean_name,
+                        'content': doc.get('content', '')[:200] + '...',  # Show first 200 chars
+                        'relevance': f"{1 - doc.get('relevance_score', 0):.0%}"  # Convert to percentage
+                    })
                 
                 return {
-                    "answer": raw_chunks,  # Return array of chunks with filename tags
-                    "source_documents": filtered_docs,
-                    "security_filtered": len(filtered_docs) > 0,
-                    "raw_mode": True
+                    "answer": answer,
+                    "source_documents": formatted_sources,
+                    "security_filtered": False
                 }
-            
-            # Create a custom context string from filtered docs for LLM processing
-            context = "\n".join([doc.page_content for doc in filtered_docs])
-            
-            # Choose model based on type for humanized response
-            if model_type == "local":
-                # Use local llama3.2 model via RAG chain
-                try:
-                    from rag_api.langchain_utils import get_rag_chain
-                    rag_chain = get_rag_chain("llama3.2")
-                    # Create a simple input for the chain
-                    answer = rag_chain.invoke({
-                        "input": query,
-                        "chat_history": chat_history or [],
-                        "context": context
-                    })['answer']
-                except Exception as e:
-                    logger.error(f"Local model error, falling back to server model: {e}")
-                    from llm import llm_call
-                    answer = await llm_call(query, context)
-            else:
-                # Use server gemini model
-                from llm import llm_call
-                answer = await llm_call(query, context)
-            
-            return {
-                "answer": answer,
-                "source_documents": filtered_docs,
-                "security_filtered": len(filtered_docs) > 0
-            }
+            except Exception as e:
+                logger.error(f"Error in RAG chain: {str(e)}")
+                # Format the source documents for display even in error case
+                formatted_sources = []
+                for doc in relevant_files:
+                    clean_name = doc.get('file_name', 'Unknown Document')
+                    if clean_name.startswith('temp_'):
+                        clean_name = clean_name[5:]
+                    if '.' in clean_name:
+                        clean_name = clean_name.rsplit('.', 1)[0]
+                    
+                    formatted_sources.append({
+                        'title': clean_name,
+                        'content': doc.get('content', '')[:200] + '...',
+                        'relevance': f"{1 - doc.get('relevance_score', 0):.0%}"
+                    })
+                
+                return {
+                    "answer": f"Error generating response: {str(e)}",
+                    "source_documents": formatted_sources,
+                    "security_filtered": False
+                }
             
         except Exception as e:
             logger.error(f"Error in secure RAG chain for user {self.username}: {e}")
