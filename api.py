@@ -356,9 +356,14 @@ async def process_secure_rag_query(
         await cleanup_expired_sessions()
 
         # Use secure RAG retriever that respects file permissions
+        # Note: Using empty chat history for single queries
+        chat_history = []  # Explicitly using empty chat history
         secure_retriever = SecureRAGRetriever(username)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
-            None, request.question, [], model_type  # Empty chat history for single queries
+            None,  # No session ID for single queries
+            request.question, 
+            chat_history,  # Explicitly passing empty list
+            model_type
         )
 
         response = rag_result["answer"]
