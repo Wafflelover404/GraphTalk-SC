@@ -16,6 +16,7 @@ import toml
 import bcrypt
 import aiofiles
 import aiofiles.os
+import glob
 
 from userdb import (
     create_user, verify_user, update_access_token, get_user, get_allowed_files, 
@@ -334,6 +335,68 @@ async def get_documentation():
 async def get_openapi_schema():
     return app.openapi()
 
+async def get_available_filenames(username: str) -> List[str]:
+    """Helper function to get all available filenames from uploads and database,
+    filtered by the user's allowed files (unless None meaning all files allowed)."""
+    # Get all files from the uploads directory
+    files = []
+    if os.path.exists(UPLOAD_DIR):
+        for file in os.listdir(UPLOAD_DIR):
+            file_path = os.path.join(UPLOAD_DIR, file)
+            if os.path.isfile(file_path):
+                files.append(file)
+    
+    # Also get files from the database
+    db_files = get_all_documents()
+    db_filenames = [doc["filename"] for doc in db_files]
+    
+    # Combine and deduplicate
+    all_files = list(set(files + db_filenames))
+
+    # Filter by user's allowed files
+    allowed = await get_allowed_files(username)
+    if allowed is None:
+        return all_files
+    allowed_set = set(allowed)
+    return [f for f in all_files if f in allowed_set]
+
+async def get_possible_files_by_title(username: str) -> Dict[str, List[str]]:
+    """Return a mapping from base title (filename without extension) to list of possible filenames (with extensions),
+    filtered by the user's allowed files."""
+    all_files = await get_available_filenames(username)
+    mapping: Dict[str, List[str]] = {}
+    for fname in all_files:
+        base, _ext = os.path.splitext(fname)
+        mapping.setdefault(base, []).append(fname)
+    return mapping
+
+def extract_title_from_chunk(chunk_text: str) -> Optional[str]:
+    """Best-effort extraction of a 'title' field from the chunk text.
+    Supports dict-like strings with single quotes and JSON-like strings with double quotes.
+    """
+    try:
+        # Try naive JSON conversion from single quotes to double quotes safely
+        candidate = chunk_text
+        if "'title'" in candidate and '"title"' not in candidate:
+            candidate = candidate.replace("'", '"')
+        # Try to locate a JSON object prefix
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            obj_str = candidate[start:end+1]
+            data = json.loads(obj_str)
+            title = data.get("title")
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+    except Exception:
+        pass
+    # Fallback regex for 'title': '...'
+    import re
+    m = re.search(r"['\"]title['\"]\s*:\s*['\"]([^'\"]+)['\"]", chunk_text)
+    if m:
+        return m.group(1).strip()
+    return None
+
 # SECURE RAG Query endpoint with file access control
 @app.post("/query", response_model=APIResponse)
 async def process_secure_rag_query(
@@ -453,18 +516,30 @@ async def process_secure_rag_query(
             )
         else:
             # If humanize is False: return array of RAG chunks with <filename></filename> tag
+            # Get available filenames and mapping by title, filtered by user permissions
+            available_files = await get_available_filenames(username)
+            possible_files_by_title = await get_possible_files_by_title(username)
+
             rag_chunks = []
             for doc in source_docs:
                 # Try to get filename from doc metadata, fallback to 'unknown'
                 fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
                 chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                rag_chunks.append(f"{chunk}\n<filename>{fname}</filename>")
+                # Try to extract a base title from the chunk and map to possible filenames
+                base_title = extract_title_from_chunk(chunk)
+                possible_files = possible_files_by_title.get(base_title, []) if base_title else []
+                rag_chunks.append(
+                    f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
+                )
+            
             return APIResponse(
                 status="success",
-                message=f"Query processed with secure RAG (raw chunks)",
+                message="Query processed with secure RAG (raw chunks)",
                 response={
                     "chunks": rag_chunks,
                     "model": model_type,
+                    "available_files": available_files,
+                    "possible_files_by_title": possible_files_by_title,
                     "security_info": {
                         "user_filtered": True,
                         "username": username,
@@ -758,6 +833,37 @@ async def delete_document(
     except Exception as e:
         logger.exception("Document deletion failed")
         return APIResponse(status="error", message=str(e), response=None)
+
+# Endpoint to list all available filenames
+@app.get("/files/available")
+async def list_available_filenames():
+    """
+    List all available filenames in the uploads directory.
+    Returns a list of filenames with their extensions.
+    """
+    try:
+        # Get all files from the uploads directory
+        files = []
+        for file in os.listdir(UPLOAD_DIR):
+            file_path = os.path.join(UPLOAD_DIR, file)
+            if os.path.isfile(file_path):
+                files.append(file)
+        
+        # Also get files from the database
+        db_files = await get_all_documents()
+        db_filenames = [doc[1] for doc in db_files]  # doc[1] is filename in DB
+        
+        # Combine and deduplicate
+        all_files = list(set(files + db_filenames))
+        
+        return {
+            "status": "success",
+            "files": all_files,
+            "count": len(all_files)
+        }
+    except Exception as e:
+        logger.error(f"Error listing available files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error listing available files: {str(e)}")
 
 # Endpoint to delete a file by its filename (admin only)
 @app.delete("/files/delete_by_filename", response_model=APIResponse)

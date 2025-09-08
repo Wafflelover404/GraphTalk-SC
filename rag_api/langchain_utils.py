@@ -1,4 +1,5 @@
 import os
+import json
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -53,7 +54,7 @@ def get_rag_chain(model: str = None):
                 raise ValueError("No suitable model found. Please check your API key and permissions.")
         except Exception as e:
             print(f"Error listing models: {e}")
-            model = "gemini-pro"  # Fallback
+            model = "gemini-1.5-flash"  # Fallback
     
     # Initialize LLM with the selected model
     llm = ChatGoogleGenerativeAI(
@@ -83,7 +84,54 @@ def get_rag_chain(model: str = None):
             if hasattr(response, 'content'):
                 return response.content
             elif isinstance(response, str):
-                return response
+                docs = inputs.get("docs", [])
+                relevance_scores = inputs.get("relevance_scores", [])
+                username = inputs.get("username", "")
+                chunks = []
+                for doc, relevance in zip(docs, relevance_scores):
+                    # Get the filename from metadata, default to unknown
+                    filename = doc.metadata.get('filename', doc.metadata.get('source', 'unknown'))
+                    # Get just the base filename with extension
+                    base_filename = os.path.basename(str(filename))
+                    # Ensure .md extension is included in title
+                    title = base_filename if base_filename.endswith('.md') else f"{base_filename}.md"
+                    
+                    # Clean and escape content
+                    content = (
+                        doc.page_content
+                        .replace('"', '\\"')
+                        .replace('\n', ' ')
+                        .strip()
+                    )
+                    
+                    # Create a proper JSON string
+                    chunk_data = {
+                        'title': title,
+                        'content': content,
+                        'relevance': f"{relevance}%"
+                    }
+                    
+                    # Convert to JSON string and add filename tag
+                    chunk_str = (
+                        f"{json.dumps(chunk_data, ensure_ascii=False)}\n"
+                        f"<filename>{filename}</filename>"
+                    )
+                    chunks.append(chunk_str)
+                
+                return {
+                    "status": "success",
+                    "message": "Query processed with secure RAG (raw chunks)",
+                    "response": {
+                        "chunks": chunks,
+                        "model": "server",
+                        "security_info": {
+                            "user_filtered": True,
+                            "username": username,
+                            "source_documents_count": len(docs),
+                            "security_filtered": False
+                        }
+                    }
+                }
             elif hasattr(response, 'text'):
                 return response.text
             else:
