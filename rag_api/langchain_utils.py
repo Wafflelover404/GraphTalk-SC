@@ -27,7 +27,7 @@ retriever = vectorstore.as_retriever(
 # Simple prompt focused on document content
 qa_prompt = """You are a helpful AI assistant. 
 Use the following context to answer the question. If the context doesn't contain relevant information, 
-say "I couldn't find relevant information in the documents."
+say "I couldn't find relevant information in the documents. You MUST ALWAYS RESPONSE IN SAME LANGUAGE AS USER REQUEST."
 
 Context:
 {context}
@@ -44,7 +44,7 @@ def get_rag_chain(model: str = None):
             available_models = [m.name for m in models]
             print("Available models:", available_models)
             # Try to find a suitable model
-            for m in ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]:
+            for m in ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"]:
                 if any(m in name for name in available_models):
                     model = m
                     print(f"Using model: {model}")
