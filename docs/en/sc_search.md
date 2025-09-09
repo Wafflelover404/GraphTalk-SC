@@ -1,7 +1,7 @@
 # sc_search.py - Basic Knowledge Base Search
 
 ## Overview
-Provides quick, non-recursive search functionality for OSTIS knowledge bases. This module implements efficient substring-based searching with automatic element decoding.
+Provides quick, non-recursive search functionality for OSTIS knowledge bases. This module implements efficient substring-based searching with automatic element decoding. This is one of two search methods available, the other being a RAG-based approach.
 
 ## Key Features
 - **Fast Search**: Quick substring-based search through knowledge base links
@@ -118,6 +118,14 @@ async def process_query(request: QueryRequest, humanize: bool = False):
 | Memory | Low usage | Higher usage |
 | Complexity | Simple | Complex relationships |
 | Use Case | Quick search | Deep analysis |
+
+## Comparison with RAG Search
+| Feature | sc_search.py | RAG Search |
+|---|---|---|
+| Technology | Substring search on SC-machine links | Vector-based search with LLM | 
+| Search Type | Exact match, keyword-based | Semantic, context-aware | 
+| Data Source | Structured knowledge base in OSTIS | Indexed documents (e.g., Markdown, PDF) | 
+| Use Case | Finding specific keynodes or links | Answering complex questions, summarization |
 
 ## Best Practices
 1. **Query Design**: Use specific terms for better results

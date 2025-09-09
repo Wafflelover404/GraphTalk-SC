@@ -6,6 +6,7 @@ The main FastAPI application that provides a secure REST API for interacting wit
 ## Key Features
 - **Token-based Authentication**: Secure API access using bearer tokens
 - **Knowledge Base Querying**: Process natural language queries against OSTIS knowledge bases
+- **RAG-based Search**: New feature to use a RAG model for querying.
 - **File Upload Support**: Upload and process knowledge base zip files
 - **LLM Integration**: Optional humanized responses using language models
 - **Interactive Documentation**: Swagger UI with authentication
@@ -18,6 +19,7 @@ FastAPI Application
 ├── File Upload (/upload/kb_zip)
 ├── Token Management (/create_token)
 └── Documentation (/docs)
+└── RAG Integration
 ```
 
 ## Endpoints
@@ -32,6 +34,7 @@ FastAPI Application
   - Parameters:
     - `text`: The query string
     - `humanize`: Optional boolean to get LLM-enhanced responses
+    - `use_rag`: Optional boolean to use the RAG model for the query
   - Returns structured search results or humanized responses
 
 - **POST /upload/kb_zip**: Upload knowledge base files
@@ -61,6 +64,7 @@ FastAPI Application
 - **bcrypt**: Password/token hashing
 - **toml**: Configuration file handling
 - **sc_search**: Knowledge base search functionality
+- **rag_api**: RAG model integration
 
 ## Usage Example
 ```python
@@ -85,6 +89,7 @@ curl -X POST http://localhost:9001/query \
 
 ## Integration Points
 - **sc_search.py**: Core search functionality
+- **rag_api**: Handles RAG-based search
 - **llm.py**: Language model integration for humanized responses
 - **memloader.py**: Knowledge base file processing
 - **OSTIS Server**: WebSocket connection at `ws://localhost:8090`

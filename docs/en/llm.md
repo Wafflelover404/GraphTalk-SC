@@ -1,7 +1,7 @@
 # llm.py - Language Model Integration
 
 ## Overview
-Provides AI-powered response generation using language models to create human-readable answers from knowledge base search results. This module bridges the gap between raw KB data and natural language responses.
+Provides AI-powered response generation using language models to create human-readable answers from knowledge base search results. This module is also a core component of the RAG (Retrieval-Augmented Generation) pipeline, bridging the gap between raw KB data and natural language responses.
 
 ## Key Features
 - **GPT-4 Integration**: Uses GPT-4o-mini for cost-effective AI responses
@@ -98,10 +98,15 @@ else:
 ```python
 # In api.py
 @app.post("/query")
-async def process_query(request: QueryRequest, humanize: bool = False):
+async def process_query(request: QueryRequest, humanize: bool = False, use_rag: bool = False):
     kb_results = kb_search(request.text)
     
-    if humanize:
+        if use_rag:
+        # RAG logic will retrieve context and call the LLM.
+        # This is a simplified representation.
+        rag_context = get_rag_context(request.text)
+        response = llm_call(request.text, rag_context)
+    elif humanize:
         context = "\n".join(kb_results) if isinstance(kb_results, list) else kb_results
         response = llm_call(request.text, context)
     else:
