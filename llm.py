@@ -5,20 +5,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+# Prefer GOOGLE_API_KEY, fallback to GEMINI_API_KEY
+api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not api_key:
-    raise ValueError("GEMINI_API_KEY not found in environment variables. Please set it in the .env file.")
-
-import os
-from google import genai
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
-api_key = os.getenv("GOOGLE_API_KEY")  # Using GOOGLE_API_KEY instead of GEMINI_API_KEY
-if not api_key:
-    raise ValueError("GOOGLE_API_KEY not found in environment variables. Please set it in the .env file.")
+    raise ValueError("Missing API key: set GOOGLE_API_KEY or GEMINI_API_KEY in the backend .env")
 
 client = genai.Client(api_key=api_key)
 

@@ -17,6 +17,7 @@ import bcrypt
 import aiofiles
 import aiofiles.os
 import glob
+import asyncio
 
 from userdb import (
     create_user, verify_user, update_access_token, get_user, get_allowed_files, 
@@ -43,6 +44,7 @@ import datetime
 # Import metrics functionality
 from metricsdb import init_metrics_db, log_event, log_query, log_file_access, log_security_event
 from metrics_middleware import MetricsMiddleware
+from quizdb import init_quiz_db, create_quiz_for_filename, get_quiz_by_filename
 
 # Initialize metrics database
 init_metrics_db()
@@ -76,6 +78,11 @@ app.add_middleware(
 
 # Add metrics middleware
 app.add_middleware(MetricsMiddleware)
+
+# Initialize async resources on startup
+@app.on_event("startup")
+async def _startup_events():
+    await init_quiz_db()
 
 UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
@@ -149,6 +156,19 @@ async def get_user_role(username: str):
     if user:
         return user[3]  # role
     return None
+
+# Helper: resolve actual stored filename by case-insensitive match against DB documents
+def resolve_actual_filename_case_insensitive(requested_filename: str) -> str:
+    try:
+        documents = get_all_documents()
+        req_lower = requested_filename.lower()
+        for doc in documents:
+            fname = doc.get("filename")
+            if isinstance(fname, str) and fname.lower() == req_lower:
+                return fname
+    except Exception:
+        pass
+    return requested_filename
 
 # Endpoints
 @app.get("/", include_in_schema=False)
@@ -555,25 +575,27 @@ from fastapi.responses import PlainTextResponse
 from urllib.parse import unquote
 
 # Endpoint to return file content by filename (from DB)
-@app.get("/files/content/{filename}", response_class=PlainTextResponse)
+@app.get("/files/content/{filename}")
 async def get_file_content(
     filename: str,
     request_obj: Request,
-    user = Depends(get_current_user)
+    user = Depends(get_current_user),
+    include_quiz: bool = Query(False, description="If true, return JSON with file content and quiz")
 ):
     """
     Return the content of a file by its name (if user has access). Supports percent-encoded (e.g. Russian) filenames. Reads from DB.
     """
     decoded_filename = unquote(filename)
+    resolved_filename = resolve_actual_filename_case_insensitive(decoded_filename)
     allowed_files = await get_allowed_files(user[1])
-    logger.info(f"User {user[1]} requests file: {decoded_filename}. Allowed files: {allowed_files}")
+    logger.info(f"User {user[1]} requests file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
     
     # Get client IP for metrics
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
     
     # Admins can access any file
     if user[3] != "admin":
-        if allowed_files is None or decoded_filename not in allowed_files:
+        if allowed_files is None or resolved_filename not in allowed_files:
             # Log security event for unauthorized access attempt
             log_security_event(
                 event_type="unauthorized_file_access",
@@ -583,7 +605,7 @@ async def get_file_content(
                 severity="medium"
             )
             raise HTTPException(status_code=403, detail="You do not have access to this file.")
-    content_bytes = get_file_content_by_filename(decoded_filename)
+    content_bytes = get_file_content_by_filename(resolved_filename)
     if content_bytes is None:
         logger.warning(f"File not found in DB: {decoded_filename}")
         raise HTTPException(status_code=404, detail="File not found.")
@@ -593,21 +615,125 @@ async def get_file_content(
             content = content_bytes.decode("utf-8")
         except UnicodeDecodeError:
             content = content_bytes.decode("latin1")
-            
+        
         # Log successful file view
         log_file_access(
             user_id=user[1],
             role=user[3],
-            filename=decoded_filename,
+            filename=resolved_filename,
             access_type="view",
             session_id=None,
             ip_address=client_ip
         )
-            
-        return content
+
+        if include_quiz:
+            # Fetch the latest quiz for this file, if any
+            quiz_row = await get_quiz_by_filename(resolved_filename)
+            quiz_payload: Dict[str, Any]
+            if quiz_row:
+                # quiz_row: (id, source_filename, timestamp, quiz_json, logs)
+                try:
+                    quiz_dict = json.loads(quiz_row[3]) if quiz_row[3] else None
+                except Exception:
+                    quiz_dict = {"questions": [], "raw": quiz_row[3]}
+                quiz_payload = {
+                    "id": quiz_row[0],
+                    "filename": quiz_row[1],
+                    "timestamp": quiz_row[2],
+                    "quiz": quiz_dict,
+                    "logs": quiz_row[4]
+                }
+            else:
+                quiz_payload = None
+
+            return JSONResponse(
+                content={
+                    "filename": resolved_filename,
+                    "content": content,
+                    "quiz": quiz_payload
+                }
+            )
+
+        # Default behavior: return plain text content
+        return PlainTextResponse(content)
     except Exception as e:
-        logger.exception(f"Failed to decode file {decoded_filename}")
+        logger.exception(f"Failed to decode file {resolved_filename}")
         raise HTTPException(status_code=500, detail=f"Failed to decode file: {e}")
+
+# Create or fetch quiz for a given file
+@app.post("/quiz/{filename}", response_model=APIResponse)
+async def create_or_get_quiz(
+    filename: str,
+    request_obj: Request,
+    user = Depends(get_current_user),
+    regenerate: bool = Query(False, description="If true, re-generate a new quiz for the file")
+):
+    """
+    Return a quiz for the given file. If `regenerate=true`, create a new quiz. Otherwise,
+    return the latest existing quiz, generating one if missing.
+    """
+    decoded_filename = unquote(filename)
+    resolved_filename = resolve_actual_filename_case_insensitive(decoded_filename)
+    allowed_files = await get_allowed_files(user[1])
+    logger.info(f"User {user[1]} requests quiz for file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
+
+    # Access control (same as file content)
+    if user[3] != "admin":
+        if allowed_files is None or decoded_filename not in allowed_files:
+            client_ip = request_obj.client.host if request_obj and request_obj.client else None
+            log_security_event(
+                event_type="unauthorized_file_access",
+                ip_address=client_ip,
+                user_id=user[1],
+                details={"filename": resolved_filename, "action": "quiz_access"},
+                severity="medium"
+            )
+            raise HTTPException(status_code=403, detail="You do not have access to this file.")
+
+    try:
+        quiz_row = None
+        if not regenerate:
+            quiz_row = await get_quiz_by_filename(resolved_filename)
+
+        # If no quiz exists or regeneration requested, create a new one
+        if regenerate or not quiz_row:
+            new_quiz_id = await create_quiz_for_filename(resolved_filename)
+            if not new_quiz_id:
+                return APIResponse(status="error", message="Failed to generate quiz", response=None)
+            quiz_row = await get_quiz_by_filename(resolved_filename)
+
+        if not quiz_row:
+            return APIResponse(status="error", message="Quiz not found", response=None)
+
+        # Parse quiz JSON safely
+        try:
+            quiz_dict = json.loads(quiz_row[3]) if quiz_row[3] else None
+        except Exception:
+            quiz_dict = {"questions": [], "raw": quiz_row[3]}
+
+        payload = {
+            "id": quiz_row[0],
+            "filename": quiz_row[1],
+            "timestamp": quiz_row[2],
+            "quiz": quiz_dict,
+            "logs": quiz_row[4]
+        }
+
+        # Log file access as a "quiz_view" event
+        client_ip = request_obj.client.host if request_obj and request_obj.client else None
+        log_file_access(
+            user_id=user[1],
+            role=user[3],
+            filename=resolved_filename,
+            access_type="quiz_view" if not regenerate else "quiz_regenerate",
+            session_id=None,
+            ip_address=client_ip
+        )
+
+        return APIResponse(status="success", message="Quiz ready", response=payload)
+    except Exception as e:
+        logger.exception("Quiz endpoint error")
+        return APIResponse(status="error", message=str(e), response=None)
 
 # SECURE Chat endpoint with history and file access control
 @app.post("/chat", response_model=APIResponse)
@@ -755,6 +881,11 @@ async def upload_document(
         os.remove(temp_file_path)
 
         if success:
+            # Fire-and-forget: generate a quiz for this uploaded file in background
+            try:
+                asyncio.create_task(create_quiz_for_filename(original_filename))
+            except Exception:
+                pass
             return APIResponse(
                 status="success",
                 message=f"File {original_filename} has been successfully uploaded and indexed.",
@@ -1046,6 +1177,8 @@ async def edit_user_endpoint(
     if not logs:
         return APIResponse(status="success", message="No changes made", response={})
     return APIResponse(status="success", message="; ".join(logs), response={})
+
+
 
 # Disrupt all sessions for a user by access token (user self-service)
 class DisruptSessionsRequest(BaseModel):
