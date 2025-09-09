@@ -4,7 +4,137 @@
 
 A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
 
-![](./docs/schemas/diagram.png)
+```mermaid
+
+flowchart TD
+    %% Clients Layer
+    subgraph "Clients"
+        StreamlitUI["Streamlit Web UI"]:::client
+        click StreamlitUI "https://github.com/wafflelover404/graphtalk-sc/blob/main/ui/sc_machine_ui.py"
+        TelegramUI["Telegram Bot UI"]:::client
+        click TelegramUI "https://github.com/wafflelover404/graphtalk-sc/blob/main/ui/tg_bot.py"
+        CLI["CLI (curl/Postman)"]:::client
+    end
+
+    %% API Layer
+    subgraph "API Layer"
+        APIGateway["API Gateway<br/>(api.py)"]:::api
+        click APIGateway "https://github.com/wafflelover404/graphtalk-sc/blob/main/api.py"
+        SCServer["SC-machine API Server<br/>(api_sc.py)"]:::api
+        click SCServer "https://github.com/wafflelover404/graphtalk-sc/blob/main/api_sc.py"
+        Auth["Auth Module"]:::api
+        click Auth "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_security.py"
+        MetricsMW["Metrics Middleware"]:::api
+        click MetricsMW "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_middleware.py"
+        MetricsAdmin["Metrics API (Admin)"]:::api
+        click MetricsAdmin "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_api.py"
+        MetricsUser["Metrics API (User)"]:::api
+        click MetricsUser "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_user_api.py"
+        ReportsAPI["Reporting API<br/>(reports_api.py)"]:::api
+        click ReportsAPI "https://github.com/wafflelover404/graphtalk-sc/blob/main/reports_api.py"
+    end
+
+    %% Knowledge Base Modules
+    subgraph "Knowledge Base Layer"
+        SearchBasic["Basic Search<br/>(sc_search.py)"]:::api
+        click SearchBasic "https://github.com/wafflelover404/graphtalk-sc/blob/main/sc_search.py"
+        SearchAdv["Advanced Search<br/>(sc_search-total.py)"]:::api
+        click SearchAdv "https://github.com/wafflelover404/graphtalk-sc/blob/main/sc_search-total.py"
+        MemLoader["Memory Loader<br/>(memloader.py)"]:::api
+        click MemLoader "https://github.com/wafflelover404/graphtalk-sc/blob/main/memloader.py"
+        JSONInterp["JSON Interpreter<br/>(json_interpreter.py)"]:::api
+        click JSONInterp "https://github.com/wafflelover404/graphtalk-sc/blob/main/json_interpreter.py"
+        Reindex["Reindex Docs<br/>(reindex_documents.py)"]:::api
+        click Reindex "https://github.com/wafflelover404/graphtalk-sc/blob/main/reindex_documents.py"
+    end
+
+    %% LLM Modules
+    subgraph "LLM Layer"
+        LLMCore["LLM Core<br/>(llm.py)"]:::api
+        click LLMCore "https://github.com/wafflelover404/graphtalk-sc/blob/main/llm.py"
+        LLMJson["LLM JSON Conv.<br/>(json_llm.py)"]:::api
+        click LLMJson "https://github.com/wafflelover404/graphtalk-sc/blob/main/json_llm.py"
+    end
+
+    %% RAG Microservice
+    subgraph "RAG Microservice"
+        RAG_Main["Main Server<br/>(rag_api/main.py)"]:::api
+        click RAG_Main "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/main.py"
+        ChromaUtil["Chroma Utils<br/>(rag_api/chroma_utils.py)"]:::api
+        click ChromaUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/chroma_utils.py"
+        LCUtil["LangChain Utils<br/>(rag_api/langchain_utils.py)"]:::api
+        click LCUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/langchain_utils.py"
+        PydModels["Pydantic Models<br/>(rag_api/pydantic_models.py)"]:::api
+        click PydModels "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/pydantic_models.py"
+        DBUtils["DB Utils<br/>(rag_api/db_utils.py)"]:::api
+        click DBUtils "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/db_utils.py"
+    end
+
+    %% Data Stores
+    subgraph "Data Stores"
+        UserDB["User Tokens DB<br/>(userdb.py)"]:::db
+        click UserDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/userdb.py"
+        UploadsDB["Uploads DB<br/>(uploadsdb.py)"]:::db
+        click UploadsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/uploadsdb.py"
+        MetricsDB["Metrics DB<br/>(metricsdb.py)"]:::db
+        click MetricsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/metricsdb.py"
+        ReportsDB["Reports DB<br/>(reports_db.py)"]:::db
+        click ReportsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/reports_db.py"
+        ChromaDB["Chroma Store"]:::db
+        FS["File Storage<br/>uploaded_kbs/, unpacked_kbs/"]:::db
+    end
+
+    %% External Services
+    subgraph "External Services"
+        SCMachine["OSTIS SC-machine WS"]:::external
+        LLMService["Google LLM / GPT-4o-mini"]:::external
+    end
+
+    %% Connections
+    StreamlitUI -->|HTTP| APIGateway
+    TelegramUI -->|HTTP| APIGateway
+    CLI -->|HTTP| APIGateway
+
+    APIGateway -->|WebSocket| SCMachine
+    APIGateway -->|POST /query| SearchBasic
+    APIGateway -->|POST /query/adv| SearchAdv
+    APIGateway -->|POST /upload| MemLoader
+    APIGateway -->|interpret| JSONInterp
+    APIGateway -->|reindex| Reindex
+    SearchBasic -->|WS call| SCMachine
+    SearchAdv -->|WS call| SCMachine
+    MemLoader -->|WS load| SCMachine
+    JSONInterp -->|WS interpret| SCMachine
+    MemLoader -->|store files| FS
+    JSONInterp -->|store files| FS
+
+    APIGateway -->|calls| LLMCore
+    LLMCore -->|formats| LLMJson
+    LLMJson -->|response| APIGateway
+    APIGateway -->|HTTP| LLMService
+
+    APIGateway -->|metrics| MetricsMW
+    MetricsMW -->|write| MetricsDB
+
+    APIGateway -->|auth| UserDB
+    APIGateway -->|metadata| UploadsDB
+    ReportsAPI -->|read/write| ReportsDB
+    APIGateway -->|reporting| ReportsAPI
+
+    APIGateway -->|HTTP| RAG_Main
+    RAG_Main -->|uses| ChromaDB
+    RAG_Main -->|util| ChromaUtil
+    RAG_Main -->|util| LCUtil
+    RAG_Main -->|models| PydModels
+    RAG_Main -->|db util| DBUtils
+
+    %% Styles
+    classDef api fill:#CFE2FF,stroke:#03396c,color:#03396c
+    classDef db fill:#D5E8D4,stroke:#2E7D32,color:#2E7D32
+    classDef external fill:#FFEAC8,stroke:#E65100,color:#E65100
+    classDef client fill:#EAD1DC,stroke:#880E4F,color:#880E4F
+
+```
 UPD: 07.28.25
 
 ## Overview
