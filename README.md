@@ -2,7 +2,28 @@
 
 **English** | **[Русский](docs/ru/README.md)**
 
-A comprehensive OSTIS knowledge base management and query system with REST API, LLM integration, and semantic processing capabilities.
+A comprehensive knowledge base management and query system with RAG (Retrieval-Augmented Generation) capabilities, REST API, and semantic processing.
+
+## Features
+
+- **RAG API**: Document retrieval and generation using vector embeddings and LLMs
+- **Semantic Search**: Advanced search across documents using vector similarity
+- **Multiple Document Formats**: Support for PDF, DOCX, TXT, HTML, and Markdown
+- **RESTful API**: Easy integration with other services
+- **Secure Authentication**: JWT-based authentication
+- **Scalable Architecture**: Built with performance and scalability in mind
+
+## Documentation
+
+### English
+- [RAG API Documentation](docs/en/rag_api/README.md)
+- [API Endpoints](docs/en/rag_api/endpoints.md)
+- [Setup Guide](docs/en/rag_api/setup.md)
+
+### Русский
+- [Документация RAG API](docs/ru/rag_api/README.md)
+- [Конечные точки API](docs/ru/rag_api/endpoints.md)
+- [Руководство по настройке](docs/ru/rag_api/setup.md)
 
 ```mermaid
 
