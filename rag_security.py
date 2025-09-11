@@ -23,6 +23,16 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
     try:
         # Get all files user has access to
         allowed_files = await get_user_allowed_filenames(username)
+        # Build a normalized lookup for faster, more robust comparisons
+        # Normalize by: basename, strip 'temp_' prefix, lowercase
+        allowed_norm = None
+        if allowed_files is not None:
+            def norm(name: str) -> str:
+                base = os.path.basename(name or '')
+                if base.startswith('temp_'):
+                    base = base[5:]
+                return base.lower()
+            allowed_norm = {norm(f) for f in allowed_files}
         
         # Get relevant documents from the vector store
         docs = vectorstore.similarity_search_with_score(query, k=20)
@@ -34,11 +44,19 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
         for doc, score in docs:
             file_source = doc.metadata.get("source", "")
             file_name = os.path.basename(file_source)
+            # Normalized variants for robust matching
+            clean_base = file_name[5:] if file_name.startswith('temp_') else file_name
+            clean_base_lower = clean_base.lower()
             
             # Check if user has access to this file
-            has_access = (allowed_files is None or  # Admin has access to all files
-                        file_name in allowed_files or 
-                        file_source in allowed_files)
+            if allowed_files is None:
+                has_access = True
+            else:
+                has_access = (
+                    (allowed_norm is not None and clean_base_lower in allowed_norm)
+                    or (file_name in allowed_files)
+                    or (file_source in allowed_files)
+                )
             
             if has_access and file_source and file_source not in seen_files:
                 seen_files.add(file_source)
@@ -286,7 +304,19 @@ class SecureRAGRetriever:
                 # Clean up the answer
                 answer = answer.strip()
                 
-                # Format the source documents for display
+                # Prepare both raw and formatted source documents
+                # Raw docs with page_content/metadata expected by API
+                raw_sources = []
+                for file in relevant_files:
+                    raw_sources.append({
+                        'page_content': file.get('content', ''),
+                        'metadata': {
+                            'source': file.get('file_path', ''),
+                            'filename': file.get('file_name', '')
+                        }
+                    })
+
+                # Formatted docs for display
                 formatted_sources = []
                 for doc in relevant_files:
                     # Clean up the filename by removing 'temp_' and the extension
@@ -305,11 +335,22 @@ class SecureRAGRetriever:
                 return {
                     "answer": answer,
                     "source_documents": formatted_sources,
+                    "source_documents_raw": raw_sources,
                     "security_filtered": False
                 }
             except Exception as e:
                 logger.error(f"Error in RAG chain: {str(e)}")
-                # Format the source documents for display even in error case
+                # Prepare raw and formatted source documents even in error case
+                raw_sources = []
+                for file in relevant_files:
+                    raw_sources.append({
+                        'page_content': file.get('content', ''),
+                        'metadata': {
+                            'source': file.get('file_path', ''),
+                            'filename': file.get('file_name', '')
+                        }
+                    })
+
                 formatted_sources = []
                 for doc in relevant_files:
                     clean_name = doc.get('file_name', 'Unknown Document')
@@ -327,6 +368,7 @@ class SecureRAGRetriever:
                 return {
                     "answer": f"Error generating response: {str(e)}",
                     "source_documents": formatted_sources,
+                    "source_documents_raw": raw_sources,
                     "security_filtered": False
                 }
             

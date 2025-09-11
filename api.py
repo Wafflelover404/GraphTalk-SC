@@ -453,6 +453,8 @@ async def process_secure_rag_query(
 
         response = rag_result["answer"]
         source_docs = rag_result.get("source_documents", [])
+        # Prefer raw documents with page_content/metadata when provided by retriever
+        source_docs_raw = rag_result.get("source_documents_raw", [])
         security_filtered = rag_result.get("security_filtered", False)
         
         # Calculate response time
@@ -461,12 +463,18 @@ async def process_secure_rag_query(
         # Get client IP
         client_ip = request_obj.client.host if request_obj.client else None
         
-        # Extract source filenames
-        source_filenames = [
-            doc.metadata.get("source", "unknown") 
-            for doc in source_docs 
-            if hasattr(doc, "metadata")
-        ]
+        # Extract source filenames (prefer raw docs if available)
+        filenames_docs = source_docs_raw if source_docs_raw else source_docs
+        source_filenames = []
+        for doc in filenames_docs:
+            try:
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    source_filenames.append(meta.get("source", "unknown"))
+                elif hasattr(doc, "metadata"):
+                    source_filenames.append(doc.metadata.get("source", "unknown"))
+            except Exception:
+                source_filenames.append("unknown")
 
         # Log metrics
         log_query(
@@ -541,10 +549,16 @@ async def process_secure_rag_query(
             possible_files_by_title = await get_possible_files_by_title(username)
 
             rag_chunks = []
-            for doc in source_docs:
+            chunk_docs = source_docs_raw if source_docs_raw else source_docs
+            for doc in chunk_docs:
                 # Try to get filename from doc metadata, fallback to 'unknown'
-                fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
-                chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    fname = meta.get("source", "unknown")
+                    chunk = doc.get("page_content", "") or ""
+                else:
+                    fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
+                    chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
                 # Try to extract a base title from the chunk and map to possible filenames
                 base_title = extract_title_from_chunk(chunk)
                 possible_files = possible_files_by_title.get(base_title, []) if base_title else []
@@ -593,15 +607,15 @@ async def get_file_content(
     # Get client IP for metrics
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
     
-    # Admins can access any file
+    # Admins can access any file; for users: allowed_files=None means all files allowed
     if user[3] != "admin":
-        if allowed_files is None or resolved_filename not in allowed_files:
+        if allowed_files is not None and resolved_filename not in allowed_files:
             # Log security event for unauthorized access attempt
             log_security_event(
                 event_type="unauthorized_file_access",
                 ip_address=client_ip,
                 user_id=user[1],
-                details={"filename": decoded_filename},
+                details={"filename": resolved_filename},
                 severity="medium"
             )
             raise HTTPException(status_code=403, detail="You do not have access to this file.")
@@ -677,9 +691,9 @@ async def create_or_get_quiz(
     allowed_files = await get_allowed_files(user[1])
     logger.info(f"User {user[1]} requests quiz for file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
 
-    # Access control (same as file content)
+    # Access control (same as file content). allowed_files=None => allow all
     if user[3] != "admin":
-        if allowed_files is None or decoded_filename not in allowed_files:
+        if allowed_files is not None and resolved_filename not in allowed_files:
             client_ip = request_obj.client.host if request_obj and request_obj.client else None
             log_security_event(
                 event_type="unauthorized_file_access",

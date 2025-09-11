@@ -124,26 +124,60 @@ async def create_quiz_for_filename(source_filename: str) -> Optional[str]:
             "Rules: 3-8 questions; each has 3-5 plausible options; ensure exactly one correct answer; keep content faithful to the document."
         )
 
-        # Call LLM to generate quiz
-        quiz_text = await llm_call(
-            message=instruction,
-            data=content_snippet
-        )
+        # Call LLM to generate quiz with retries for transient errors
+        import asyncio
+        attempts = 0
+        max_attempts = 3
+        last_err_text = None
+        quiz_text = None
+        while attempts < max_attempts:
+            attempts += 1
+            try:
+                quiz_text = await llm_call(
+                    message=instruction,
+                    data=content_snippet
+                )
+                # If API occasionally returns stringified error, detect common overload status
+                if isinstance(quiz_text, str) and ("UNAVAILABLE" in quiz_text or "503" in quiz_text):
+                    last_err_text = quiz_text
+                    # Backoff then retry
+                    await asyncio.sleep(2 * attempts)
+                    continue
+                break
+            except Exception as e:
+                last_err_text = str(e)
+                await asyncio.sleep(2 * attempts)
 
-        # Try to ensure it's JSON. If not, wrap as text under a key.
+        # Try to ensure it's JSON. Handle cases where LLM returns fenced ```json blocks.
         quiz_json_str: str
         try:
-            parsed = json.loads(quiz_text)
+            # If response contains a fenced JSON block, extract it
+            if isinstance(quiz_text, str):
+                import re
+                m = re.search(r"```json\s*(\{.*?\})\s*```", quiz_text, re.DOTALL)
+                if m:
+                    quiz_text_to_parse = m.group(1)
+                else:
+                    # try generic fenced block
+                    m2 = re.search(r"```[a-zA-Z]*\s*(\{.*?\})\s*```", quiz_text, re.DOTALL)
+                    quiz_text_to_parse = m2.group(1) if m2 else quiz_text
+            else:
+                quiz_text_to_parse = quiz_text
+
+            parsed = json.loads(quiz_text_to_parse)
             # Normalize to ensure correct keys exist
             if isinstance(parsed, dict) and 'questions' in parsed:
                 quiz_json_str = json.dumps(parsed, ensure_ascii=False)
             else:
                 # Fallback wrap
-                quiz_json_str = json.dumps({"questions": [], "raw": quiz_text}, ensure_ascii=False)
+                quiz_json_str = json.dumps({"questions": [], "raw": quiz_text, "_attempts": attempts, "_error": last_err_text}, ensure_ascii=False)
         except Exception:
-            quiz_json_str = json.dumps({"questions": [], "raw": quiz_text}, ensure_ascii=False)
+            quiz_json_str = json.dumps({"questions": [], "raw": quiz_text, "_attempts": attempts, "_error": last_err_text}, ensure_ascii=False)
 
-        quiz_id = await insert_quiz_record(source_filename=source_filename, quiz_json=quiz_json_str, logs=None)
+        logs_txt = None
+        if last_err_text:
+            logs_txt = f"llm_attempts={attempts}, last_error={last_err_text[:500]}"
+        quiz_id = await insert_quiz_record(source_filename=source_filename, quiz_json=quiz_json_str, logs=logs_txt)
         return quiz_id
     except Exception as e:
         # Store failure log row to help debugging
