@@ -17,15 +17,16 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 embedding_function = SentenceTransformerEmbeddings(
-    model_name="sentence-transformers/all-mpnet-base-v2",  # More capable model for better embeddings
+    model_name="Qwen/Qwen3-Embedding-0.6B",  # More capable model for better embeddings
     model_kwargs={"device": "cpu"}
 )
 
-# Create a fresh Chroma instance with new collection name to avoid conflicts
+# Create a fresh Chroma instance with explicit dimensions
 vectorstore = Chroma(
     persist_directory="./chroma_db",
-    collection_name="documents_mpnet",  # New collection with better embeddings
-    embedding_function=embedding_function
+    collection_name="documents_qwen",  # New collection name to force recreation
+    embedding_function=embedding_function,
+    collection_metadata={"hnsw:space": "cosine"}  # Add metadata to ensure new collection
 )
 
 def load_and_split_document(file_path: str, filename: str) -> List[Document]:
