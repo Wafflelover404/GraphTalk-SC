@@ -19,61 +19,121 @@ import os
 logger = logging.getLogger(__name__)
 
 async def get_relevant_files_for_query(username: str, query: str, k: int = 5) -> List[Dict[str, Any]]:
-    """Get list of relevant files for a query that the user has access to."""
+    """
+    Get list of relevant files and chunks for a query that the user has access to.
+    Uses the enhanced search_documents function with filename similarity and semantic search.
+    """
     try:
-        # Get all files user has access to
+        from rag_api.chroma_utils import search_documents
+        
+        # Get user's file access permissions
+        # Returns None for admins (full access) or a list of allowed files
         allowed_files = await get_user_allowed_filenames(username)
-        # Build a normalized lookup for faster, more robust comparisons
-        # Normalize by: basename, strip 'temp_' prefix, lowercase
-        allowed_norm = None
-        if allowed_files is not None:
-            def norm(name: str) -> str:
-                base = os.path.basename(name or '')
-                if base.startswith('temp_'):
-                    base = base[5:]
-                return base.lower()
-            allowed_norm = {norm(f) for f in allowed_files}
         
-        # Get relevant documents from the vector store
-        docs = vectorstore.similarity_search_with_score(query, k=20)
+        # Normalize filenames for comparison (preserve 'temp_' prefix, just lowercase)
+        def normalize_filename(name: str) -> str:
+            if not name:
+                return ''
+            base = os.path.basename(name)
+            # Don't remove 'temp_' prefix for access control
+            return base.lower()
         
-        # Filter and rank files based on relevance and access
+        # If user is not an admin (allowed_files is a list), create a set for faster lookups
+        # For admins (allowed_files is None), they can access all files
+        allowed_files_set = None
+        if allowed_files is not None:  # Not an admin, has restricted access
+            allowed_files_set = {normalize_filename(f) for f in allowed_files if f}
+            logger.info(f"User {username} has restricted access to files: {allowed_files_set}")
+        else:
+            logger.info(f"User {username} is an admin and has access to all files")
+        
+        # Use our enhanced search function
+        logger.info(f"Searching for query: {query}")
+        logger.info(f"User {username} access: {'admin' if allowed_files is None else 'restricted'}")
+        
+        search_results = search_documents(
+            query=query,
+            similarity_threshold=0.3,  # Lower threshold to get more results
+            filename_similarity_threshold=0.5,  # Lower threshold for filename matching
+            include_full_document=False,
+            max_results=k * 5,  # Get more results to ensure we find matches
+            max_chunks_per_file=3  # Get up to 3 relevant chunks per file
+        )
+        
+        logger.info(f"Search results: {len(search_results.get('semantic_results', []))} semantic matches, {len(search_results.get('filename_matches', {}))} filename matches")
+        logger.info(f"Search stats: {search_results.get('stats', {})}")
+        
+        # Process semantic results
         relevant_files = []
         seen_files = set()
         
-        for doc, score in docs:
-            file_source = doc.metadata.get("source", "")
+        # Add semantic matches first
+        for doc in search_results.get('semantic_results', []):
+            file_source = doc.metadata.get('filename', '')
             file_name = os.path.basename(file_source)
-            # Normalized variants for robust matching
-            clean_base = file_name[5:] if file_name.startswith('temp_') else file_name
-            clean_base_lower = clean_base.lower()
             
-            # Check if user has access to this file
-            if allowed_files is None:
-                has_access = True
-            else:
-                has_access = (
-                    (allowed_norm is not None and clean_base_lower in allowed_norm)
-                    or (file_name in allowed_files)
-                    or (file_source in allowed_files)
-                )
+            # Check access if user has restricted access (not an admin)
+            if allowed_files_set is not None:  # If not None, user has restricted access
+                norm_name = normalize_filename(file_source)
+                if not norm_name or norm_name not in allowed_files_set:
+                    logger.debug(f"Skipping file {file_source} - not in allowed list")
+                    continue  # Skip files not in the allowed list
             
-            if has_access and file_source and file_source not in seen_files:
+            # Add file if not already seen
+            if file_source and file_source not in seen_files:
+                logger.info(f"Adding file: {file_source}")
                 seen_files.add(file_source)
                 relevant_files.append({
                     "file_path": file_source,
                     "file_name": file_name,
-                    "relevance_score": float(score),  # Ensure score is serializable
-                    "content": doc.page_content[:500]  # First 500 chars as preview
+                    "relevance_score": 1.0 - doc.metadata.get('similarity_score', 0.5),
+                    "content": doc.page_content,
+                    "chunks": [{"content": doc.page_content, "score": doc.metadata.get('similarity_score', 0.5)}]
                 })
+            # Add chunk to existing file
+            else:
+                for file in relevant_files:
+                    if file["file_path"] == file_source:
+                        if "chunks" not in file:
+                            file["chunks"] = []
+                        file["chunks"].append({
+                            "content": doc.page_content,
+                            "score": doc.metadata.get('similarity_score', 0.5)
+                        })
+                        # Update overall score to be the best chunk's score
+                        file["relevance_score"] = min(file["relevance_score"], 1.0 - doc.metadata.get('similarity_score', 0.5))
         
-        # Sort by relevance score (lower is better)
-        relevant_files.sort(key=lambda x: x["relevance_score"])
+        # Add filename matches if we don't have enough results
+        logger.info(f"Found {len(relevant_files)} relevant files, looking for up to {k}")
+        if len(relevant_files) < k:
+            for filename, match in search_results.get('filename_matches', {}).items():
+                if filename not in seen_files:
+                    # Only check access if user has restricted access (not an admin)
+                    if allowed_files_set is not None:  # If not None, user has restricted access
+                        norm_name = normalize_filename(filename)
+                        if not norm_name or norm_name not in allowed_files_set:
+                            logger.debug(f"Skipping filename match {filename} - not in allowed list")
+                            continue  # Skip files not in the allowed list
+                        
+                    seen_files.add(filename)
+                    relevant_files.append({
+                        "file_path": filename,
+                        "file_name": os.path.basename(filename),
+                        "relevance_score": 1.0 - match.get('similarity', 0.3),
+                        "content": match.get('content', '')[:500],
+                        "is_filename_match": True
+                    })
         
-        return relevant_files[:k]  # Return top k files
+        # Sort by relevance score (higher is better) and take top k
+        relevant_files.sort(key=lambda x: x["relevance_score"], reverse=True)
+        
+        # Ensure we don't return more than k files
+        return relevant_files[:k]
         
     except Exception as e:
-        logger.error(f"Error getting relevant files: {str(e)}")
+        logger.error(f"Error in get_relevant_files_for_query: {str(e)}")
+        logger.exception("Full traceback:")
+        return []
         return []
 
 async def filter_documents_by_user_access(documents: List[Any], username: str) -> List[Any]:
@@ -247,40 +307,92 @@ class SecureRAGRetriever:
     async def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
         Get relevant documents for a query that the user has access to.
-        Returns a list of document dictionaries with metadata.
+        Returns a list of document dictionaries with metadata and multiple chunks per file.
         """
-        return await get_relevant_files_for_query(self.username, query, k)
+        files = await get_relevant_files_for_query(self.username, query, k)
+        
+        # Convert to list of documents with proper format
+        documents = []
+        for file_info in files:
+            # For each chunk in the file, create a document
+            chunks = file_info.get('chunks', [{'content': file_info.get('content', '')}])
+            
+            for chunk in chunks:
+                doc = {
+                    'page_content': chunk.get('content', ''),
+                    'metadata': {
+                        'source': file_info['file_path'],
+                        'filename': file_info['file_name'],
+                        'relevance_score': 1.0 - chunk.get('score', 0.5),
+                        'is_filename_match': file_info.get('is_filename_match', False)
+                    }
+                }
+                documents.append(doc)
+        
+        return documents
     
     async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
         """
         Invoke RAG chain with security filtering.
         Returns a dictionary with answer, source documents, and relevant files.
+        Handles multiple chunks per file and preserves chunk relevance scores.
         """
         try:
-            # Get relevant files for the query
-            relevant_files = await self.get_relevant_documents(query)
+            # Get relevant documents for the query
+            relevant_docs = await self.get_relevant_documents(query)
             
-            if not relevant_files:
+            if not relevant_docs:
                 return {
                     "answer": "I couldn't find any relevant information in the documents you have access to.",
                     "source_documents": [],
+                    "source_documents_raw": [],
                     "relevant_files": [],
                     "security_filtered": True
                 }
             
-            # Prepare context for the RAG chain
-            context = [{
-                'page_content': file['content'],
-                'metadata': {
-                    'source': file['file_path'],
-                    'filename': file['file_name']
-                }
-            } for file in relevant_files]
+            # Group documents by file
+            files_dict = {}
+            for doc in relevant_docs:
+                file_path = doc['metadata']['source']
+                if file_path not in files_dict:
+                    files_dict[file_path] = {
+                        'file_path': file_path,
+                        'file_name': doc['metadata'].get('filename', os.path.basename(file_path)),
+                        'chunks': [],
+                        'is_filename_match': doc['metadata'].get('is_filename_match', False)
+                    }
+                files_dict[file_path]['chunks'].append({
+                    'content': doc['page_content'],
+                    'score': 1.0 - doc['metadata'].get('relevance_score', 0.5)
+                })
+            
+            # Convert to list and sort by best chunk score
+            relevant_files = list(files_dict.values())
+            for file_info in relevant_files:
+                file_info['chunks'].sort(key=lambda x: x['score'], reverse=True)
+                file_info['relevance_score'] = file_info['chunks'][0]['score'] if file_info['chunks'] else 0
+            
+            relevant_files.sort(key=lambda x: x['relevance_score'], reverse=True)
+            
+            # Prepare context for the RAG chain (use top chunks from each file)
+            context = []
+            for file_info in relevant_files:
+                if file_info['chunks']:
+                    # Use the top chunk for context
+                    top_chunk = file_info['chunks'][0]
+                    context.append({
+                        'page_content': top_chunk['content'],
+                        'metadata': {
+                            'source': file_info['file_path'],
+                            'filename': file_info['file_name'],
+                            'relevance_score': top_chunk['score']
+                        }
+                    })
             
             # Format the context as a string for the prompt
             context_str = "\n\n".join([
-                f"File: {file['file_name']}\nContent: {file['content']}"
-                for file in relevant_files
+                f"File: {doc['metadata']['filename']}\nContent: {doc['page_content']}"
+                for doc in context
             ])
             
             try:
@@ -307,29 +419,39 @@ class SecureRAGRetriever:
                 # Prepare both raw and formatted source documents
                 # Raw docs with page_content/metadata expected by API
                 raw_sources = []
-                for file in relevant_files:
+                for doc in context:
                     raw_sources.append({
-                        'page_content': file.get('content', ''),
+                        'page_content': doc['page_content'],
                         'metadata': {
-                            'source': file.get('file_path', ''),
-                            'filename': file.get('file_name', '')
+                            'source': doc['metadata'].get('source', ''),
+                            'filename': doc['metadata'].get('filename', ''),
+                            'relevance_score': doc['metadata'].get('relevance_score', 0.5)
                         }
                     })
 
                 # Formatted docs for display
                 formatted_sources = []
-                for doc in relevant_files:
+                for file_info in relevant_files:
+                    if not file_info.get('chunks'):
+                        continue
+                        
                     # Clean up the filename by removing 'temp_' and the extension
-                    clean_name = doc.get('file_name', 'Unknown Document')
+                    clean_name = file_info.get('file_name', 'Unknown Document')
                     if clean_name.startswith('temp_'):
                         clean_name = clean_name[5:]  # Remove 'temp_' prefix
                     if '.' in clean_name:
                         clean_name = clean_name.rsplit('.', 1)[0]  # Remove file extension
                     
+                    # Show top chunk content and indicate if there are more
+                    top_chunk = file_info['chunks'][0]
+                    has_more = len(file_info['chunks']) > 1
+                    
                     formatted_sources.append({
                         'title': clean_name,
-                        'content': doc.get('content', '')[:200] + '...',  # Show first 200 chars
-                        'relevance': f"{1 - doc.get('relevance_score', 0):.0%}"  # Convert to percentage
+                        'content': top_chunk['content'][:200] + ('...' if len(top_chunk['content']) > 200 else ''),
+                        'relevance': f"{top_chunk['score']:.0%}",  # Convert to percentage
+                        'has_more_chunks': has_more,
+                        'chunk_count': len(file_info['chunks'])
                     })
                 
                 return {

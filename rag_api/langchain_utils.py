@@ -6,7 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
-from chroma_utils import vectorstore
+from chroma_utils import vectorstore, search_documents
 
 # Initialize the Google Generative AI client
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -16,19 +16,37 @@ google_api_key = os.environ.get("GOOGLE_API_KEY")
 if not google_api_key:
     raise ValueError("GOOGLE_API_KEY environment variable is not set")
 
-# Configure retriever to get more results
-retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={
-        "k": 20,  # Get more results initially
-        "score_threshold": 0.3  # Lower threshold to get more potential matches
-    }
-)
+class ChromaRetriever:
+    def __init__(self, vectorstore):
+        self.vectorstore = vectorstore
+    
+    def get_relevant_documents(self, query: str) -> list[Document]:
+        """Retrieve documents relevant to the query."""
+        # Use our enhanced search function
+        results = search_documents(
+            query=query,
+            similarity_threshold=0.3,  # Match the previous threshold
+            max_results=20,  # Match the previous k value
+            include_full_document=False  # We just need the chunks for RAG
+        )
+        
+        # Return the semantic search results as Documents
+        return results.get('semantic_results', [])
+    
+    async def aget_relevant_documents(self, query: str) -> list[Document]:
+        """Async version of get_relevant_documents."""
+        return self.get_relevant_documents(query)
+
+# Create a custom retriever that uses our enhanced search
+retriever = ChromaRetriever(vectorstore)
 
 # Simple prompt focused on document content
 qa_prompt = """You are a helpful AI assistant. 
-Use the following context to answer the question. If the context doesn't contain relevant information, 
-say "I couldn't find relevant information in the documents. You MUST ALWAYS RESPONSE IN SAME LANGUAGE AS USER REQUEST."
+Use the following context to answer the question. The context comes from document chunks that were found relevant to your query.
+
+If the context doesn't contain relevant information, say "I couldn't find relevant information in the documents." 
+
+IMPORTANT: You MUST ALWAYS RESPOND IN THE SAME LANGUAGE AS THE USER'S REQUEST.
 
 Context:
 {context}
