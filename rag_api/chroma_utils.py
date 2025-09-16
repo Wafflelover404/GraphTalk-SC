@@ -163,44 +163,37 @@ def _meets_search_requirements(
 def search_documents(
     query: str,
     similarity_threshold: float = 0.1,  # Lower threshold to get more chunks
-    filename_similarity_threshold: float = 0.3,  # Lower threshold for filename matching
+    filename_similarity_threshold: float = 0.5,  # Increased threshold for more precise filename matching
     include_full_document: bool = True,
-    max_results: int = 20,  # Increased to allow for multiple chunks
+    max_results: int = 20,  # Maximum total results to return
     check_requirements_first: bool = True,
     min_relevance_score: float = 0.1,  # Lower threshold to include more potentially relevant chunks
-    max_chunks_per_file: int = 3  # Maximum number of chunks to return per file
+    max_chunks_per_file: int = 5,  # Increased number of chunks to return per file
+    filename_match_boost: float = 2.0  # Boost score for filename matches
 ) -> Dict[str, Union[List[Document], Dict[str, any]]]:
     """
-    Windsurf-like document search that first checks if files meet requirements
-    before performing expensive operations.
+    Enhanced document search with improved filename matching and chunk retrieval.
     
     Args:
         query: The search query
         similarity_threshold: Minimum similarity score (0-1) for semantic search results
-        filename_similarity_threshold: Minimum similarity score (0-1) for filename matching
+        filename_similarity_threshold: Similarity threshold for filename matching (0-1)
         include_full_document: If True, includes full document content when filename matches
         max_results: Maximum number of results to return
-        check_requirements_first: If True, performs lightweight checks before full processing
+        check_requirements_first: If True, performs lightweight checks first
+        min_relevance_score: Minimum score to include a result
+        max_chunks_per_file: Maximum number of chunks to return per file
+        filename_match_boost: Score multiplier for filename matches
         
     Returns:
         Dictionary with search results:
         - 'semantic_results': List of matching document chunks with scores and metadata
-        - 'filename_matches': Dict of {filename: {'content': str, 'similarity': float, 'metadata': dict}}
+        - 'filename_matches': Dict of {filename: {'chunks': List[dict], 'metadata': dict, 'total_chunks': int}}
         - 'stats': Dictionary with search statistics
     """
+    import time
+    start_time = time.time()
     logger = logging.getLogger(__name__)
-    results = {
-        'semantic_results': [],
-        'filename_matches': {},
-        'stats': {
-            'total_checked': 0,
-            'met_requirements': 0,
-            'filename_matches': 0,
-            'semantic_matches': 0,
-            'processing_time_ms': None,
-            'error': None
-        }
-    }
     
     # Ensure we're using the correct embedding function
     if not hasattr(vectorstore, '_embedding_function'):
@@ -210,200 +203,163 @@ def search_documents(
             model_kwargs={"device": "cpu"}
         )
     
-    import time
-    start_time = time.time()
+    # Initialize results
+    results = {
+        'semantic_results': [],
+        'filename_matches': {},
+        'stats': {
+            'total_checked': 0,
+            'filename_matches': 0,
+            'semantic_matches': 0,
+            'processing_time_ms': None,
+            'query': query,  # Include original query in stats
+            'error': None
+        }
+    }
     
     try:
-        # Get all documents metadata first for requirement checking
-        logger.info("Fetching all documents from vectorstore...")
-        all_docs = vectorstore.get()
-        total_docs = len(all_docs.get('ids', []))
-        logger.info(f"Total documents in vectorstore: {total_docs}")
+        # First, perform a semantic search
+        query_embedding = vectorstore._embedding_function.embed_query(query)
         
-        if not all_docs.get('ids') or total_docs == 0:
-            logger.warning("No documents found in the vectorstore")
-            results['stats']['error'] = 'No documents in vectorstore'
-            return results
+        # Get all documents with their embeddings
+        collection = vectorstore._collection.get(include=['embeddings', 'metadatas', 'documents'])
+        
+        # Track seen files and their chunks
+        file_chunks = {}
+        
+        # Process each document
+        for idx, (doc_embedding, metadata, content) in enumerate(zip(
+            collection['embeddings'], 
+            collection['metadatas'], 
+            collection['documents']
+        )):
+            results['stats']['total_checked'] += 1
+            filename = metadata.get('filename', '')
+            file_id = metadata.get('file_id', '')
             
-        logger.info("Generating query embedding...")
-        try:
-            query_embedding = embedding_function.embed_query(query)
-            if not query_embedding or len(query_embedding) == 0:
-                raise ValueError("Empty query embedding generated")
-            logger.info(f"Query embedding generated with dimension: {len(query_embedding)}")
-        except Exception as e:
-            logger.error(f"Error generating query embedding: {str(e)}")
-            results['stats']['error'] = f'Error generating query embedding: {str(e)}'
-            return results
-        
-        # 1. First, perform a semantic search to find all relevant chunks
-        logger.info("Querying vectorstore...")
-        try:
-            all_chunks = vectorstore._collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(50, len(all_docs.get('ids', []))),
-                include=['documents', 'metadatas', 'distances']
+            # Calculate filename similarity
+            filename_similarity = _calculate_filename_similarity(query, filename)
+            
+            # Calculate semantic similarity
+            semantic_similarity = np.dot(query_embedding, doc_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
             )
             
-            # Verify the response structure
-            if not all_chunks or 'ids' not in all_chunks or not all_chunks['ids']:
-                logger.warning("No results returned from vectorstore query")
-                results['stats']['error'] = 'No results from vectorstore query'
-                return results
-                
-            # Group chunks by file
-            file_chunks = {}
+            # Boost score for filename matches
+            if filename_similarity >= filename_similarity_threshold:
+                semantic_similarity = min(1.0, semantic_similarity * filename_match_boost)
             
-            # Log the number of chunks found
-            num_chunks = len(all_chunks.get('ids', [[]])[0])
-            logger.info(f"Found {num_chunks} chunks from vectorstore")
-            
-            if num_chunks == 0:
-                logger.warning("No chunks found in vectorstore query results")
-                results['stats']['error'] = 'No chunks found in vectorstore query results'
-                return results
-                
-        except Exception as e:
-            logger.error(f"Error querying vectorstore: {str(e)}")
-            results['stats']['error'] = f'Error querying vectorstore: {str(e)}'
-            return results
-        
-        chunks_data = zip(
-            all_chunks.get('ids', [[]])[0],
-            all_chunks.get('metadatas', [[]])[0],
-            all_chunks.get('documents', [[]])[0],
-            all_chunks.get('distances', [[1.0]])[0]
-        )
-        
-        for i, (doc_id, metadata, content, distance) in enumerate(chunks_data):
-            if not content or not isinstance(metadata, dict):
+            # Skip if below minimum relevance
+            if semantic_similarity < min_relevance_score:
                 continue
                 
-            filename = metadata.get('filename', 'untitled')
-            similarity = 1.0 - min(max(float(distance), 0.0), 1.0)
+            # Create document object
+            doc = Document(
+                page_content=content,
+                metadata=metadata
+            )
             
-            if similarity < min_relevance_score:
-                continue
-                
-            if filename not in file_chunks:
-                file_chunks[filename] = []
-                
-            file_chunks[filename].append({
-                'content': content,
-                'similarity': similarity,
-                'metadata': metadata,
-                'distance': distance
-            })
-        
-        # Sort chunks within each file by similarity (highest first)
-        for filename in file_chunks:
-            file_chunks[filename].sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # 2. Process the chunks, keeping the best ones per file
-        processed_files = set()
-        
-        # First, add filename matches if they exist
-        for filename, chunks in file_chunks.items():
-            if not chunks:
-                continue
-                
-            # Check if this is a filename match
-            filename_similarity = _calculate_filename_similarity(query, filename)
-            is_filename_match = filename_similarity >= filename_similarity_threshold
-            
-            if is_filename_match and include_full_document:
-                # For filename matches, include all relevant chunks
-                relevant_chunks = chunks[:max_chunks_per_file]
-                full_content = "\n\n".join(chunk['content'] for chunk in relevant_chunks)
-                
-                # Calculate average similarity for the file
-                avg_similarity = sum(chunk['similarity'] for chunk in relevant_chunks) / len(relevant_chunks)
-                
-                results['filename_matches'][filename] = {
-                    'content': full_content,
-                    'similarity': max(filename_similarity, avg_similarity),
-                    'metadata': relevant_chunks[0]['metadata'],
-                    'chunk_count': len(relevant_chunks)
+            # Track chunks per file
+            if file_id not in file_chunks:
+                file_chunks[file_id] = {
+                    'chunks': [],
+                    'filename': filename,
+                    'metadata': metadata,
+                    'best_score': 0
                 }
-                processed_files.add(filename)
-        
-        # Then add semantic matches from files that weren't filename matches
-        for filename, chunks in file_chunks.items():
-            if filename in processed_files or not chunks:
-                continue
-                
-            # Take top N chunks per file for semantic matches
-            relevant_chunks = chunks[:max_chunks_per_file]
             
-            # Add each chunk as a separate result
-            for chunk in relevant_chunks:
-                if chunk['similarity'] >= similarity_threshold:
-                    doc_obj = Document(
-                        page_content=chunk['content'],
-                        metadata=chunk['metadata'].copy()
-                    )
-                    doc_obj.metadata.update({
-                        'similarity_score': chunk['similarity'],
-                        'filename': filename,
-                        'is_filename_match': False
-                    })
-                    results['semantic_results'].append(doc_obj)
-                    results['stats']['semantic_matches'] += 1
+            # Store chunk with score
+            chunk_data = {
+                'content': content,
+                'score': float(semantic_similarity),
+                'metadata': metadata
+            }
+            
+            file_chunks[file_id]['chunks'].append(chunk_data)
+            file_chunks[file_id]['best_score'] = max(
+                file_chunks[file_id]['best_score'], 
+                semantic_similarity
+            )
+            
+            # Track filename matches
+            if filename_similarity >= filename_similarity_threshold:
+                if filename not in results['filename_matches']:
+                    results['stats']['filename_matches'] += 1
+                    results['filename_matches'][filename] = {
+                        'chunks': [],
+                        'metadata': metadata,
+                        'total_chunks': 0
+                    }
+                
+                # Add to filename matches
+                results['filename_matches'][filename]['chunks'].append(chunk_data)
+                results['filename_matches'][filename]['total_chunks'] += 1
         
-        # Sort and limit semantic results
-        results['semantic_results'].sort(
-            key=lambda x: x.metadata.get('similarity_score', 0),
+        # Process file chunks to get top results
+        sorted_files = sorted(
+            file_chunks.values(), 
+            key=lambda x: x['best_score'], 
             reverse=True
         )
         
-        # Apply max_results to the combined results
-        total_results = len(results['semantic_results']) + len(results['filename_matches'])
-        if total_results > max_results:
-            # If we have too many results, prioritize filename matches
-            if results['filename_matches']:
-                keep_filename = min(len(results['filename_matches']), max_results // 2)
-                results['filename_matches'] = dict(
-                    sorted(
-                        results['filename_matches'].items(),
-                        key=lambda x: x[1]['similarity'],
-                        reverse=True
-                    )[:keep_filename]
+        # Add top chunks to results
+        for file_data in sorted_files:
+            # Sort chunks by score
+            sorted_chunks = sorted(
+                file_data['chunks'], 
+                key=lambda x: x['score'], 
+                reverse=True
+            )
+            
+            # Take top N chunks per file
+            top_chunks = sorted_chunks[:max_chunks_per_file]
+            
+            # Add to semantic results
+            for chunk in top_chunks:
+                doc = Document(
+                    page_content=chunk['content'],
+                    metadata=chunk['metadata']
                 )
+                results['semantic_results'].append((doc, chunk['score']))
+                results['stats']['semantic_matches'] += 1
                 
-                # Take remaining slots from semantic results
-                remaining = max_results - len(results['filename_matches'])
-                results['semantic_results'] = results['semantic_results'][:remaining]
-            else:
-                results['semantic_results'] = results['semantic_results'][:max_results]
+                # Limit total results
+                if len(results['semantic_results']) >= max_results:
+                    break
+            
+            if len(results['semantic_results']) >= max_results:
+                break
+        
+        # Sort semantic results by score
+        results['semantic_results'] = sorted(
+            results['semantic_results'],
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        # Convert to list of documents for compatibility
+        semantic_docs = [doc for doc, _ in results['semantic_results']]
+        results['semantic_results'] = semantic_docs
+        
+        # Process filename matches to include full document if requested
+        if include_full_document:
+            for filename, match_data in results['filename_matches'].items():
+                # Sort chunks by score and take top N
+                sorted_chunks = sorted(
+                    match_data['chunks'],
+                    key=lambda x: x['score'],
+                    reverse=True
+                )[:max_chunks_per_file]
+                
+                # Update with sorted and limited chunks
+                match_data['chunks'] = sorted_chunks
+                match_data['total_chunks'] = len(sorted_chunks)
         
         # Update stats
-        results['stats'].update({
-            'total_files_processed': len(file_chunks),
-            'files_with_matches': len(processed_files),
-            'total_chunks_processed': sum(len(chunks) for chunks in file_chunks.values()),
-            'total_matching_chunks': len(results['semantic_results']) + sum(
-                match.get('chunk_count', 1) for match in results['filename_matches'].values()
-            )
-        })
-        
-        # Log the final results
         results['stats']['processing_time_ms'] = int((time.time() - start_time) * 1000)
-        logger.info(f"Search completed in {results['stats']['processing_time_ms']}ms")
-        logger.info(f"Total semantic matches: {len(results['semantic_results'])}")
-        logger.info(f"Total filename matches: {len(results['filename_matches'])}")
-        
-        # If no results, log some debug info
-        if not results['semantic_results'] and not results['filename_matches']:
-            logger.warning("No search results found. Check if documents are properly indexed.")
-            logger.debug(f"Search parameters: {locals()}")
-            
-        return results
         
     except Exception as e:
-        print(f"Error during search: {str(e)}")
-        return results
-        return results
-        
-    except Exception as e:
-        print(f"Error during search: {str(e)}")
-        return results
+        logger.error(f"Error in search_documents: {str(e)}", exc_info=True)
+        results['stats']['error'] = str(e)
+    
+    return results
