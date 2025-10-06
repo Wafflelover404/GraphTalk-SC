@@ -42,20 +42,30 @@ class ChromaRetriever:
 # Create a custom retriever that uses our enhanced search
 retriever = ChromaRetriever(vectorstore)
 
-# Simple prompt focused on document content
-qa_prompt = """You are a helpful AI assistant. 
-Use the following context to answer the question. The context comes from document chunks that were found relevant to your query.
+# Enhanced prompt with better context utilization and response guidance
+qa_prompt = """You are an expert assistant analyzing company documents. Your task is to provide accurate, detailed answers based on the provided context.
 
-If the context doesn't contain relevant information, say "I couldn't find relevant information in the documents." 
+GUIDELINES:
+1. ALWAYS respond in the same language as the user's question.
+2. If the context is insufficient, say "I couldn't find enough information to fully answer your question."
+3. When possible, provide specific details, names, dates, and numbers from the context.
+4. If the context contains multiple relevant points, include them all in a structured way.
+5. For complex topics, break down the information into clear, organized sections.
+6. If the context contains technical terms or jargon, explain them when necessary.
+7. For financial or numerical data, include specific figures from the context.
 
-IMPORTANT: You MUST ALWAYS RESPOND IN THE SAME LANGUAGE AS THE USER'S REQUEST.
-
-Context:
+CONTEXT:
 {context}
 
-Question: {input}
+QUESTION: {input}
 
-Answer:"""
+Before answering, analyze the context and follow these steps:
+1. Identify all relevant information in the context
+2. Organize the information logically
+3. Cross-reference multiple context sections if available
+4. Provide a comprehensive response that directly addresses the question
+
+ANSWER (be thorough and specific):"""
 
 def get_rag_chain(model: str = None):
     # List available models if none specified
@@ -76,11 +86,19 @@ def get_rag_chain(model: str = None):
             print(f"Error listing models: {e}")
             model = "gemini-1.5-flash"  # Fallback
     
-    # Initialize LLM with the selected model
+    # Initialize LLM with enhanced configuration for better responses
     llm = ChatGoogleGenerativeAI(
         model=model,
         google_api_key=google_api_key,
-        max_output_tokens=2048
+        max_output_tokens=4096,  # Increased for more detailed responses
+        temperature=0.3,  # Lower for more focused, deterministic responses
+        top_p=0.9,  # Controls diversity of responses
+        top_k=40,   # Broader sampling of next tokens
+        n=1,        # Number of responses to generate
+        stop_sequences=None,  # Let the model decide when to stop
+        request_options={
+            'timeout': 60,  # Increased timeout for complex queries
+        }
     )
     
     # Create a simple chain that just formats the prompt

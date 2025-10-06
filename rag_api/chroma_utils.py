@@ -416,16 +416,17 @@ def batch_cosine_similarity(query_embedding: np.ndarray, doc_embeddings: np.ndar
 
 def search_documents(
     query: str,
-    similarity_threshold: float = 0.1,
-    filename_similarity_threshold: float = 0.5,
+    similarity_threshold: float = 0.2,  # Increased from 0.1 to filter out weaker matches
+    filename_similarity_threshold: float = 0.7,
     include_full_document: bool = True,
     max_results: int = 20,
-    min_relevance_score: float = 0.1,
-    max_chunks_per_file: int = 5,
-    filename_match_boost: float = 2.0,
+    min_relevance_score: float = 0.3,  # Increased from 0.1 to show only more relevant results
+    max_chunks_per_file: Optional[int] = None,  # If None, no limit on chunks per file
+    filename_match_boost: float = 1.5,  # Reduced from 2.0 to balance between filename and content relevance
     use_cache: bool = True,
     language: str = 'russian',
-    batch_size: int = 100
+    batch_size: int = 100,
+    max_chars_per_chunk: int = 1000  # Maximum characters per chunk to return
 ) -> Dict[str, Union[List[Document], Dict[str, any]]]:
     """
     Optimized document search with vectorized operations and caching.
@@ -615,18 +616,40 @@ def search_documents(
         # Process top chunks
         semantic_results = []
         for file_data in sorted_files:
-            # Sort chunks by score and take top N
+            # Sort chunks by score in descending order
             sorted_chunks = sorted(
                 file_data['chunks'],
                 key=lambda x: x['score'],
                 reverse=True
-            )[:max_chunks_per_file]
+            )
             
-            # Add to semantic results
+            # Filter chunks by minimum score and apply max_chunks_per_file if specified
+            relevant_chunks = []
             for chunk in sorted_chunks:
+                if chunk['score'] >= min_relevance_score:
+                    relevant_chunks.append(chunk)
+                    if max_chunks_per_file and len(relevant_chunks) >= max_chunks_per_file:
+                        break
+            
+            # Add relevant chunks to results with content length limit
+            for chunk in relevant_chunks:
+                # Limit chunk content length
+                content = chunk['content']
+                if len(content) > max_chars_per_chunk:
+                    # Try to find a good truncation point near the limit
+                    truncate_at = content.rfind(' ', 0, max_chars_per_chunk)
+                    if truncate_at > 0:  # Found a space to truncate at
+                        content = content[:truncate_at] + '...'
+                    else:
+                        content = content[:max_chars_per_chunk] + '...'
+                
                 doc = Document(
-                    page_content=chunk['content'],
-                    metadata=chunk['metadata']
+                    page_content=content,
+                    metadata={
+                        **chunk['metadata'],
+                        'relevance_score': float(chunk['score']),  # Add score to metadata
+                        'is_filename_match': chunk.get('is_filename_match', False)
+                    }
                 )
                 semantic_results.append((doc, chunk['score']))
                 results['stats']['semantic_matches'] += 1

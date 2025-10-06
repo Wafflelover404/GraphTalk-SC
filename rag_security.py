@@ -28,7 +28,7 @@ from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
 logger = logging.getLogger(__name__)
 
-async def get_relevant_files_for_query(username: str, query: str, k: int = 5) -> List[Dict[str, Any]]:
+async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -> List[Dict[str, Any]]:
     """
     Get list of relevant files and chunks for a query that the user has access to.
     Uses the enhanced search_documents function with filename similarity and semantic search.
@@ -69,59 +69,111 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
         logger.info(f"User {username} access: {'admin' if allowed_files is None else 'restricted'}")
 
         tracker.start_operation("search_documents")
+        # First pass: Get broad results with lower threshold
         search_results = search_documents(
             query=query,
-            similarity_threshold=0.3,  # Lower threshold to get more results
-            filename_similarity_threshold=0.5,  # Lower threshold for filename matching
-            include_full_document=False,
-            max_results=k * 5,  # Get more results to ensure we find matches
-            max_chunks_per_file=3  # Get up to 3 relevant chunks per file
+            similarity_threshold=0.2,  # Lower threshold to get more potential matches
+            filename_similarity_threshold=0.6,  # Slightly lower for broader filename matching
+            include_full_document=True,  # Get full document context
+            max_results=k * 3,  # Get more initial results
+            max_chunks_per_file=5,  # Get more chunks per file
+            min_relevance_score=0.25,  # Slightly lower minimum score
+            filename_match_boost=1.3,  # Moderate boost for filename matches
+            language='russian'  # Explicitly set language for better tokenization
         )
+        
+        # If we don't have enough high-confidence results, try a more permissive search
+        if len(search_results.get('semantic_results', [])) < k:
+            logger.info("Performing fallback search with expanded parameters")
+            fallback_results = search_documents(
+                query=query,
+                similarity_threshold=0.15,  # Even lower threshold
+                filename_similarity_threshold=0.5,
+                include_full_document=True,
+                max_results=k * 5,  # Get even more results
+                max_chunks_per_file=3,
+                min_relevance_score=0.2,
+                filename_match_boost=1.1,
+                language='russian'
+            )
+            # Merge results, preferring the first pass
+            search_results['semantic_results'] = (
+                search_results.get('semantic_results', []) +
+                [r for r in fallback_results.get('semantic_results', [])
+                 if r not in search_results.get('semantic_results', [])]
+            )
         tracker.end_operation("search_documents", f"Found {len(search_results.get('semantic_results', []))} semantic, {len(search_results.get('filename_matches', {}))} filename matches")
 
         logger.info(f"Search results: {len(search_results.get('semantic_results', []))} semantic matches, {len(search_results.get('filename_matches', {}))} filename matches")
         logger.info(f"Search stats: {search_results.get('stats', {})}")
 
-        # Process semantic results
+        # Process semantic results with enhanced context
         tracker.start_operation("process_semantic_results")
         relevant_files = []
         seen_files = set()
+        file_chunks = {}
 
-        # Add semantic matches first
+        # First pass: Group all chunks by file
         for doc in search_results.get('semantic_results', []):
             file_source = doc.metadata.get('filename', '')
-            file_name = os.path.basename(file_source)
-
+            if not file_source:
+                continue
+                
             # Check access if user has restricted access (not an admin)
             if allowed_files_set is not None:  # If not None, user has restricted access
                 norm_name = normalize_filename(file_source)
                 if not norm_name or norm_name not in allowed_files_set:
                     logger.debug(f"Skipping file {file_source} - not in allowed list")
-                    continue  # Skip files not in the allowed list
+                    continue
 
-            # Add file if not already seen
-            if file_source and file_source not in seen_files:
-                logger.info(f"Adding file: {file_source}")
-                seen_files.add(file_source)
-                relevant_files.append({
-                    "file_path": file_source,
-                    "file_name": file_name,
-                    "relevance_score": 1.0 - doc.metadata.get('similarity_score', 0.5),
-                    "content": doc.page_content,
-                    "chunks": [{"content": doc.page_content, "score": doc.metadata.get('similarity_score', 0.5)}]
-                })
-            # Add chunk to existing file
-            else:
-                for file in relevant_files:
-                    if file["file_path"] == file_source:
-                        if "chunks" not in file:
-                            file["chunks"] = []
-                        file["chunks"].append({
-                            "content": doc.page_content,
-                            "score": doc.metadata.get('similarity_score', 0.5)
-                        })
-                        # Update overall score to be the best chunk's score
-                        file["relevance_score"] = min(file["relevance_score"], 1.0 - doc.metadata.get('similarity_score', 0.5))
+            # Initialize file entry if not exists
+            if file_source not in file_chunks:
+                file_chunks[file_source] = []
+                
+            # Add chunk with metadata
+            chunk_data = {
+                "content": doc.page_content,
+                "score": doc.metadata.get('similarity_score', 0.5),
+                "metadata": {
+                    k: v for k, v in doc.metadata.items()
+                    if k not in ['filename', 'source']  # Exclude redundant fields
+                }
+            }
+            file_chunks[file_source].append(chunk_data)
+
+        # Process each file's chunks for optimal context
+        for file_source, chunks in file_chunks.items():
+            # Sort chunks by score (descending)
+            chunks.sort(key=lambda x: x['score'], reverse=True)
+            
+            # Take top chunks but ensure we don't exceed reasonable context length
+            max_chunks = 5  # Maximum chunks per file to include
+            selected_chunks = chunks[:max_chunks]
+            
+            # Calculate aggregate relevance score (weighted average)
+            total_score = sum(c['score'] for c in selected_chunks)
+            avg_score = total_score / len(selected_chunks) if selected_chunks else 0
+            
+            # Combine chunks with separators
+            combined_content = "\n\n---\n\n".join(
+                f"[Relevance: {c['score']:.2f}]\n{c['content']}" 
+                for c in selected_chunks
+            )
+            
+            # Add file metadata
+            file_metadata = {}
+            if selected_chunks and 'metadata' in selected_chunks[0]:
+                file_metadata = selected_chunks[0]['metadata']
+            
+            relevant_files.append({
+                "file_path": file_source,
+                "file_name": os.path.basename(file_source),
+                "relevance_score": avg_score,
+                "content": combined_content,
+                "chunks": selected_chunks,
+                "metadata": file_metadata
+            })
+            seen_files.add(file_source)
 
         # Add filename matches if we don't have enough results
         logger.info(f"Found {len(relevant_files)} relevant files, looking for up to {k}")
