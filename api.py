@@ -19,6 +19,8 @@ import aiofiles.os
 import glob
 import asyncio
 
+from rag_api.timing_utils import Timer, PerformanceTracker, time_block
+
 from userdb import (
     create_user, verify_user, update_access_token, get_user, get_allowed_files, 
     get_user_by_token, list_users, create_session, get_user_by_session_id, 
@@ -425,24 +427,33 @@ async def process_secure_rag_query(
     user=Depends(get_current_user)
 ):
     """Process a query using RAG with file access security"""
+    logger = logging.getLogger(__name__)
+    tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
+
     try:
         username = user[1]  # Extract username from user tuple
         role = user[3]  # Get user role
         session_id = str(uuid.uuid4())  # Generate session for this query
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
-        
+
         # Start time for response time tracking
+        tracker.start_operation("query_start")
         start_time = datetime.datetime.now()
 
         # Clean up expired sessions periodically
+        tracker.start_operation("cleanup_sessions")
         await cleanup_expired_sessions()
+        tracker.end_operation("cleanup_sessions")
 
         # Initialize the RAG chain
+        tracker.start_operation("init_rag_chain")
         from rag_api.langchain_utils import get_rag_chain
         rag_chain = get_rag_chain()
-        
+        tracker.end_operation("init_rag_chain")
+
         # Use secure RAG retriever that respects file permissions
+        tracker.start_operation("secure_retrieval")
         secure_retriever = SecureRAGRetriever(username)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             rag_chain=rag_chain,
@@ -450,20 +461,26 @@ async def process_secure_rag_query(
             model_type=model_type,
             humanize=request.humanize if hasattr(request, 'humanize') else True
         )
+        tracker.end_operation("secure_retrieval")
 
         response = rag_result["answer"]
         source_docs = rag_result.get("source_documents", [])
         # Prefer raw documents with page_content/metadata when provided by retriever
         source_docs_raw = rag_result.get("source_documents_raw", [])
         security_filtered = rag_result.get("security_filtered", False)
-        
+
         # Calculate response time
+        tracker.start_operation("calculate_response_time")
         response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
-        
+        tracker.end_operation("calculate_response_time")
+
         # Get client IP
+        tracker.start_operation("get_client_ip")
         client_ip = request_obj.client.host if request_obj.client else None
-        
+        tracker.end_operation("get_client_ip")
+
         # Extract source filenames (prefer raw docs if available)
+        tracker.start_operation("extract_filenames")
         filenames_docs = source_docs_raw if source_docs_raw else source_docs
         source_filenames = []
         for doc in filenames_docs:
@@ -475,8 +492,10 @@ async def process_secure_rag_query(
                     source_filenames.append(doc.metadata.get("source", "unknown"))
             except Exception:
                 source_filenames.append("unknown")
+        tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
 
         # Log metrics
+        tracker.start_operation("log_metrics")
         log_query(
             session_id=session_id,
             user_id=username,
@@ -511,6 +530,7 @@ async def process_secure_rag_query(
             f"{response} [Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
             model_type
         )
+        tracker.end_operation("log_metrics")
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
 
@@ -528,6 +548,8 @@ async def process_secure_rag_query(
 
         # If humanize is True (default): return LLM response as before
         if request.humanize is None or request.humanize:
+            tracker.end_operation("query_start")
+            tracker.log_summary()
             return APIResponse(
                 status="success",
                 message=f"Query processed with secure RAG using {model_type} model",
@@ -565,7 +587,9 @@ async def process_secure_rag_query(
                 rag_chunks.append(
                     f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
                 )
-            
+
+            tracker.end_operation("query_start")
+            tracker.log_summary()
             return APIResponse(
                 status="success",
                 message="Query processed with secure RAG (raw chunks)",
@@ -584,6 +608,7 @@ async def process_secure_rag_query(
             )
     except Exception as e:
         logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
+        tracker.log_summary()
         return APIResponse(status="error", message=str(e), response=None)
 from fastapi.responses import PlainTextResponse
 from urllib.parse import unquote

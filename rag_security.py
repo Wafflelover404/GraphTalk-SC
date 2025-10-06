@@ -12,9 +12,19 @@ import logging
 sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
 
 from userdb import get_user_allowed_filenames, check_file_access
-from rag_api.chroma_utils import vectorstore
+
+# Import chroma_utils components with explicit path handling
+try:
+    import rag_api.chroma_utils as chroma_utils
+    vectorstore = chroma_utils.vectorstore
+except (ImportError, NameError, AttributeError) as e:
+    print(f"Warning: Could not import vectorstore: {e}")
+    vectorstore = None
+    chroma_utils = None
+
 from typing import List, Dict, Any
 import os
+from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +33,18 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
     Get list of relevant files and chunks for a query that the user has access to.
     Uses the enhanced search_documents function with filename similarity and semantic search.
     """
+    logger = logging.getLogger(__name__)
+    tracker = PerformanceTracker(f"get_relevant_files_for_query('{username}', '{query[:50]}...')", logger)
+
     try:
         from rag_api.chroma_utils import search_documents
-        
+
         # Get user's file access permissions
+        tracker.start_operation("get_user_permissions")
         # Returns None for admins (full access) or a list of allowed files
         allowed_files = await get_user_allowed_filenames(username)
-        
+        tracker.end_operation("get_user_permissions")
+
         # Normalize filenames for comparison (preserve 'temp_' prefix, just lowercase)
         def normalize_filename(name: str) -> str:
             if not name:
@@ -37,20 +52,23 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
             base = os.path.basename(name)
             # Don't remove 'temp_' prefix for access control
             return base.lower()
-        
+
         # If user is not an admin (allowed_files is a list), create a set for faster lookups
         # For admins (allowed_files is None), they can access all files
+        tracker.start_operation("build_access_set")
         allowed_files_set = None
         if allowed_files is not None:  # Not an admin, has restricted access
             allowed_files_set = {normalize_filename(f) for f in allowed_files if f}
             logger.info(f"User {username} has restricted access to files: {allowed_files_set}")
         else:
             logger.info(f"User {username} is an admin and has access to all files")
-        
+        tracker.end_operation("build_access_set")
+
         # Use our enhanced search function
         logger.info(f"Searching for query: {query}")
         logger.info(f"User {username} access: {'admin' if allowed_files is None else 'restricted'}")
-        
+
+        tracker.start_operation("search_documents")
         search_results = search_documents(
             query=query,
             similarity_threshold=0.3,  # Lower threshold to get more results
@@ -59,26 +77,28 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
             max_results=k * 5,  # Get more results to ensure we find matches
             max_chunks_per_file=3  # Get up to 3 relevant chunks per file
         )
-        
+        tracker.end_operation("search_documents", f"Found {len(search_results.get('semantic_results', []))} semantic, {len(search_results.get('filename_matches', {}))} filename matches")
+
         logger.info(f"Search results: {len(search_results.get('semantic_results', []))} semantic matches, {len(search_results.get('filename_matches', {}))} filename matches")
         logger.info(f"Search stats: {search_results.get('stats', {})}")
-        
+
         # Process semantic results
+        tracker.start_operation("process_semantic_results")
         relevant_files = []
         seen_files = set()
-        
+
         # Add semantic matches first
         for doc in search_results.get('semantic_results', []):
             file_source = doc.metadata.get('filename', '')
             file_name = os.path.basename(file_source)
-            
+
             # Check access if user has restricted access (not an admin)
             if allowed_files_set is not None:  # If not None, user has restricted access
                 norm_name = normalize_filename(file_source)
                 if not norm_name or norm_name not in allowed_files_set:
                     logger.debug(f"Skipping file {file_source} - not in allowed list")
                     continue  # Skip files not in the allowed list
-            
+
             # Add file if not already seen
             if file_source and file_source not in seen_files:
                 logger.info(f"Adding file: {file_source}")
@@ -102,7 +122,7 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
                         })
                         # Update overall score to be the best chunk's score
                         file["relevance_score"] = min(file["relevance_score"], 1.0 - doc.metadata.get('similarity_score', 0.5))
-        
+
         # Add filename matches if we don't have enough results
         logger.info(f"Found {len(relevant_files)} relevant files, looking for up to {k}")
         if len(relevant_files) < k:
@@ -114,7 +134,7 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
                         if not norm_name or norm_name not in allowed_files_set:
                             logger.debug(f"Skipping filename match {filename} - not in allowed list")
                             continue  # Skip files not in the allowed list
-                        
+
                     seen_files.add(filename)
                     relevant_files.append({
                         "file_path": filename,
@@ -123,17 +143,21 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 5) ->
                         "content": match.get('content', '')[:500],
                         "is_filename_match": True
                     })
-        
+
         # Sort by relevance score (higher is better) and take top k
         relevant_files.sort(key=lambda x: x["relevance_score"], reverse=True)
-        
+
         # Ensure we don't return more than k files
-        return relevant_files[:k]
-        
+        result = relevant_files[:k]
+        tracker.end_operation("process_semantic_results", f"Returning {len(result)} relevant files")
+
+        tracker.log_summary()
+        return result
+
     except Exception as e:
         logger.error(f"Error in get_relevant_files_for_query: {str(e)}")
         logger.exception("Full traceback:")
-        return []
+        tracker.log_summary()
         return []
 
 async def filter_documents_by_user_access(documents: List[Any], username: str) -> List[Any]:
@@ -141,16 +165,23 @@ async def filter_documents_by_user_access(documents: List[Any], username: str) -
     Filter documents based on user's file access permissions.
     Only return documents from files the user is allowed to access.
     """
+    logger = logging.getLogger(__name__)
+    tracker = PerformanceTracker(f"filter_documents_by_user_access('{username}', {len(documents)} docs)", logger)
+
     try:
         # Get user's allowed files
+        tracker.start_operation("get_user_permissions")
         allowed_files = await get_user_allowed_filenames(username)
-        
+        tracker.end_operation("get_user_permissions")
+
         # If None, user can access all files (admin or 'all' permission)
         if allowed_files is None:
             logger.info(f"User {username} has access to all files")
+            tracker.log_summary()
             return documents
-        
+
         # Filter documents
+        tracker.start_operation("filter_documents")
         filtered_docs = []
         for doc in documents:
             # Get filename from document metadata
@@ -158,18 +189,21 @@ async def filter_documents_by_user_access(documents: List[Any], username: str) -
             if hasattr(doc, 'metadata') and doc.metadata:
                 # First try to get filename directly from metadata
                 filename = doc.metadata.get('filename', '')
-                
+
                 # If not found, try to extract from source path
                 if not filename:
                     source = doc.metadata.get('source', '')
                     if source:
                         filename = os.path.basename(source)
-            
+
             if filename:
                 # Strip temp_ prefix when checking permissions
                 clean_filename = filename.replace('temp_', '')
                 # Check if user has access to this file
+                tracker.start_operation("check_file_access")
                 has_access = await check_file_access(username, clean_filename)
+                tracker.end_operation("check_file_access")
+
                 if has_access:
                     filtered_docs.append(doc)
                 else:
@@ -186,12 +220,15 @@ async def filter_documents_by_user_access(documents: List[Any], username: str) -
             else:
                 # If no filename found, be conservative and exclude
                 logger.warning(f"Document has no filename metadata, excluding for user {username}")
-        
+
+        tracker.end_operation("filter_documents", f"Filtered {len(documents)} → {len(filtered_docs)} docs")
+        tracker.log_summary()
         logger.info(f"Filtered {len(documents)} documents to {len(filtered_docs)} for user {username}")
         return filtered_docs
-        
+
     except Exception as e:
         logger.error(f"Error filtering documents for user {username}: {e}")
+        tracker.log_summary()
         # On error, return empty list for security
         return []
 
@@ -200,16 +237,21 @@ async def get_filtered_rag_context(query: str, username: str, k: int = 3) -> Lis
     Get RAG context documents filtered by user's file access permissions.
     """
     try:
+        # Check if vectorstore is available
+        if vectorstore is None:
+            logger.error("Vectorstore not available for RAG context retrieval")
+            return []
+
         # Get documents from vector store
         retriever = vectorstore.as_retriever(search_kwargs={"k": k * 2})  # Get more than needed
         all_docs = retriever.get_relevant_documents(query)
-        
+
         # Filter by user permissions
         filtered_docs = await filter_documents_by_user_access(all_docs, username)
-        
+
         # Return only the requested number of documents
         return filtered_docs[:k]
-        
+
     except Exception as e:
         logger.error(f"Error getting filtered RAG context for user {username}: {e}")
         return []

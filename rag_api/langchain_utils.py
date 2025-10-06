@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -7,6 +8,7 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
 from chroma_utils import vectorstore, search_documents
+from timing_utils import Timer, PerformanceTracker, time_block
 
 # Initialize the Google Generative AI client
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -78,85 +80,50 @@ def get_rag_chain(model: str = None):
     llm = ChatGoogleGenerativeAI(
         model=model,
         google_api_key=google_api_key,
-        temperature=0.2,
         max_output_tokens=2048
     )
     
     # Create a simple chain that just formats the prompt
     async def answer_chain(inputs):
+        logger = logging.getLogger(__name__)
+        tracker = PerformanceTracker(f"answer_chain", logger)
+
         try:
             # Format the prompt with context and question
+            tracker.start_operation("format_prompt")
             context = inputs.get("context", "No context provided")
             user_input = inputs.get("input", "No question provided")
-            
+
             # Format the prompt
             prompt = qa_prompt.format(
                 context=context,
                 input=user_input
             )
-            
+            tracker.end_operation("format_prompt")
+
             # Get the LLM response
+            tracker.start_operation("llm_call")
             response = await llm.ainvoke(prompt)
-            
+            tracker.end_operation("llm_call")
+
             # Extract the content from the response
+            tracker.start_operation("extract_response")
             if hasattr(response, 'content'):
-                return response.content
+                result = response.content
             elif isinstance(response, str):
-                docs = inputs.get("docs", [])
-                relevance_scores = inputs.get("relevance_scores", [])
-                username = inputs.get("username", "")
-                chunks = []
-                for doc, relevance in zip(docs, relevance_scores):
-                    # Get the filename from metadata, default to unknown
-                    filename = doc.metadata.get('filename', doc.metadata.get('source', 'unknown'))
-                    # Get just the base filename with extension
-                    base_filename = os.path.basename(str(filename))
-                    # Ensure .md extension is included in title
-                    title = base_filename if base_filename.endswith('.md') else f"{base_filename}.md"
-                    
-                    # Clean and escape content
-                    content = (
-                        doc.page_content
-                        .replace('"', '\\"')
-                        .replace('\n', ' ')
-                        .strip()
-                    )
-                    
-                    # Create a proper JSON string
-                    chunk_data = {
-                        'title': title,
-                        'content': content,
-                        'relevance': f"{relevance}%"
-                    }
-                    
-                    # Convert to JSON string and add filename tag
-                    chunk_str = (
-                        f"{json.dumps(chunk_data, ensure_ascii=False)}\n"
-                        f"<filename>{filename}</filename>"
-                    )
-                    chunks.append(chunk_str)
-                
-                return {
-                    "status": "success",
-                    "message": "Query processed with secure RAG (raw chunks)",
-                    "response": {
-                        "chunks": chunks,
-                        "model": "server",
-                        "security_info": {
-                            "user_filtered": True,
-                            "username": username,
-                            "source_documents_count": len(docs),
-                            "security_filtered": False
-                        }
-                    }
-                }
+                result = response
             elif hasattr(response, 'text'):
-                return response.text
+                result = response.text
             else:
-                return str(response)
-                
+                result = str(response)
+            tracker.end_operation("extract_response")
+
+            tracker.log_summary()
+            return result
+
         except Exception as e:
             logger.error(f"Error in answer_chain: {str(e)}")
+            tracker.log_summary()
             return f"Error generating response: {str(e)}"
     
     # Create the chain
