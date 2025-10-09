@@ -84,7 +84,7 @@ def get_rag_chain(model: str = None):
                 raise ValueError("No suitable model found. Please check your API key and permissions.")
         except Exception as e:
             print(f"Error listing models: {e}")
-            model = "gemini-1.5-flash"  # Fallback
+            model = "gemini-2.5-flash"  # Fallback
     
     # Initialize LLM with enhanced configuration for better responses
     llm = ChatGoogleGenerativeAI(

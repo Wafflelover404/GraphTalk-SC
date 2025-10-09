@@ -463,11 +463,60 @@ async def process_secure_rag_query(
         )
         tracker.end_operation("secure_retrieval")
 
-        response = rag_result["answer"]
+        # Get the immediate response with source documents
         source_docs = rag_result.get("source_documents", [])
-        # Prefer raw documents with page_content/metadata when provided by retriever
         source_docs_raw = rag_result.get("source_documents_raw", [])
         security_filtered = rag_result.get("security_filtered", False)
+        
+        # Prepare immediate response data
+        immediate_response = {
+            "files": [],
+            "snippets": [],
+            "model": model_type,
+            "security_info": {
+                "user_filtered": True,
+                "username": username,
+                "source_documents_count": len(source_docs),
+                "security_filtered": security_filtered
+            }
+        }
+        
+        # Extract file information and snippets
+        filenames_docs = source_docs_raw if source_docs_raw else source_docs
+        for doc in filenames_docs:
+            try:
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    source = meta.get("source", "unknown")
+                    content = doc.get("page_content", "") or ""
+                else:
+                    source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+                    content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                
+                if source not in immediate_response["files"]:
+                    immediate_response["files"].append(source)
+                
+                immediate_response["snippets"].append({
+                    "content": content,
+                    "source": source
+                })
+            except Exception as e:
+                logger.warning(f"Error processing document: {e}")
+        
+        # Generate LLM overview if humanize is enabled
+        overview = None
+        if request.humanize is None or request.humanize:
+            try:
+                from llm import llm_call
+                llm_response = await llm_call(
+                    request.question,
+                    {"source_documents": source_docs, "answer": rag_result.get("answer", "")},
+                    get_overview=True
+                )
+                overview = llm_response.get("overview")
+            except Exception as e:
+                logger.error(f"Error generating LLM overview: {e}")
+                overview = "Error generating overview. Showing raw results."
 
         # Calculate response time
         tracker.start_operation("calculate_response_time")
@@ -496,23 +545,27 @@ async def process_secure_rag_query(
 
         # Log metrics
         tracker.start_operation("log_metrics")
+        
+        # Create a response text for logging
+        response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
+        
         log_query(
             session_id=session_id,
             user_id=username,
             role=role,
             question=request.question,
-            answer=response,
+            answer=response_text,
             model_type=model_type,
             humanize=request.humanize if request.humanize is not None else True,
             source_document_count=len(source_docs),
             security_filtered=security_filtered,
-            source_filenames=source_filenames,
+            source_filenames=immediate_response["files"],
             ip_address=client_ip,
             response_time_ms=int(response_time)
         )
 
         # Log file access for each source document
-        for filename in source_filenames:
+        for filename in immediate_response["files"]:
             log_file_access(
                 user_id=username,
                 role=role,
@@ -527,15 +580,15 @@ async def process_secure_rag_query(
         insert_application_logs(
             session_id,
             request.question,
-            f"{response} [Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
+            f"Found {len(source_docs)} source documents [Security filtered: {security_filtered}]",
             model_type
         )
         tracker.end_operation("log_metrics")
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
 
-        # If no response, auto-submit report
-        if not response or (isinstance(response, str) and not response.strip()):
+        # If no documents found, auto-submit report
+        if not source_docs and not source_docs_raw:
             from reports_db import submit_report
             permitted_files = await get_allowed_files(username)
             if permitted_files is None:
@@ -543,26 +596,45 @@ async def process_secure_rag_query(
             submit_report(
                 user=username,
                 permitted_files=permitted_files,
-                issue=f"No response from knowledge base for query: {request.question}"
+                issue=f"No documents found for query: {request.question}"
+            )
+            return APIResponse(
+                status="success",
+                message="No matching documents found",
+                response={
+                    "immediate": {
+                        "files": [],
+                        "snippets": [],
+                        "model": model_type,
+                        "security_info": {
+                            "user_filtered": True,
+                            "username": username,
+                            "source_documents_count": 0,
+                            "security_filtered": security_filtered
+                        }
+                    },
+                    "model": model_type
+                }
             )
 
-        # If humanize is True (default): return LLM response as before
+        # If humanize is True (default): return response with immediate data and optional overview
         if request.humanize is None or request.humanize:
             tracker.end_operation("query_start")
             tracker.log_summary()
+            
+            response_data = {
+                "immediate": immediate_response,
+                "model": model_type,
+                "security_info": immediate_response["security_info"]
+            }
+            
+            if overview is not None:
+                response_data["overview"] = overview
+            
             return APIResponse(
                 status="success",
                 message=f"Query processed with secure RAG using {model_type} model",
-                response={
-                    "answer": response,
-                    "model": model_type,
-                    "security_info": {
-                        "user_filtered": True,
-                        "username": username,
-                        "source_documents_count": len(source_docs),
-                        "security_filtered": security_filtered
-                    }
-                }
+                response=response_data
             )
         else:
             # If humanize is False: return array of RAG chunks with <filename></filename> tag
