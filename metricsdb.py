@@ -139,6 +139,15 @@ def log_query(
     response_time_ms: Optional[int] = None
 ):
     """Log detailed RAG query."""
+    import uuid
+    import logging
+    
+    # Validate session_id is not None or empty
+    if not session_id:
+        logger = logging.getLogger(__name__)
+        logger.error(f"log_query called with invalid session_id: {session_id}. Generating new UUID.")
+        session_id = str(uuid.uuid4())
+    
     conn = sqlite3.connect(METRICS_DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''

@@ -7,6 +7,7 @@ import sys
 import os
 from typing import List, Optional, Dict, Any
 import logging
+import uuid
 
 # Add rag_api to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
@@ -394,8 +395,9 @@ class SecureRAGRetriever:
     Uses file-based retrieval without chat history.
     """
     
-    def __init__(self, username: str):
+    def __init__(self, username: str, session_id: str = None):
         self.username = username
+        self.session_id = session_id or str(uuid.uuid4())
         self.rag_chain = None
     
     async def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
@@ -403,27 +405,33 @@ class SecureRAGRetriever:
         Get relevant documents for a query that the user has access to.
         Returns a list of document dictionaries with metadata and multiple chunks per file.
         """
-        files = await get_relevant_files_for_query(self.username, query, k)
-        
-        # Convert to list of documents with proper format
-        documents = []
-        for file_info in files:
-            # For each chunk in the file, create a document
-            chunks = file_info.get('chunks', [{'content': file_info.get('content', '')}])
+        logger = logging.getLogger(__name__)
+        try:
+            files = await get_relevant_files_for_query(self.username, query, k)
             
-            for chunk in chunks:
-                doc = {
-                    'page_content': chunk.get('content', ''),
-                    'metadata': {
-                        'source': file_info['file_path'],
-                        'filename': file_info['file_name'],
-                        'relevance_score': 1.0 - chunk.get('score', 0.5),
-                        'is_filename_match': file_info.get('is_filename_match', False)
+            # Convert to list of documents with proper format
+            documents = []
+            for file_info in files:
+                # For each chunk in the file, create a document
+                chunks = file_info.get('chunks', [{'content': file_info.get('content', '')}])
+                
+                for chunk in chunks:
+                    doc = {
+                        'page_content': chunk.get('content', ''),
+                        'metadata': {
+                            'source': file_info['file_path'],
+                            'filename': file_info['file_name'],
+                            'relevance_score': 1.0 - chunk.get('score', 0.5),
+                            'is_filename_match': file_info.get('is_filename_match', False),
+                            'session_id': self.session_id  # Add session_id to metadata
+                        }
                     }
-                }
-                documents.append(doc)
-        
-        return documents
+                    documents.append(doc)
+            
+            return documents
+        except Exception as e:
+            logger.error(f"Error in get_relevant_documents for session {self.session_id}: {str(e)}")
+            return []
     
     async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
         """

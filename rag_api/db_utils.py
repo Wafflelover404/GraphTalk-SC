@@ -9,15 +9,19 @@ def get_db_connection():
 	return conn
 
 def create_application_logs():
-	conn = get_db_connection()
-	conn.execute('''CREATE TABLE IF NOT EXISTS application_logs
-					(id INTEGER PRIMARY KEY AUTOINCREMENT,
-					 session_id TEXT,
-					 user_query TEXT,
-					 gpt_response TEXT,
-					 model TEXT,
-					 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-	conn.close()
+    conn = get_db_connection()
+    # Drop the existing table if it exists to recreate it with the correct schema
+    conn.execute('''DROP TABLE IF EXISTS application_logs''')
+    # Recreate the table with NOT NULL constraint on session_id
+    conn.execute('''CREATE TABLE application_logs
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     session_id TEXT NOT NULL,
+                     user_query TEXT,
+                     gpt_response TEXT,
+                     model TEXT,
+                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
 
 def create_document_store():
 	conn = get_db_connection()

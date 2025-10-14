@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body, WebSocket, WebSocketDisconnect
 from typing import Optional, List, Union, Dict, Any
 import datetime
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -47,6 +47,7 @@ import datetime
 from metricsdb import init_metrics_db, log_event, log_query, log_file_access, log_security_event
 from metrics_middleware import MetricsMiddleware
 from quizdb import init_quiz_db, create_quiz_for_filename, get_quiz_by_filename
+from rag_api.db_utils import insert_application_logs
 
 # Initialize metrics database
 init_metrics_db()
@@ -419,14 +420,263 @@ def extract_title_from_chunk(chunk_text: str) -> Optional[str]:
         return m.group(1).strip()
     return None
 
-# SECURE RAG Query endpoint with file access control
+# WebSocket authentication helper
+async def get_user_from_token(token: str):
+    """Authenticate user from WebSocket token parameter"""
+    if not token:
+        return None
+    
+    # Try session_id authentication first
+    user = await get_user_by_session_id(token)
+    if user:
+        return user
+    
+    # Fallback to token-based authentication
+    user = await get_user_by_token(token)
+    return user
+
+# WebSocket endpoint for streaming query responses
+@app.websocket("/ws/query")
+async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
+    """WebSocket endpoint for streaming RAG queries with real-time responses"""
+    logger = logging.getLogger(__name__)
+    
+    # Authenticate user
+    user = await get_user_from_token(token) if token else None
+    if not user:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    
+    await websocket.accept()
+    logger.info(f"WebSocket connection established for user {user[1]}")
+    
+    try:
+        while True:
+            # Receive query message
+            data = await websocket.receive_json()
+            
+            question = data.get("question")
+            humanize = data.get("humanize", True)
+            session_id = data.get("session_id", str(uuid.uuid4()))
+            
+            if not question:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Question is required"
+                })
+                continue
+            
+            username = user[1]
+            role = user[3]
+            model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+            
+            # Send acknowledgment
+            await websocket.send_json({
+                "type": "status",
+                "message": "Processing query...",
+                "status": "processing"
+            })
+            
+            start_time = datetime.datetime.now()
+            
+            try:
+                # Cleanup expired sessions
+                await cleanup_expired_sessions()
+                
+                # Initialize RAG chain
+                from rag_api.langchain_utils import get_rag_chain
+                rag_chain = get_rag_chain()
+                
+                # Use secure RAG retriever
+                secure_retriever = SecureRAGRetriever(username)
+                rag_result = await secure_retriever.invoke_secure_rag_chain(
+                    rag_chain=rag_chain,
+                    query=question,
+                    model_type=model_type,
+                    humanize=humanize
+                )
+                
+                # Get source documents
+                source_docs = rag_result.get("source_documents", [])
+                source_docs_raw = rag_result.get("source_documents_raw", [])
+                security_filtered = rag_result.get("security_filtered", False)
+                
+                # Prepare response data
+                immediate_response = {
+                    "files": [],
+                    "snippets": [],
+                    "model": model_type,
+                    "security_info": {
+                        "user_filtered": True,
+                        "username": username,
+                        "source_documents_count": len(source_docs),
+                        "security_filtered": security_filtered
+                    }
+                }
+                
+                # Extract file information and snippets
+                filenames_docs = source_docs_raw if source_docs_raw else source_docs
+                for doc in filenames_docs:
+                    try:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            source = meta.get("source", "unknown")
+                            content = doc.get("page_content", "") or ""
+                        else:
+                            source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+                            content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                        
+                        if source not in immediate_response["files"]:
+                            immediate_response["files"].append(source)
+                        
+                        immediate_response["snippets"].append({
+                            "content": content,
+                            "source": source
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error processing document: {e}")
+                
+                # Send immediate results
+                await websocket.send_json({
+                    "type": "immediate",
+                    "data": immediate_response
+                })
+                
+                # Generate LLM overview if humanize is enabled
+                if humanize:
+                    try:
+                        from llm import llm_call
+                        llm_response = await llm_call(
+                            question,
+                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")},
+                            get_overview=True
+                        )
+                        overview = llm_response.get("overview")
+                        
+                        if overview:
+                            await websocket.send_json({
+                                "type": "overview",
+                                "data": overview
+                            })
+                    except Exception as e:
+                        logger.error(f"Error generating LLM overview: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Error generating overview"
+                        })
+                
+                # Handle non-humanized response (raw chunks)
+                if not humanize:
+                    available_files = await get_available_filenames(username)
+                    possible_files_by_title = await get_possible_files_by_title(username)
+                    
+                    rag_chunks = []
+                    chunk_docs = source_docs_raw if source_docs_raw else source_docs
+                    for doc in chunk_docs:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            fname = meta.get("source", "unknown")
+                            chunk = doc.get("page_content", "") or ""
+                        else:
+                            fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
+                            chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                        
+                        base_title = extract_title_from_chunk(chunk)
+                        possible_files = possible_files_by_title.get(base_title, []) if base_title else []
+                        rag_chunks.append(
+                            f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
+                        )
+                    
+                    await websocket.send_json({
+                        "type": "chunks",
+                        "data": {
+                            "chunks": rag_chunks,
+                            "available_files": available_files,
+                            "possible_files_by_title": possible_files_by_title
+                        }
+                    })
+                
+                # Calculate response time
+                response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+                
+                # Extract source filenames for logging
+                source_filenames = []
+                for doc in filenames_docs:
+                    try:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            source_filenames.append(meta.get("source", "unknown"))
+                        elif hasattr(doc, "metadata"):
+                            source_filenames.append(doc.metadata.get("source", "unknown"))
+                    except Exception:
+                        source_filenames.append("unknown")
+                
+                # Log metrics
+                response_text = rag_result.get("answer", "") if humanize else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
+                
+                # Ensure session_id is valid before logging
+                if not session_id:
+                    logger.error("session_id is None or empty before log_query call in websocket")
+                    session_id = str(uuid.uuid4())
+                
+                log_query(
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=question,
+                    answer=response_text,
+                    model_type=model_type,
+                    humanize=humanize,
+                    source_document_count=len(source_docs),
+                    security_filtered=security_filtered,
+                    source_filenames=immediate_response["files"],
+                    ip_address=websocket.client.host if websocket.client else None,
+                    response_time_ms=int(response_time)
+                )
+                
+                # Log file access
+                for filename in immediate_response["files"]:
+                    log_file_access(
+                        user_id=username,
+                        role=role,
+                        filename=filename,
+                        access_type="retrieved_in_rag",
+                        session_id=session_id,
+                        ip_address=websocket.client.host if websocket.client else None,
+                        query_context=question[:100]
+                    )
+                
+                # Send completion
+                await websocket.send_json({
+                    "type": "complete",
+                    "message": "Query processed successfully",
+                    "response_time_ms": int(response_time)
+                })
+                
+            except Exception as e:
+                logger.exception(f"Error processing WebSocket query for user {username}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(e)
+                })
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for user {user[1] if user else 'unknown'}")
+    except Exception as e:
+        logger.exception(f"WebSocket error: {e}")
+        try:
+            await websocket.close(code=1011, reason="Internal server error")
+        except:
+            pass
+
+# SECURE RAG Query endpoint with file access control (HTTP fallback)
 @app.post("/query", response_model=APIResponse)
 async def process_secure_rag_query(
     request: RAGQueryRequest,
     request_obj: Request,
     user=Depends(get_current_user)
 ):
-    """Process a query using RAG with file access security"""
+    """Process a query using RAG with file access security (HTTP fallback for compatibility)"""
     logger = logging.getLogger(__name__)
     tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
 
@@ -434,6 +684,7 @@ async def process_secure_rag_query(
         username = user[1]  # Extract username from user tuple
         role = user[3]  # Get user role
         session_id = str(uuid.uuid4())  # Generate session for this query
+        client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
 
@@ -454,7 +705,7 @@ async def process_secure_rag_query(
 
         # Use secure RAG retriever that respects file permissions
         tracker.start_operation("secure_retrieval")
-        secure_retriever = SecureRAGRetriever(username)
+        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             rag_chain=rag_chain,
             query=request.question,
@@ -548,6 +799,11 @@ async def process_secure_rag_query(
         
         # Create a response text for logging
         response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
+        
+        # Ensure session_id is valid before logging
+        if not session_id:
+            logger.error("session_id is None or empty before log_query call")
+            session_id = str(uuid.uuid4())
         
         log_query(
             session_id=session_id,
@@ -893,6 +1149,11 @@ async def secure_chat(
         ]
 
         # Log metrics
+        # Ensure session_id is valid before logging
+        if not session_id:
+            logger.error("session_id is None or empty before log_query call in secure_chat")
+            session_id = str(uuid.uuid4())
+        
         log_query(
             session_id=session_id,
             user_id=username,
@@ -900,12 +1161,12 @@ async def secure_chat(
             question=request.question,
             answer=answer,
             model_type=model_type,
-            humanize=True,  # Chat always uses humanized responses
+            humanize=getattr(request, 'humanize', True),
             source_document_count=len(source_docs),
             security_filtered=security_filtered,
             source_filenames=source_filenames,
-            ip_address=client_ip,
-            response_time_ms=int(response_time)
+            response_time_ms=int(response_time),
+            ip_address=request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
         )
 
         # Log file access for each source document
