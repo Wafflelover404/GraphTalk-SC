@@ -1,22 +1,66 @@
 import os
 import json
 import logging
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from dotenv import load_dotenv
 from langchain_core.documents import Document
 from chroma_utils import vectorstore, search_documents
 from timing_utils import Timer, PerformanceTracker, time_block
 
-# Initialize the Google Generative AI client
-genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+# Load environment variables
+load_dotenv()
 
-# Initialize Google's Gemini model
-google_api_key = os.environ.get("GOOGLE_API_KEY")
-if not google_api_key:
-    raise ValueError("GOOGLE_API_KEY environment variable is not set")
+# Configuration - Priority: DeepSeek > ChatGPT > Gemini > None
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Initialize clients
+deepseek_client = None
+openai_client = None
+gemini_client = None
+active_llm = None
+
+# Try DeepSeek first (preferred)
+if DEEPSEEK_API_KEY:
+    try:
+        from openai import AsyncOpenAI
+        deepseek_client = AsyncOpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com/v1"
+        )
+        active_llm = "deepseek"
+        print("✓ DeepSeek client initialized for RAG chain")
+    except Exception as e:
+        print(f"Warning: Failed to initialize DeepSeek client: {e}")
+        deepseek_client = None
+
+# Try ChatGPT/OpenAI if DeepSeek is not available
+if not deepseek_client and OPENAI_API_KEY:
+    try:
+        from openai import AsyncOpenAI
+        openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        active_llm = "chatgpt"
+        print("✓ ChatGPT (OpenAI) client initialized for RAG chain")
+    except Exception as e:
+        print(f"Warning: Failed to initialize OpenAI client: {e}")
+        openai_client = None
+
+# Try Gemini if DeepSeek and ChatGPT are not available
+if not deepseek_client and not openai_client and GEMINI_API_KEY:
+    try:
+        from google import genai
+        # Set the API key in environment for the library
+        if not os.getenv("GOOGLE_API_KEY"):
+            os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        active_llm = "gemini"
+        print("✓ Gemini client initialized for RAG chain")
+    except Exception as e:
+        print(f"Warning: Failed to initialize Gemini client: {e}")
+        gemini_client = None
+
+if not deepseek_client and not openai_client and not gemini_client:
+    print("ℹ No LLM API key found. RAG will work in retrieval-only mode.")
 
 class ChromaRetriever:
     def __init__(self, vectorstore):
@@ -68,38 +112,9 @@ Before answering, analyze the context and follow these steps:
 ANSWER (be thorough and specific):"""
 
 def get_rag_chain(model: str = None):
-    # List available models if none specified
+    # Model parameter is kept for backward compatibility but not used with DeepSeek
     if model is None:
-        try:
-            models = genai.list_models()
-            available_models = [m.name for m in models]
-            print("Available models:", available_models)
-            # Try to find a suitable model
-            for m in ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"]:
-                if any(m in name for name in available_models):
-                    model = m
-                    print(f"Using model: {model}")
-                    break
-            if model is None:
-                raise ValueError("No suitable model found. Please check your API key and permissions.")
-        except Exception as e:
-            print(f"Error listing models: {e}")
-            model = "gemini-2.5-flash"  # Fallback
-    
-    # Initialize LLM with enhanced configuration for better responses
-    llm = ChatGoogleGenerativeAI(
-        model=model,
-        google_api_key=google_api_key,
-        max_output_tokens=4096,  # Increased for more detailed responses
-        temperature=0.3,  # Lower for more focused, deterministic responses
-        top_p=0.9,  # Controls diversity of responses
-        top_k=40,   # Broader sampling of next tokens
-        n=1,        # Number of responses to generate
-        stop_sequences=None,  # Let the model decide when to stop
-        request_options={
-            'timeout': 60,  # Increased timeout for complex queries
-        }
-    )
+        model = "deepseek-chat"  # Default DeepSeek model
     
     # Create a simple chain that just formats the prompt
     async def answer_chain(inputs):
@@ -111,30 +126,88 @@ def get_rag_chain(model: str = None):
             tracker.start_operation("format_prompt")
             context = inputs.get("context", "No context provided")
             user_input = inputs.get("input", "No question provided")
-
-            # Format the prompt
-            prompt = qa_prompt.format(
-                context=context,
-                input=user_input
-            )
             tracker.end_operation("format_prompt")
 
-            # Get the LLM response
-            tracker.start_operation("llm_call")
-            response = await llm.ainvoke(prompt)
-            tracker.end_operation("llm_call")
+            # If no LLM is available, return just the context
+            if not deepseek_client and not openai_client and not gemini_client:
+                logger.info("No LLM available, returning context only")
+                return f"Search results for '{user_input}':\n\n{context}"
 
-            # Extract the content from the response
-            tracker.start_operation("extract_response")
-            if hasattr(response, 'content'):
-                result = response.content
-            elif isinstance(response, str):
-                result = response
-            elif hasattr(response, 'text'):
-                result = response.text
-            else:
-                result = str(response)
-            tracker.end_operation("extract_response")
+            # Get the LLM response using available client
+            tracker.start_operation("llm_call")
+            result = None
+            
+            # Try DeepSeek first
+            if deepseek_client:
+                try:
+                    logger.info("🤖 Generating response with DeepSeek...")
+                    response = await deepseek_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "You are an expert assistant analyzing company documents. Provide accurate, detailed answers based on the provided context. Always respond in the same language as the user's question."},
+                            {"role": "user", "content": qa_prompt.format(context=context, input=user_input)}
+                        ],
+                        temperature=0.3,
+                        max_tokens=4096,
+                        timeout=60
+                    )
+                    result = response.choices[0].message.content
+                    logger.info("✓ DeepSeek response generated")
+                except Exception as e:
+                    logger.error(f"❌ DeepSeek API error: {e}")
+                    result = None
+            
+            # Try ChatGPT if DeepSeek failed or not available
+            if not result and openai_client:
+                try:
+                    logger.info("🤖 Generating response with ChatGPT...")
+                    response = await openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You are an expert assistant analyzing company documents. Provide accurate, detailed answers based on the provided context. Always respond in the same language as the user's question."},
+                            {"role": "user", "content": qa_prompt.format(context=context, input=user_input)}
+                        ],
+                        temperature=0.3,
+                        max_tokens=4096,
+                        timeout=60
+                    )
+                    result = response.choices[0].message.content
+                    logger.info("✓ ChatGPT response generated")
+                except Exception as e:
+                    logger.error(f"❌ ChatGPT API error: {e}")
+                    result = None
+            
+            # Try Gemini if DeepSeek and ChatGPT failed or not available
+            if not result and gemini_client:
+                try:
+                    logger.info("🤖 Generating response with Gemini...")
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: gemini_client.models.generate_content(
+                            model="gemini-2.0-flash-exp",
+                            contents=[
+                                "You are an expert assistant analyzing company documents. Provide accurate, detailed answers based on the provided context. Always respond in the same language as the user's question.",
+                                qa_prompt.format(context=context, input=user_input)
+                            ],
+                        )
+                    )
+                    result = response.text
+                    logger.info("✓ Gemini response generated")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if '400' in error_msg and ('location' in error_msg or 'region' in error_msg or 'not supported' in error_msg):
+                        logger.error("❌ Gemini region restriction detected")
+                    else:
+                        logger.error(f"❌ Gemini API error: {e}")
+                    result = None
+            
+            # If both failed, return context
+            if not result:
+                result = f"Could not generate LLM response. Here are the search results:\n\n{context}"
+            
+            tracker.end_operation("llm_call")
 
             tracker.log_summary()
             return result
