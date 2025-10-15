@@ -433,11 +433,14 @@ class SecureRAGRetriever:
             logger.error(f"Error in get_relevant_documents for session {self.session_id}: {str(e)}")
             return []
     
-    async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True):
+    async def invoke_secure_rag_chain(self, rag_chain, query: str, chat_history: List = None, model_type: str = "server", humanize: bool = True, skip_llm: bool = False):
         """
         Invoke RAG chain with security filtering.
         Returns a dictionary with answer, source documents, and relevant files.
         Handles multiple chunks per file and preserves chunk relevance scores.
+        
+        Args:
+            skip_llm: If True, skip LLM generation and return only documents (for immediate results)
         """
         try:
             # Get relevant documents for the query
@@ -497,26 +500,34 @@ class SecureRAGRetriever:
                 for doc in context
             ])
             
+            # Skip LLM generation if requested (for immediate results)
+            answer = None
+            if not skip_llm:
+                try:
+                    # Get answer using the RAG chain
+                    result = await rag_chain["answer"]({
+                        "input": query,
+                        "context": context_str
+                    })
+                    
+                    # Extract the answer from the result
+                    answer = result
+                    if isinstance(result, dict):
+                        answer = result.get('answer', 'No answer generated.')
+                    elif hasattr(result, 'content'):
+                        answer = result.content
+                    
+                    # Ensure answer is a string
+                    if not isinstance(answer, str):
+                        answer = str(answer)
+                    
+                    # Clean up the answer
+                    answer = answer.strip()
+                except Exception as e:
+                    logger.error(f"Error in RAG chain LLM generation: {str(e)}")
+                    answer = None
+            
             try:
-                # Get answer using the RAG chain
-                result = await rag_chain["answer"]({
-                    "input": query,
-                    "context": context_str
-                })
-                
-                # Extract the answer from the result
-                answer = result
-                if isinstance(result, dict):
-                    answer = result.get('answer', 'No answer generated.')
-                elif hasattr(result, 'content'):
-                    answer = result.content
-                
-                # Ensure answer is a string
-                if not isinstance(answer, str):
-                    answer = str(answer)
-                
-                # Clean up the answer
-                answer = answer.strip()
                 
                 # Prepare both raw and formatted source documents
                 # Raw docs with page_content/metadata expected by API

@@ -487,13 +487,14 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                 from rag_api.langchain_utils import get_rag_chain
                 rag_chain = get_rag_chain()
                 
-                # Use secure RAG retriever
+                # Use secure RAG retriever with skip_llm=True for immediate results
                 secure_retriever = SecureRAGRetriever(username)
                 rag_result = await secure_retriever.invoke_secure_rag_chain(
                     rag_chain=rag_chain,
                     query=question,
                     model_type=model_type,
-                    humanize=humanize
+                    humanize=humanize,
+                    skip_llm=True  # Skip LLM to return documents immediately
                 )
                 
                 # Get source documents
@@ -542,16 +543,15 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                     "data": immediate_response
                 })
                 
-                # Generate LLM overview if humanize is enabled
+                # Generate LLM overview if humanize is enabled (in background)
                 if humanize:
                     try:
-                        from llm import llm_call
-                        llm_response = await llm_call(
+                        from llm import generate_llm_overview
+                        # Generate overview asynchronously without blocking
+                        overview = await generate_llm_overview(
                             question,
-                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")},
-                            get_overview=True
+                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
                         )
-                        overview = llm_response.get("overview")
                         
                         if overview:
                             await websocket.send_json({
@@ -710,7 +710,8 @@ async def process_secure_rag_query(
             rag_chain=rag_chain,
             query=request.question,
             model_type=model_type,
-            humanize=request.humanize if hasattr(request, 'humanize') else True
+            humanize=request.humanize if hasattr(request, 'humanize') else True,
+            skip_llm=True  # Skip LLM to return documents immediately
         )
         tracker.end_operation("secure_retrieval")
 
@@ -758,13 +759,11 @@ async def process_secure_rag_query(
         overview = None
         if request.humanize is None or request.humanize:
             try:
-                from llm import llm_call
-                llm_response = await llm_call(
+                from llm import generate_llm_overview
+                overview = await generate_llm_overview(
                     request.question,
-                    {"source_documents": source_docs, "answer": rag_result.get("answer", "")},
-                    get_overview=True
+                    {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
                 )
-                overview = llm_response.get("overview")
             except Exception as e:
                 logger.error(f"Error generating LLM overview: {e}")
                 overview = "Error generating overview. Showing raw results."
