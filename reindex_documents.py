@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import time
+from datetime import datetime
 from rag_api.chroma_utils import delete_doc_from_chroma, index_document_to_chroma
 
 def get_db_connection():
@@ -8,12 +10,23 @@ def get_db_connection():
     return conn
 
 def reindex_all_documents():
-    """Reindex all documents in Chroma with proper filename metadata"""
+    """
+    Reindex all documents in Chroma with enhanced Chonkie chunking.
+    Uses intelligent chunker selection and improved metadata.
+    """
     import shutil
+    
+    print("=" * 70)
+    print("Enhanced Document Reindexing with Chonkie")
+    print("=" * 70)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
     # Clean up old Chroma DB
     if os.path.exists("./chroma_db"):
-        print("Removing old Chroma database...")
+        print("🗑️  Removing old Chroma database...")
         shutil.rmtree("./chroma_db")
+        print("✓ Old database removed\n")
+    
     try:
         # Get all documents from the database
         conn = get_db_connection()
@@ -22,10 +35,14 @@ def reindex_all_documents():
         documents = cursor.fetchall()
         conn.close()
 
+        total_docs = len(documents)
+        print(f"📚 Found {total_docs} documents to reindex\n")
+
         success_count = 0
         fail_count = 0
+        start_time = time.time()
 
-        for doc in documents:
+        for idx, doc in enumerate(documents, 1):
             file_id = doc['id']
             filename = doc['filename']
             content = doc['content']
@@ -40,26 +57,30 @@ def reindex_all_documents():
                 # Delete existing document from Chroma
                 delete_doc_from_chroma(file_id)
 
-                # Reindex with proper filename metadata
+                # Reindex with enhanced Chonkie chunking
                 if index_document_to_chroma(temp_file_path, file_id):
                     success_count += 1
-                    print(f"Successfully reindexed {filename} (ID: {file_id})")
+                    progress = (idx / total_docs) * 100
+                    print(f"[{idx}/{total_docs}] ({progress:.1f}%) ✓ {filename}")
                 else:
                     fail_count += 1
-                    print(f"Failed to reindex {filename} (ID: {file_id})")
+                    print(f"[{idx}/{total_docs}] ✗ Failed: {filename}")
 
             except Exception as e:
                 fail_count += 1
-                print(f"Error reindexing {filename} (ID: {file_id}): {e}")
+                print(f"[{idx}/{total_docs}] ✗ Error: {filename} - {str(e)[:50]}")
             finally:
                 # Clean up temp file
                 if os.path.exists(temp_file_path):
                     os.remove(temp_file_path)
 
+        elapsed_time = time.time() - start_time
+        
         return {
             "success_count": success_count,
             "fail_count": fail_count,
-            "total": len(documents)
+            "total": len(documents),
+            "elapsed_time": elapsed_time
         }
 
     except Exception as e:
@@ -72,11 +93,29 @@ def reindex_all_documents():
         }
 
 if __name__ == "__main__":
-    print("Starting reindexing of all documents...")
     results = reindex_all_documents()
-    print(f"\nReindexing complete:")
-    print(f"Total documents: {results['total']}")
-    print(f"Successfully reindexed: {results['success_count']}")
-    print(f"Failed to reindex: {results['fail_count']}")
+    
+    print("\n" + "=" * 70)
+    print("Reindexing Summary")
+    print("=" * 70)
+    print(f"Total documents:      {results['total']}")
+    print(f"✓ Successfully indexed: {results['success_count']}")
+    print(f"✗ Failed:              {results['fail_count']}")
+    
+    if 'elapsed_time' in results:
+        elapsed = results['elapsed_time']
+        print(f"⏱️  Time elapsed:       {elapsed:.2f} seconds")
+        if results['total'] > 0:
+            avg_time = elapsed / results['total']
+            print(f"📊 Average per doc:    {avg_time:.2f} seconds")
+    
     if 'error' in results:
-        print(f"Error: {results['error']}")
+        print(f"\n❌ Error: {results['error']}")
+    elif results['fail_count'] == 0:
+        print("\n🎉 All documents reindexed successfully!")
+    else:
+        print(f"\n⚠️  {results['fail_count']} document(s) failed to reindex")
+    
+    print("=" * 70)
+    print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
