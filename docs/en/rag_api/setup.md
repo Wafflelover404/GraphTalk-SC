@@ -34,8 +34,10 @@
    Edit the `.env` file with your configuration:
    ```
    # Required
-   GOOGLE_API_KEY=your_google_api_key
    DATABASE_URL=sqlite:///rag_app.db
+   
+   # Optional - for LLM-powered responses
+   DEEPSEEK_API_KEY=your_deepseek_api_key
    
    # Optional
    EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
@@ -86,7 +88,7 @@ uvicorn rag_api.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GOOGLE_API_KEY` | Google Cloud API key | - |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (optional, for LLM responses) | - |
 | `DATABASE_URL` | Database connection URL | `sqlite:///rag_app.db` |
 | `EMBEDDING_MODEL` | Model for text embeddings | `sentence-transformers/all-mpnet-base-v2` |
 | `CHUNK_SIZE` | Size of text chunks for processing | `1500` |

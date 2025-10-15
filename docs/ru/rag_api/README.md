@@ -49,8 +49,10 @@ python -m uvicorn rag_api.main:app --reload
 Настройка осуществляется через переменные окружения:
 ```
 # Обязательные
-GOOGLE_API_KEY=ваш_google_api_key
 DATABASE_URL=sqlite:///rag_app.db
+
+# Опциональные - для ответов на основе LLM
+DEEPSEEK_API_KEY=ваш_deepseek_api_key
 
 # Опциональные
 EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2

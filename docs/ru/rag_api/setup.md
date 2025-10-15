@@ -34,8 +34,10 @@
    Отредактируйте файл `.env`:
    ```
    # Обязательные
-   GOOGLE_API_KEY=ваш_google_api_key
    DATABASE_URL=sqlite:///rag_app.db
+   
+   # Опциональные - для ответов на основе LLM
+   DEEPSEEK_API_KEY=ваш_deepseek_api_key
    
    # Опциональные
    EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
@@ -86,7 +88,7 @@ uvicorn rag_api.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 | Переменная | Описание | По умолчанию |
 |------------|----------|--------------|
-| `GOOGLE_API_KEY` | API-ключ Google Cloud | - |
+| `DEEPSEEK_API_KEY` | API-ключ DeepSeek (опционально, для LLM ответов) | - |
 | `DATABASE_URL` | URL подключения к БД | `sqlite:///rag_app.db` |
 | `EMBEDDING_MODEL` | Модель для эмбеддингов | `sentence-transformers/all-mpnet-base-v2` |
 | `CHUNK_SIZE` | Размер фрагментов текста | `1500` |
