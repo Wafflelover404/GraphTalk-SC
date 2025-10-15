@@ -45,7 +45,7 @@ websocket-client==1.8.0
 websockets==15.0.1
 
 # Data processing
-numpy==2.2.4
+numpy>=2.0.0
 pandas==2.2.3
 pyarrow==19.0.1
 
@@ -195,6 +195,7 @@ langchain-core==0.3.75
 langchain-google-genai==2.1.10
 langchain-huggingface==0.3.1
 langchain-text-splitters==0.3.11
+chonkie==1.4.0
 langdetect==1.0.9
 langsmith==0.4.23
 lxml==6.0.1
@@ -210,7 +211,6 @@ narwhals==1.32.0
 nest-asyncio==1.6.0
 networkx==3.5
 nltk==3.9.1
-numpy==2.2.4
 oauthlib==3.3.1
 olefile==0.47
 onnxruntime==1.22.1
@@ -267,7 +267,7 @@ rpds-py==0.23.1
 rsa==4.9.1
 safetensors==0.6.2
 scikit-learn==1.7.1
-scipy==1.16.1
+scipy>=1.13.0
 sentence-transformers==5.1.0
 setuptools==80.9.0
 shellingham==1.5.4
