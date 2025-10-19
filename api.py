@@ -1549,7 +1549,21 @@ async def edit_user_endpoint(
         return APIResponse(status="success", message="No changes made", response={})
     return APIResponse(status="success", message="; ".join(logs), response={})
 
-
+# PUT endpoint for user update (RESTful alternative)
+@app.put("/user/{username}", response_model=APIResponse)
+async def update_user_endpoint(
+    username: str,
+    request: UserEditRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+):
+    """
+    Update user fields using PUT method (RESTful). Only provided fields are changed. Requires admin or master key.
+    """
+    # Set the username from path parameter
+    request.username = username
+    
+    # Reuse the existing edit_user_endpoint logic
+    return await edit_user_endpoint(request, credentials)
 
 # Disrupt all sessions for a user by access token (user self-service)
 class DisruptSessionsRequest(BaseModel):
@@ -1598,4 +1612,61 @@ async def edit_file_content(
         return APIResponse(status="success", message="File updated and reindexed", response={"file_ids": file_ids, "filename": filename})
     except Exception as e:
         return APIResponse(status="error", message=str(e), response=None)
+
+
+class TimeRangeQuery(BaseModel):
+    since: str = "24h"  # Default to 24 hours
+
+@app.get("/metrics/summary")
+async def get_metrics_summary_endpoint(
+    since: str = "24h",
+    current_user=Depends(get_current_user)
+):
+    """
+    Get summary metrics for the dashboard
+    """
+    try:
+        # Convert since to hours
+        if since.endswith('h'):
+            hours = int(since[:-1])
+        elif since.endswith('d'):
+            hours = int(since[:-1]) * 24
+        else:
+            hours = 24  # Default to 24 hours
+            
+        summary = get_metrics_summary(hours)
+        return {
+            "status": "success",
+            "data": summary
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/queries")
+async def get_metrics_queries(
+    since: str = "24h",
+    limit: int = 10,
+    current_user=Depends(get_current_user)
+):
+    """
+    Get recent queries for the analytics page
+    """
+    try:
+        # Convert since to hours
+        if since.endswith('h'):
+            hours = int(since[:-1])
+        elif since.endswith('d'):
+            hours = int(since[:-1]) * 24
+        else:
+            hours = 24  # Default to 24 hours
+            
+        queries = get_recent_queries(hours, limit)
+        return {
+            "status": "success",
+            "data": {
+                "queries": queries
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 

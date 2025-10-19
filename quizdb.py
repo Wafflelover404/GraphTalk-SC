@@ -124,29 +124,46 @@ async def create_quiz_for_filename(source_filename: str) -> Optional[str]:
             "Rules: 3-8 questions; each has 3-5 plausible options; ensure exactly one correct answer; keep content faithful to the document."
         )
 
-        # Call LLM to generate quiz with retries for transient errors
+        # Call DeepSeek API to generate quiz with retries for transient errors
         import asyncio
+        from openai import AsyncOpenAI
+        
         attempts = 0
         max_attempts = 3
         last_err_text = None
         quiz_text = None
-        while attempts < max_attempts:
-            attempts += 1
-            try:
-                quiz_text = await llm_call(
-                    message=instruction,
-                    data=content_snippet
-                )
-                # If API occasionally returns stringified error, detect common overload status
-                if isinstance(quiz_text, str) and ("UNAVAILABLE" in quiz_text or "503" in quiz_text):
-                    last_err_text = quiz_text
-                    # Backoff then retry
-                    await asyncio.sleep(2 * attempts)
+        
+        # Get DeepSeek API key from environment
+        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not deepseek_api_key:
+            last_err_text = "DeepSeek API key not found in environment variables"
+        else:
+            # Initialize DeepSeek client
+            deepseek_client = AsyncOpenAI(
+                api_key=deepseek_api_key,
+                base_url="https://api.deepseek.com/v1"
+            )
+            
+            while attempts < max_attempts:
+                attempts += 1
+                try:
+                    # Call DeepSeek API directly
+                    response = await deepseek_client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "You are a quiz generator. Create quizzes based on the provided content."},
+                            {"role": "user", "content": f"{instruction}\n\nDocument content:\n{content_snippet}"}
+                        ],
+                        temperature=0.7,
+                        max_tokens=2000
+                    )
+                    quiz_text = response.choices[0].message.content
+                    break
+                except Exception as e:
+                    last_err_text = str(e)
+                    if attempts < max_attempts:
+                        await asyncio.sleep(2 * attempts)
                     continue
-                break
-            except Exception as e:
-                last_err_text = str(e)
-                await asyncio.sleep(2 * attempts)
 
         # Try to ensure it's JSON. Handle cases where LLM returns fenced ```json blocks.
         quiz_json_str: str

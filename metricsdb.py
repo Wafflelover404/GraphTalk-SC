@@ -214,3 +214,93 @@ def log_system_metric(metric_type: str, value: float, unit: Optional[str] = None
     ''', (metric_type, value, unit))
     conn.commit()
     conn.close()
+def get_metrics_summary(hours: int = 24) -> dict:
+    """Get summary metrics for the dashboard."""
+    conn = sqlite3.connect(METRICS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Get total queries
+    cursor.execute('''
+        SELECT COUNT(*) as total_queries,
+               COUNT(DISTINCT user_id) as unique_users
+        FROM queries 
+        WHERE timestamp >= datetime('now', ? || ' hours')
+    ''', (-hours,))
+    query_stats = dict(cursor.fetchone())
+    
+    # Get average response time
+    cursor.execute('''
+        SELECT AVG(response_time_ms) as avg_response_time
+        FROM queries 
+        WHERE timestamp >= datetime('now', ? || ' hours')
+    ''', (-hours,))
+    time_stats = dict(cursor.fetchone())
+    
+    # Get most active file
+    cursor.execute('''
+        SELECT source_filenames, COUNT(*) as count
+        FROM queries 
+        WHERE timestamp >= datetime('now', ? || ' hours')
+        GROUP BY source_filenames
+        ORDER BY count DESC
+        LIMIT 1
+    ''', (-hours,))
+    file_row = cursor.fetchone()
+    
+    # Calculate trends (simplified - in a real app, compare with previous period)
+    trends = {
+        'query_trend': 0,
+        'user_trend': 0,
+        'response_trend': 0
+    }
+    
+    conn.close()
+    
+    return {
+        'total_queries': query_stats.get('total_queries', 0),
+        'unique_users': query_stats.get('unique_users', 0),
+        'avg_response_time': round(time_stats.get('avg_response_time', 0), 2) if time_stats.get('avg_response_time') else 0,
+        'popular_files': [{
+            'filename': file_row[0].split('/')[-1] if file_row and file_row[0] else 'N/A',
+            'count': file_row[1] if file_row else 0
+        }] if file_row else [],
+        'query_trend': trends['query_trend'],
+        'user_trend': trends['user_trend'],
+        'response_trend': trends['response_trend']
+    }
+
+def get_recent_queries(hours: int = 24, limit: int = 10) -> list:
+    """Get recent queries for the analytics page."""
+    conn = sqlite3.connect(METRICS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT q.id, q.user_id, q.question, q.answer, q.timestamp, 
+               q.response_time_ms, q.model_type, q.source_document_count,
+               u.role
+        FROM queries q
+        LEFT JOIN users u ON q.user_id = u.username
+        WHERE q.timestamp >= datetime('now', ? || ' hours')
+        ORDER BY q.timestamp DESC
+        LIMIT ?
+    ''', (-hours, limit))
+    
+    queries = []
+    for row in cursor.fetchall():
+        queries.append({
+            'id': row['id'],
+            'user_id': row['user_id'],
+            'role': row['role'],
+            'question': row['question'],
+            'answer': row['answer'],
+            'timestamp': row['timestamp'],
+            'response_time_ms': row['response_time_ms'],
+            'model_type': row['model_type'],
+            'source_document_count': row['source_document_count']
+        })
+    
+    conn.close()
+    return queries
+

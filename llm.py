@@ -64,7 +64,7 @@ LLM_AVAILABLE = deepseek_client is not None or openai_client is not None or gemi
 
 def get_immediate_results(data):
     """
-    Extract and return immediate RAG results without waiting for LLM.
+    Extract and return immediate RAG results without waiting for LLM. Always provide user with comprehensive overview in the same language as user query
     
     Args:
         data: Knowledge base search results
