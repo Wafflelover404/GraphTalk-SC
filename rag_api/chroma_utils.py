@@ -1,6 +1,14 @@
 import os
 import re
 import logging
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
 import torch
 import hashlib
 import json
@@ -15,7 +23,7 @@ try:
 except LookupError:
     nltk.download('punkt', quiet=True)
     nltk.download('stopwords', quiet=True)
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredHTMLLoader
+from document_loaders import EnhancedPDFLoader, EnhancedDocxLoader, ZIPLoader, UnstructuredHTMLLoader
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from difflib import SequenceMatcher
@@ -185,13 +193,17 @@ def select_optimal_chunker(file_path: str, content: str) -> Any:
 def load_and_split_document(file_path: str, filename: str) -> List[Document]:
     """Load and split document with enhanced metadata and preprocessing using Chonkie"""
     try:
-        if file_path.endswith('.pdf'):
-            loader = PyPDFLoader(file_path)
-        elif file_path.endswith('.docx'):
-            loader = Docx2txtLoader(file_path)
-        elif file_path.endswith('.html'):
+        ext = os.path.splitext(filename)[1].lower()
+        
+        if ext == '.zip':
+            loader = ZIPLoader(file_path)
+        elif ext == '.pdf':
+            loader = EnhancedPDFLoader(file_path)
+        elif ext in ['.docx', '.doc']:
+            loader = EnhancedDocxLoader(file_path)
+        elif ext == '.html':
             loader = UnstructuredHTMLLoader(file_path)
-        elif file_path.endswith('.txt') or file_path.endswith('.md'):
+        elif ext in ['.txt', '.md']:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 
@@ -212,7 +224,7 @@ def load_and_split_document(file_path: str, filename: str) -> List[Document]:
                     metadata={
                         "source": file_path,
                         "filename": filename,
-                        "file_type": os.path.splitext(filename)[1],
+                        "file_type": ext,
                         "created_at": os.path.getctime(file_path),
                         "modified_at": os.path.getmtime(file_path),
                         "chunk_start": chunk.start_index,
@@ -223,43 +235,52 @@ def load_and_split_document(file_path: str, filename: str) -> List[Document]:
                 documents.append(doc)
             return documents
         else:
-            raise ValueError(f"Unsupported file type: {file_path}")
+            raise ValueError(f"Unsupported file type: {ext}")
 
+        # Load documents using the appropriate loader
         documents = loader.load()
         
-        # Process loaded documents with Chonkie
-        chunked_documents = []
-        for doc in documents:
-            # Preprocess content to improve quality
-            preprocessed_content = preprocess_text(doc.page_content)
+        if ext not in ['.txt', '.md']:  # These are already chunked above
+            # Process loaded documents with Chonkie
+            chunked_documents = []
+            for doc in documents:
+                # Preprocess content to improve quality
+                preprocessed_content = preprocess_text(doc.page_content)
+                
+                # Select optimal chunker based on document characteristics
+                optimal_chunker = select_optimal_chunker(file_path, preprocessed_content)
+                
+                # Use Chonkie to chunk the text
+                chunks = optimal_chunker.chunk(preprocessed_content)
+                
+                # Preserve original metadata and add chunking info
+                base_metadata = {
+                    **doc.metadata,
+                    "filename": filename,
+                    "file_type": ext,
+                    "created_at": os.path.getctime(file_path),
+                    "modified_at": os.path.getmtime(file_path)
+                }
+                
+                # Convert Chonkie chunks to LangChain Documents
+                for chunk in chunks:
+                    new_doc = Document(
+                        page_content=chunk.text,
+                        metadata={
+                            **base_metadata,
+                            "chunk_start": chunk.start_index,
+                            "chunk_end": chunk.end_index,
+                            "token_count": chunk.token_count
+                        }
+                    )
+                    chunked_documents.append(new_doc)
+                    
+            documents = chunked_documents
             
-            # Select optimal chunker
-            optimal_chunker = select_optimal_chunker(file_path, doc.page_content)
-            
-            # Use Chonkie to chunk the text
-            chunks = optimal_chunker.chunk(preprocessed_content)
-            
-            # Convert Chonkie chunks to LangChain Documents
-            for chunk in chunks:
-                new_doc = Document(
-                    page_content=chunk.text,
-                    metadata={
-                        **doc.metadata,
-                        "filename": filename,
-                        "file_type": os.path.splitext(filename)[1],
-                        "created_at": os.path.getctime(file_path),
-                        "modified_at": os.path.getmtime(file_path),
-                        "chunk_start": chunk.start_index,
-                        "chunk_end": chunk.end_index,
-                        "token_count": chunk.token_count
-                    }
-                )
-                chunked_documents.append(new_doc)
-            
-        return chunked_documents
+        return documents
         
     except Exception as e:
-        print(f"Error loading document {filename}: {str(e)}")
+        logging.error(f"Error loading document {filename}: {str(e)}")
         raise
 
 def preprocess_text(text: str, language: str = 'russian') -> str:
@@ -334,14 +355,41 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 	try:
 		# Extract just the filename from the path
 		filename = os.path.basename(file_path)
+		file_ext = os.path.splitext(filename)[1].lower()
+		
+		# Log the indexing operation
+		logger.info(f"Starting indexing for file: {filename} (ID: {file_id}, Type: {file_ext})")
+		
 		splits = load_and_split_document(file_path, filename)
+		
+		logger.info(f"Loaded {len(splits)} chunks from {filename}")
+		
 		for split in splits:
 			split.metadata['file_id'] = file_id
 			split.metadata['filename'] = filename  # Ensure filename is in metadata
+			
+			# Log archive information if this file came from a ZIP
+			if 'archive_source' in split.metadata:
+				archive_source = split.metadata['archive_source']
+				archive_filename = split.metadata.get('archive_filename', 'unknown')
+				archive_path = split.metadata.get('archive_path', 'unknown')
+				logger.debug(f"  Chunk from archive '{archive_filename}' (source: {archive_source}, path: {archive_path})")
+		
 		vectorstore.add_documents(splits)
+		
+		logger.info(f"✓ Successfully indexed {filename} with {len(splits)} chunks (ID: {file_id})")
+		
+		# If this is a ZIP file, log the summary
+		if file_ext == '.zip':
+			# Count archive chunks
+			archive_chunks = sum(1 for split in splits if 'archive_source' in split.metadata)
+			logger.info(f"ZIP ARCHIVE INDEXING SUMMARY: {filename}")
+			logger.info(f"  - Total chunks indexed: {len(splits)}")
+			logger.info(f"  - Chunks from archive: {archive_chunks}")
+		
 		return True
 	except Exception as e:
-		print(f"Error indexing document: {e}")
+		logger.error(f"Error indexing document {filename} (ID: {file_id}): {e}", exc_info=True)
 		return False
 
 def delete_doc_from_chroma(file_id: int) -> bool:
@@ -396,7 +444,8 @@ def reindex_documents(documents_dir: str, file_paths: List[str] = None) -> Dict[
         # Get list of files to process
         if file_paths is None:
             file_paths = []
-            for ext in ['.pdf', '.docx', '.txt', '.md', '.html']:
+            # Include additional archive and legacy document formats
+            for ext in ['.pdf', '.docx', '.doc', '.txt', '.md', '.html', '.zip']:
                 file_paths.extend(list(Path(documents_dir).rglob(f'*{ext}')))
         
         stats['total_files'] = len(file_paths)

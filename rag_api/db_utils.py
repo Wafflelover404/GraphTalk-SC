@@ -5,6 +5,8 @@ DB_NAME = "rag_app.db"
 
 def get_db_connection():
 	conn = sqlite3.connect(DB_NAME)
+	# Enable UTF-8 support for database
+	conn.execute("PRAGMA encoding='UTF-8'")
 	conn.row_factory = sqlite3.Row
 	return conn
 
@@ -55,6 +57,9 @@ def get_chat_history(session_id):
 def insert_document_record(filename, content_bytes):
 	conn = get_db_connection()
 	cursor = conn.cursor()
+	# Ensure filename is properly encoded as UTF-8
+	if isinstance(filename, bytes):
+		filename = filename.decode('utf-8', errors='replace')
 	cursor.execute('INSERT INTO document_store (filename, content) VALUES (?, ?)', (filename, content_bytes))
 	file_id = cursor.lastrowid
 	conn.commit()
@@ -63,6 +68,9 @@ def insert_document_record(filename, content_bytes):
 def get_file_content_by_filename(filename):
 	conn = get_db_connection()
 	cursor = conn.cursor()
+	# Ensure filename is properly encoded as UTF-8
+	if isinstance(filename, bytes):
+		filename = filename.decode('utf-8', errors='replace')
 	cursor.execute('SELECT content FROM document_store WHERE filename = ?', (filename,))
 	row = cursor.fetchone()
 	conn.close()
@@ -88,6 +96,9 @@ def get_all_documents():
 def update_document_record(filename, new_content_bytes):
 	conn = get_db_connection()
 	cursor = conn.cursor()
+	# Ensure filename is properly encoded as UTF-8
+	if isinstance(filename, bytes):
+		filename = filename.decode('utf-8', errors='replace')
 	cursor.execute('SELECT id FROM document_store WHERE filename = ?', (filename,))
 	rows = cursor.fetchall()
 	if not rows:

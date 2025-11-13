@@ -1220,7 +1220,8 @@ async def upload_document(
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
 
-    allowed_extensions = ['.pdf', '.docx', '.html', '.txt', '.md']
+    # Extended support for PDF, DOCX, DOC, HTML, TXT, MD, and ZIP archives
+    allowed_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md', '.zip']
     file_extension = os.path.splitext(file.filename)[1].lower()
 
     if file_extension not in allowed_extensions:
@@ -1229,52 +1230,217 @@ async def upload_document(
             detail=f"Unsupported file type. Allowed types are: {', '.join(allowed_extensions)}"
         )
 
-    # Check if file with the same name already exists in DB
-    from rag_api.db_utils import get_file_content_by_filename
-    if get_file_content_by_filename(file.filename) is not None:
-        raise HTTPException(status_code=400, detail="A file with this name already exists.")
-
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
     original_filename = file.filename
+    file_extension = os.path.splitext(original_filename)[1].lower()
 
     try:
         # Read file content as bytes
         content_bytes = await file.read()
-        # Insert document record and get file_id
-        file_id = insert_document_record(original_filename, content_bytes)
-
-        # Optionally, index document to Chroma (if needed, save to temp file)
-        temp_file_path = f"temp_{original_filename}"
-        with open(temp_file_path, "wb") as buffer:
-            buffer.write(content_bytes)
-        success = index_document_to_chroma(temp_file_path, file_id)
-        os.remove(temp_file_path)
-
-        if success:
-            # Fire-and-forget: generate a quiz for this uploaded file in background
-            try:
-                asyncio.create_task(create_quiz_for_filename(original_filename))
-            except Exception:
-                pass
-            return APIResponse(
-                status="success",
-                message=f"File {original_filename} has been successfully uploaded and indexed.",
-                response={
-                    "file_id": file_id,
-                    "filename": original_filename,
-                    "upload_id": upload_id,
-                    "timestamp": timestamp
-                }
-            )
+        
+        # Log upload information
+        logger.info(f"Starting upload: {original_filename}")
+        logger.info(f"  - Upload ID: {upload_id}")
+        logger.info(f"  - User: {current_user[1]}")
+        logger.info(f"  - File type: {file_extension}")
+        logger.info(f"  - File size: {len(content_bytes)} bytes")
+        logger.info(f"  - Timestamp: {timestamp}")
+        
+        # Handle ZIP files by extracting and uploading each file separately
+        if file_extension == '.zip':
+            logger.info(f"Archive detected. Extracting and processing contents as separate files...")
+            import zipfile
+            import tempfile
+            
+            extracted_files = []
+            failed_files = []
+            
+            with tempfile.TemporaryDirectory() as temp_extract_dir:
+                # Extract ZIP
+                try:
+                    # First, save the ZIP file to disk
+                    temp_zip_path = f"temp_{original_filename}"
+                    with open(temp_zip_path, 'wb') as buffer:
+                        buffer.write(content_bytes)
+                    
+                    # Now extract it with proper UTF-8 filename handling
+                    with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+                        logger.info(f"Archive extracted with {len(zip_ref.filelist)} total files (UTF-8 filename support enabled)")
+                        
+                        # Extract files and fix filenames if needed
+                        for member in zip_ref.filelist:
+                            try:
+                                # Access raw filename bytes to properly decode
+                                # ZIP stores filename in the header as bytes
+                                raw_filename = member.filename
+                                filename_to_use = raw_filename
+                                
+                                # Check if filename appears to be mojibake (UTF-8 decoded as CP437)
+                                # Try different decoding strategies
+                                if isinstance(raw_filename, str) and any(ord(c) > 127 for c in raw_filename):
+                                    # Contains non-ASCII characters
+                                    try:
+                                        # First try: Assume it's UTF-8 bytes misinterpreted as Latin-1 or CP437
+                                        # Re-encode as latin-1 (to get back bytes) then decode as UTF-8
+                                        attempt1 = raw_filename.encode('latin-1').decode('utf-8')
+                                        filename_to_use = attempt1
+                                        logger.debug(f"Successfully decoded via latin-1→utf-8: {raw_filename} -> {attempt1}")
+                                    except (UnicodeDecodeError, UnicodeEncodeError):
+                                        # If that fails, try CP437→UTF-8
+                                        try:
+                                            attempt2 = raw_filename.encode('cp437').decode('utf-8')
+                                            filename_to_use = attempt2
+                                            logger.debug(f"Successfully decoded via cp437→utf-8: {raw_filename} -> {attempt2}")
+                                        except (UnicodeDecodeError, UnicodeEncodeError):
+                                            # Keep original if both attempts fail
+                                            logger.debug(f"Could not decode {raw_filename}, keeping original")
+                                            filename_to_use = raw_filename
+                                
+                                # Now extract with the corrected filename
+                                member.filename = filename_to_use
+                                extracted_path = zip_ref.extract(member, temp_extract_dir)
+                                
+                            except Exception as e:
+                                logger.warning(f"Could not extract {member.filename}: {str(e)}")
+                                try:
+                                    zip_ref.extract(member, temp_extract_dir)
+                                except Exception as e2:
+                                    logger.error(f"Failed to extract {member.filename}: {str(e2)}")
+                    
+                    # Clean up temp ZIP
+                    if os.path.exists(temp_zip_path):
+                        os.remove(temp_zip_path)
+                    # Process each extracted file
+                    allowed_archive_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md']
+                    
+                    for root, dirs, files in os.walk(temp_extract_dir):
+                        for extracted_filename in files:
+                            extracted_file_path = os.path.join(root, extracted_filename)
+                            extracted_ext = os.path.splitext(extracted_filename)[1].lower()
+                            
+                            # Only process supported file types from archive
+                            if extracted_ext not in allowed_archive_extensions:
+                                logger.info(f"Skipping unsupported file in archive: {extracted_filename} ({extracted_ext})")
+                                continue
+                            
+                            try:
+                                logger.info(f"Processing extracted file: {extracted_filename}")
+                                
+                                # Check if file already exists
+                                if get_file_content_by_filename(extracted_filename) is not None:
+                                    logger.warning(f"File {extracted_filename} already exists in DB, skipping")
+                                    continue
+                                
+                                # Read extracted file content
+                                with open(extracted_file_path, 'rb') as f:
+                                    extracted_content = f.read()
+                                
+                                # Save each extracted file to database as separate file (with unicode support)
+                                extracted_file_id = insert_document_record(extracted_filename, extracted_content)
+                                logger.info(f"  Saved to database: {extracted_filename} (file_id: {extracted_file_id})")
+                                
+                                # Index to Chroma
+                                temp_index_path = f"temp_{extracted_filename}"
+                                with open(temp_index_path, 'wb') as buffer:
+                                    buffer.write(extracted_content)
+                                
+                                if index_document_to_chroma(temp_index_path, extracted_file_id):
+                                    logger.info(f"✓ Indexed {extracted_filename}")
+                                    extracted_files.append({
+                                        "filename": extracted_filename,
+                                        "file_id": extracted_file_id,
+                                        "size": len(extracted_content)
+                                    })
+                                    # Fire-and-forget: generate quiz for extracted file
+                                    try:
+                                        asyncio.create_task(create_quiz_for_filename(extracted_filename))
+                                    except Exception:
+                                        pass
+                                else:
+                                    logger.error(f"Failed to index {extracted_filename}")
+                                    delete_document_record(extracted_file_id)
+                                    failed_files.append(extracted_filename)
+                                
+                                if os.path.exists(temp_index_path):
+                                    os.remove(temp_index_path)
+                                    
+                            except Exception as e:
+                                logger.error(f"Error processing {extracted_filename}: {str(e)}")
+                                failed_files.append(extracted_filename)
+                    
+                    # Return results
+                    logger.info(f"Archive processing complete: {len(extracted_files)} files processed, {len(failed_files)} failed")
+                    
+                    return APIResponse(
+                        status="success",
+                        message=f"Archive {original_filename} processed: {len(extracted_files)} files uploaded and indexed.",
+                        response={
+                            "upload_id": upload_id,
+                            "archive_filename": original_filename,
+                            "files_processed": len(extracted_files),
+                            "files_failed": len(failed_files),
+                            "extracted_files": extracted_files,
+                            "timestamp": timestamp
+                        }
+                    )
+                    
+                except zipfile.BadZipFile as e:
+                    logger.error(f"Invalid ZIP file: {str(e)}")
+                    raise HTTPException(status_code=400, detail=f"Invalid ZIP file: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Error extracting archive: {str(e)}")
+                    raise HTTPException(status_code=400, detail=f"Error extracting archive: {str(e)}")
+        
         else:
-            delete_document_record(file_id)
-            raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
+            # Handle regular (non-ZIP) files
+            # Check if file with the same name already exists in DB
+            if get_file_content_by_filename(original_filename) is not None:
+                raise HTTPException(status_code=400, detail="A file with this name already exists.")
+            
+            # Insert document record and get file_id
+            file_id = insert_document_record(original_filename, content_bytes)
+            logger.info(f"  - Database file_id: {file_id}")
 
+            # Index document to Chroma
+            temp_file_path = f"temp_{original_filename}"
+            with open(temp_file_path, "wb") as buffer:
+                buffer.write(content_bytes)
+            
+            success = index_document_to_chroma(temp_file_path, file_id)
+            os.remove(temp_file_path)
+
+            if success:
+                # Fire-and-forget: generate a quiz for this uploaded file in background
+                try:
+                    asyncio.create_task(create_quiz_for_filename(original_filename))
+                except Exception:
+                    pass
+                
+                # Log successful completion
+                logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {file_id}, Upload ID: {upload_id})")
+                
+                return APIResponse(
+                    status="success",
+                    message=f"File {original_filename} has been successfully uploaded and indexed.",
+                    response={
+                        "file_id": file_id,
+                        "filename": original_filename,
+                        "upload_id": upload_id,
+                        "timestamp": timestamp
+                    }
+                )
+            else:
+                delete_document_record(file_id)
+                logger.error(f"Failed to index {original_filename} (ID: {file_id})")
+                raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception("File upload failed")
-        if 'file_id' in locals():
-            delete_document_record(file_id)
+        logger.exception(f"File upload failed for {original_filename}: {str(e)}")
+        logger.error(f"  - Upload ID: {upload_id}")
+        logger.error(f"  - File type: {file_extension}")
         raise HTTPException(500, f"Failed to upload file: {e}")
 
 # List documents endpoint
