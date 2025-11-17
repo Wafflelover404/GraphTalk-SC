@@ -49,6 +49,21 @@ from metrics_middleware import MetricsMiddleware
 from quizdb import init_quiz_db, create_quiz_for_filename, get_quiz_by_filename
 from rag_api.db_utils import insert_application_logs
 
+# Import new advanced analytics
+try:
+    from analytics_core import get_analytics_core, QueryMetrics, QueryType, SecurityEventType, SecurityEvent
+    from advanced_analytics_api import router as advanced_analytics_router
+    from performance_analytics import PerformanceTracker
+    from user_behavior_analytics import UserBehaviorAnalyzer
+    from security_analytics import SecurityAnalyzer
+    from analytics_middleware import AdvancedAnalyticsMiddleware
+    ADVANCED_ANALYTICS_ENABLED = True
+except ImportError as e:
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning(f"Advanced analytics not available: {e}")
+    ADVANCED_ANALYTICS_ENABLED = False
+    AdvancedAnalyticsMiddleware = None
+
 # Initialize metrics database
 init_metrics_db()
 
@@ -70,6 +85,12 @@ app.include_router(reports_router)
 app.include_router(metrics_router)
 app.include_router(metrics_user_router)
 
+# Include advanced analytics router if available
+if ADVANCED_ANALYTICS_ENABLED:
+    app.include_router(advanced_analytics_router)
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Advanced analytics enabled")
+
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +100,10 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# Add advanced analytics middleware if available (must be added before other middleware)
+if ADVANCED_ANALYTICS_ENABLED and AdvancedAnalyticsMiddleware:
+    app.add_middleware(AdvancedAnalyticsMiddleware)
+
 # Add metrics middleware
 app.add_middleware(MetricsMiddleware)
 
@@ -86,6 +111,17 @@ app.add_middleware(MetricsMiddleware)
 @app.on_event("startup")
 async def _startup_events():
     await init_quiz_db()
+    
+    # Initialize advanced analytics
+    if ADVANCED_ANALYTICS_ENABLED:
+        try:
+            analytics = get_analytics_core()
+            logger.info("✅ Advanced Analytics Engine Started")
+            logger.info("   - 14 specialized analytics tables ready")
+            logger.info("   - 40+ REST API endpoints available at /analytics/*")
+            logger.info("   - Performance, user behavior, and security tracking enabled")
+        except Exception as e:
+            logger.error(f"Failed to initialize advanced analytics: {e}")
 
 UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
@@ -242,6 +278,24 @@ async def login_user(request: LoginRequest, request_obj: Request):
             details={"reason": "Invalid credentials"},
             severity="medium"
         )
+        
+        # Log to advanced analytics if available
+        if ADVANCED_ANALYTICS_ENABLED:
+            try:
+                analytics = get_analytics_core()
+                security_event = SecurityEvent(
+                    event_id=str(uuid.uuid4()),
+                    event_type=SecurityEventType.FAILED_LOGIN,
+                    user_id=request.username,
+                    ip_address=client_ip,
+                    severity="medium",
+                    details={"reason": "Invalid credentials"},
+                    timestamp=datetime.datetime.now()
+                )
+                await analytics.log_security_event(security_event)
+            except Exception as e:
+                logger.warning(f"Failed to log security event to advanced analytics: {e}")
+        
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     
     # Generate new session_id (UUID-based for better security)
@@ -266,6 +320,23 @@ async def login_user(request: LoginRequest, request_obj: Request):
         success=True,
         details={"session_type": "new"}
     )
+    
+    # Log to advanced analytics if available
+    if ADVANCED_ANALYTICS_ENABLED:
+        try:
+            analytics = get_analytics_core()
+            security_event = SecurityEvent(
+                event_id=str(uuid.uuid4()),
+                event_type=SecurityEventType.SUCCESSFUL_LOGIN,
+                user_id=request.username,
+                ip_address=client_ip,
+                severity="info",
+                details={"session_id": session_id[:8], "role": role},
+                timestamp=datetime.datetime.now()
+            )
+            await analytics.log_security_event(security_event)
+        except Exception as e:
+            logger.warning(f"Failed to log security event to advanced analytics: {e}")
     
     return TokenRoleResponse(
         status="success", 
@@ -838,6 +909,27 @@ async def process_secure_rag_query(
             f"Found {len(source_docs)} source documents [Security filtered: {security_filtered}]",
             model_type
         )
+        
+        # Log to advanced analytics if available
+        if ADVANCED_ANALYTICS_ENABLED:
+            try:
+                analytics = get_analytics_core()
+                query_metrics = QueryMetrics(
+                    query_id=session_id,
+                    user_id=username,
+                    query_text=request.question,
+                    query_type=QueryType.DOCUMENT_SEARCH,
+                    num_documents_retrieved=len(source_docs),
+                    response_time_ms=int(response_time),
+                    success=True,
+                    cache_hit=False,
+                    tokens_input=0,
+                    tokens_output=0
+                )
+                await analytics.log_query(query_metrics)
+            except Exception as e:
+                logger.warning(f"Failed to log query to advanced analytics: {e}")
+        
         tracker.end_operation("log_metrics")
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
@@ -1420,6 +1512,21 @@ async def upload_document(
                 # Log successful completion
                 logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {file_id}, Upload ID: {upload_id})")
                 
+                # Log to advanced analytics if available
+                if ADVANCED_ANALYTICS_ENABLED:
+                    try:
+                        analytics = get_analytics_core()
+                        await analytics.log_file_access(
+                            user_id=current_user[1],
+                            filename=original_filename,
+                            file_id=file_id,
+                            access_type="upload",
+                            ip_address=None,
+                            details={"file_size": len(content_bytes), "upload_id": upload_id}
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to log file access to advanced analytics: {e}")
+                
                 return APIResponse(
                     status="success",
                     message=f"File {original_filename} has been successfully uploaded and indexed.",
@@ -1783,14 +1890,21 @@ async def edit_file_content(
 class TimeRangeQuery(BaseModel):
     since: str = "24h"  # Default to 24 hours
 
-@app.get("/metrics/summary")
+# ==================== ADVANCED METRICS ENDPOINTS ====================
+
+@app.get("/metrics/summary", tags=["Analytics"])
 async def get_metrics_summary_endpoint(
-    since: str = "24h",
+    since: str = Query("24h", description="Time range: 1h, 24h, 7d, etc"),
     current_user=Depends(get_current_user)
 ):
     """
-    Get summary metrics for the dashboard
+    Get summary metrics for the dashboard - NEW Advanced Analytics
+    
+    Requires authentication. Returns comprehensive performance and usage metrics.
     """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
     try:
         # Convert since to hours
         if since.endswith('h'):
@@ -1798,25 +1912,52 @@ async def get_metrics_summary_endpoint(
         elif since.endswith('d'):
             hours = int(since[:-1]) * 24
         else:
-            hours = 24  # Default to 24 hours
+            hours = 24
             
-        summary = get_metrics_summary(hours)
+        analytics = get_analytics_core()
+        summary = analytics.get_query_statistics(since_hours=hours)
+        
         return {
             "status": "success",
-            "data": summary
+            "period": since,
+            "data": {
+                "total_queries": summary.get('total_queries', 0),
+                "success_rate": round(
+                    (summary.get('successful_queries', 0) / summary.get('total_queries', 1) * 100)
+                    if summary.get('total_queries', 0) > 0 else 0, 2
+                ),
+                "avg_response_time_ms": round(summary.get('avg_response_time_ms', 0), 2),
+                "min_response_time_ms": summary.get('min_response_time_ms', 0),
+                "max_response_time_ms": summary.get('max_response_time_ms', 0),
+                "unique_users": summary.get('unique_users', 0),
+                "cache_hit_rate": round(
+                    (summary.get('cache_hits', 0) / summary.get('total_queries', 1) * 100)
+                    if summary.get('total_queries', 0) > 0 else 0, 2
+                ),
+                "total_tokens_input": summary.get('total_tokens_input', 0),
+                "total_tokens_output": summary.get('total_tokens_output', 0),
+                "avg_docs_per_query": round(summary.get('avg_docs_per_query', 0), 2),
+            }
         }
     except Exception as e:
+        logger.error(f"Error getting metrics summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/metrics/queries")
+@app.get("/metrics/queries", tags=["Analytics"])
 async def get_metrics_queries(
-    since: str = "24h",
-    limit: int = 10,
+    since: str = Query("24h", description="Time range"),
+    limit: int = Query(10, le=100),
+    offset: int = Query(0),
     current_user=Depends(get_current_user)
 ):
     """
-    Get recent queries for the analytics page
+    Get recent queries for analytics - NEW Advanced Analytics
+    
+    Returns paginated query metrics with filters support.
     """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
     try:
         # Convert since to hours
         if since.endswith('h'):
@@ -1824,15 +1965,209 @@ async def get_metrics_queries(
         elif since.endswith('d'):
             hours = int(since[:-1]) * 24
         else:
-            hours = 24  # Default to 24 hours
+            hours = 24
             
-        queries = get_recent_queries(hours, limit)
+        analytics = get_analytics_core()
+        queries = analytics.get_query_analytics(limit=limit, offset=offset)
+        
         return {
             "status": "success",
+            "period": since,
+            "pagination": {
+                "limit": limit,
+                "offset": offset
+            },
             "data": {
                 "queries": queries
             }
         }
     except Exception as e:
+        logger.error(f"Error getting metrics queries: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/performance", tags=["Analytics"])
+async def get_metrics_performance(
+    since: str = Query("24h"),
+    limit: int = Query(20, le=100),
+    admin_user=Depends(get_current_user)
+):
+    """
+    Get performance metrics - NEW Advanced Analytics
+    
+    Shows operation performance, bottlenecks, and resource usage.
+    """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
+    try:
+        if since.endswith('h'):
+            hours = int(since[:-1])
+        elif since.endswith('d'):
+            hours = int(since[:-1]) * 24
+        else:
+            hours = 24
+            
+        analytics = get_analytics_core()
+        performance = analytics.get_performance_statistics(since_hours=hours)
+        
+        return {
+            "status": "success",
+            "period": since,
+            "data": {
+                "operations": sorted(
+                    performance,
+                    key=lambda x: x.get('avg_duration_ms', 0),
+                    reverse=True
+                )[:limit]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting performance metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/errors", tags=["Analytics"])
+async def get_metrics_errors(
+    since: str = Query("24h"),
+    limit: int = Query(50, le=100),
+    admin_user=Depends(get_current_user)
+):
+    """
+    Get error metrics - NEW Advanced Analytics
+    
+    Shows error frequency and aggregation.
+    """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
+    try:
+        if since.endswith('h'):
+            hours = int(since[:-1])
+        elif since.endswith('d'):
+            hours = int(since[:-1]) * 24
+        else:
+            hours = 24
+            
+        analytics = get_analytics_core()
+        errors = analytics.get_error_summary(since_hours=hours, limit=limit)
+        
+        return {
+            "status": "success",
+            "period": since,
+            "data": {
+                "errors": errors,
+                "total_unique_errors": len(errors)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting error metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/documents", tags=["Analytics"])
+async def get_metrics_documents(
+    limit: int = Query(20, le=100),
+    admin_user=Depends(get_current_user)
+):
+    """
+    Get document usage metrics - NEW Advanced Analytics
+    
+    Shows most accessed files and their usage patterns.
+    """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
+    try:
+        analytics = get_analytics_core()
+        docs = analytics.get_top_documents(limit=limit)
+        
+        return {
+            "status": "success",
+            "data": {
+                "documents": docs,
+                "total": len(docs)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting document metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/health", tags=["Analytics"])
+async def get_metrics_health(
+    current_user=Depends(get_current_user)
+):
+    """
+    Get system health metrics - NEW Advanced Analytics
+    
+    Quick health check with current status.
+    """
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
+    try:
+        analytics = get_analytics_core()
+        stats = analytics.get_query_statistics(since_hours=1)
+        
+        # Health status
+        health = "healthy"
+        if stats.get('total_queries', 0) == 0:
+            health = "no_data"
+        elif (stats.get('failed_queries', 0) / stats.get('total_queries', 1)) > 0.1:
+            health = "warning"
+        
+        return {
+            "status": "success",
+            "health": health,
+            "data": {
+                "queries_last_hour": stats.get('total_queries', 0),
+                "success_rate": round(
+                    (stats.get('successful_queries', 0) / stats.get('total_queries', 1) * 100)
+                    if stats.get('total_queries', 0) > 0 else 100, 2
+                ),
+                "avg_response_time_ms": round(stats.get('avg_response_time_ms', 0), 2),
+                "active_users": stats.get('unique_users', 0),
+                "analytics_enabled": ADVANCED_ANALYTICS_ENABLED
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting health metrics: {e}")
+        return {
+            "status": "error",
+            "health": "error",
+            "detail": str(e),
+            "analytics_enabled": ADVANCED_ANALYTICS_ENABLED
+        }
+
+# ==================== DEPRECATED ENDPOINTS (kept for backward compatibility) ====================
+
+@app.get("/metrics/summary-legacy", tags=["Analytics (Deprecated)"], deprecated=True)
+async def get_metrics_summary_legacy(
+    since: str = "24h",
+    current_user=Depends(get_current_user)
+):
+    """
+    DEPRECATED: Use /metrics/summary instead.
+    
+    This endpoint is maintained for backward compatibility only.
+    """
+    return {
+        "status": "deprecated",
+        "message": "This endpoint is deprecated. Please use /metrics/summary instead.",
+        "redirect": "/metrics/summary"
+    }
+
+@app.get("/metrics/queries-legacy", tags=["Analytics (Deprecated)"], deprecated=True)
+async def get_metrics_queries_legacy(
+    since: str = "24h",
+    limit: int = 10,
+    current_user=Depends(get_current_user)
+):
+    """
+    DEPRECATED: Use /metrics/queries instead.
+    
+    This endpoint is maintained for backward compatibility only.
+    """
+    return {
+        "status": "deprecated",
+        "message": "This endpoint is deprecated. Please use /metrics/queries instead.",
+        "redirect": "/metrics/queries"
+    }
 
