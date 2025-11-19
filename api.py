@@ -94,7 +94,7 @@ if ADVANCED_ANALYTICS_ENABLED:
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
+    allow_origins=["http://localhost:5173", "http://localhost:5175", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -264,6 +264,33 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
     await create_user(request.username, request.password, request.role, request.allowed_files)
     return APIResponse(status="success", message="User registered", response={})
 
+# Handle CORS preflight requests for all endpoints
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str, request: Request):
+    """Handle CORS preflight OPTIONS requests"""
+    origin = request.headers.get("origin", "*")
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://kb-sage.vercel.app",
+        "https://meet-tadpole-resolved.ngrok-free.app"
+    ]
+    
+    # Allow requests from known origins or wildcard
+    allowed_origin = origin if origin in allowed_origins or origin == "*" else "*"
+    
+    return JSONResponse(
+        status_code=200,
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": allowed_origin,
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, ngrok-skip-browser-warning",
+            "Access-Control-Max-Age": "3600",
+            "Access-Control-Allow-Credentials": "true"
+        }
+    )
+
 # User login with session_id management
 @app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest, request_obj: Request):
@@ -387,6 +414,81 @@ async def logout_user(
     except Exception as e:
         logger.exception("Logout error")
         return APIResponse(status="error", message=str(e), response=None)
+
+# Lightweight token validation endpoint - used on page load/navigation
+@app.get("/token/validate", response_model=APIResponse)
+async def validate_token(user=Depends(get_current_user)):
+    """
+    Validate token and return minimal session info.
+    Lightweight endpoint for checking token validity on page load/navigation.
+    Returns: {status, created, expires}
+    """
+    try:
+        # user is (id, username, password_hash, role, allowed_files, created_at, last_login)
+        username = user[1]
+        role = user[3]
+        created_at = user[5] if len(user) > 5 else None
+        
+        logger.debug(f"Token validated for user: {username}")
+        
+        return APIResponse(
+            status="success",
+            message="Token is valid",
+            response={
+                "valid": True,
+                "username": username,
+                "role": role,
+                "created_at": created_at
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Token validation failed: {e}")
+        return APIResponse(
+            status="error",
+            message="Token is invalid or expired",
+            response={"valid": False}
+        )
+
+# Admin-only endpoint with role check
+@app.get("/admin/access", response_model=APIResponse)
+async def check_admin_access(user=Depends(get_current_user)):
+    """
+    Check if user has admin access.
+    Only admin users can successfully call this endpoint.
+    Returns: {status, is_admin, username, role}
+    """
+    try:
+        username = user[1]
+        role = user[3]
+        
+        # Check if user is admin
+        if role != 'admin':
+            logger.warning(f"Non-admin user {username} attempted to access admin panel")
+            raise HTTPException(
+                status_code=403,
+                detail="Admin access required"
+            )
+        
+        logger.info(f"Admin access granted for user: {username}")
+        
+        return APIResponse(
+            status="success",
+            message="Admin access granted",
+            response={
+                "is_admin": True,
+                "username": username,
+                "role": role
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin access check failed: {e}")
+        return APIResponse(
+            status="error",
+            message="Admin access denied",
+            response={"is_admin": False}
+        )
 
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
