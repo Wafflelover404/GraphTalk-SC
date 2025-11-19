@@ -48,10 +48,17 @@ except Exception as e:
 
 async def create_user(username: str, password: str, role: str, allowed_files: Optional[List[str]] = None):
     password_hash = bcrypt.hash(password)
-    allowed_files_str = ','.join(allowed_files) if allowed_files else ''
+    # Ensure allowed_files is a list and not None
+    if allowed_files is None:
+        allowed_files = []
+    # Convert list to comma-separated string
+    allowed_files_str = ','.join(allowed_files)
+    
     async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute('INSERT INTO users (username, password_hash, role, allowed_files) VALUES (?, ?, ?, ?)',
-                          (username, password_hash, role, allowed_files_str))
+        await conn.execute('''
+            INSERT INTO users (username, password_hash, role, allowed_files, last_login) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (username, password_hash, role, allowed_files_str, None))
         await conn.commit()
 
 async def get_user(username: str):
@@ -259,8 +266,8 @@ async def get_user_allowed_filenames(username: str) -> Optional[List[str]]:
         return None  # None means all files allowed
     
     # Parse allowed files
-    allowed_files_str = user[5]  # allowed_files column
-    if not allowed_files_str:
+    allowed_files_str = user[5] if len(user) > 5 else ''  # allowed_files column with safe access
+    if not allowed_files_str or allowed_files_str.strip() == '':
         return []
     
     files = [f.strip() for f in allowed_files_str.split(',') if f.strip()]
@@ -272,18 +279,20 @@ async def get_user_allowed_filenames(username: str) -> Optional[List[str]]:
 async def check_file_access(username: str, filename: str) -> bool:
     """Check if user has access to a specific file"""
     allowed_files = await get_user_allowed_filenames(username)
-    
-    # None means all files allowed (admin or 'all' permission)
-    if allowed_files is None:
+    if allowed_files is None:  # Admin or has 'all' access
         return True
-    
-    # Check if filename is in allowed list
-    return filename in allowed_files
+    if not allowed_files:  # No access to any files
+        return False
+    # Check if filename is in allowed_files (case-insensitive)
+    import os
+    filename_lower = os.path.basename(filename).lower()
+    return any(f.lower() == filename_lower for f in allowed_files)
 
 async def get_active_sessions_count(username: str) -> int:
     """Get count of active sessions for a user"""
     async with aiosqlite.connect(DB_PATH) as conn:
         # Get current time
+        import datetime
         now = datetime.datetime.utcnow()
         
         # Count active non-expired sessions

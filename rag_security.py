@@ -46,13 +46,26 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
         allowed_files = await get_user_allowed_filenames(username)
         tracker.end_operation("get_user_permissions")
 
-        # Normalize filenames for comparison (preserve 'temp_' prefix, just lowercase)
+        # Normalize filenames for comparison
         def normalize_filename(name: str) -> str:
             if not name:
                 return ''
-            base = os.path.basename(name)
-            # Don't remove 'temp_' prefix for access control
-            return base.lower()
+            try:
+                # Handle different path formats (both forward and backslashes)
+                name = name.replace('\\', '/')
+                # Get just the filename without path
+                base = os.path.basename(name)
+                # Convert to lowercase for case-insensitive comparison
+                normalized = base.lower()
+                # Remove any URL parameters or fragments
+                normalized = normalized.split('?')[0].split('#')[0]
+                # Remove any temporary prefixes/suffixes if needed
+                if normalized.startswith('temp_') and not any(f.startswith('temp_') for f in allowed_files or []):
+                    normalized = normalized[5:]
+                return normalized
+            except Exception as e:
+                logger.error(f"Error normalizing filename '{name}': {str(e)}")
+                return ''
 
         # If user is not an admin (allowed_files is a list), create a set for faster lookups
         # For admins (allowed_files is None), they can access all files
@@ -83,6 +96,9 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
             language='russian'  # Explicitly set language for better tokenization
         )
         
+        # Log initial search results
+        logger.info(f"Initial search results - Semantic matches: {len(search_results.get('semantic_results', []))}, Filename matches: {len(search_results.get('filename_matches', {}))}")
+        
         # If we don't have enough high-confidence results, try a more permissive search
         if len(search_results.get('semantic_results', [])) < k:
             logger.info("Performing fallback search with expanded parameters")
@@ -97,35 +113,64 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
                 filename_match_boost=1.1,
                 language='russian'
             )
+            # Log fallback results
+            logger.info(f"Fallback search results - Semantic matches: {len(fallback_results.get('semantic_results', []))}, Filename matches: {len(fallback_results.get('filename_matches', {}))}")
+            
             # Merge results, preferring the first pass
             search_results['semantic_results'] = (
                 search_results.get('semantic_results', []) +
                 [r for r in fallback_results.get('semantic_results', [])
                  if r not in search_results.get('semantic_results', [])]
             )
-        tracker.end_operation("search_documents", f"Found {len(search_results.get('semantic_results', []))} semantic, {len(search_results.get('filename_matches', {}))} filename matches")
-
-        logger.info(f"Search results: {len(search_results.get('semantic_results', []))} semantic matches, {len(search_results.get('filename_matches', {}))} filename matches")
-        logger.info(f"Search stats: {search_results.get('stats', {})}")
+        
+        # Log all filenames from search results for debugging
+        all_filenames = []
+        for doc in search_results.get('semantic_results', []):
+            filename = doc.metadata.get('filename', '')
+            all_filenames.append(filename)
+            logger.debug(f"Search result - Original filename: {filename!r}, Normalized: {normalize_filename(filename)!r}")
+        
+        logger.info(f"Search result filenames (raw): {set(all_filenames)}")
+        normalized_filenames = [f"'{normalize_filename(f)}'" for f in set(all_filenames)]
+        logger.info(f"Search result filenames (normalized): {{{', '.join(normalized_filenames)}}}")
+        logger.info(f"User's allowed files (normalized): {allowed_files_set}")
+        logger.info(f"Total results after merging: {len(search_results.get('semantic_results', []))} semantic matches")
+        tracker.end_operation("search_documents")
 
         # Process semantic results with enhanced context
         tracker.start_operation("process_semantic_results")
         relevant_files = []
         seen_files = set()
         file_chunks = {}
+        total_skipped = 0
+        total_allowed = 0
 
         # First pass: Group all chunks by file
         for doc in search_results.get('semantic_results', []):
             file_source = doc.metadata.get('filename', '')
             if not file_source:
+                logger.debug("Skipping document with no filename in metadata")
                 continue
                 
             # Check access if user has restricted access (not an admin)
             if allowed_files_set is not None:  # If not None, user has restricted access
                 norm_name = normalize_filename(file_source)
-                if not norm_name or norm_name not in allowed_files_set:
-                    logger.debug(f"Skipping file {file_source} - not in allowed list")
+                logger.debug(f"Checking file access - Original: {file_source!r}, Normalized: {norm_name!r}, Allowed files: {allowed_files_set}")
+                
+                if not norm_name:
+                    logger.debug(f"Skipping file {file_source} - could not normalize filename")
+                    total_skipped += 1
                     continue
+                    
+                if norm_name not in allowed_files_set:
+                    logger.debug(f"Skipping file {file_source} - not in allowed list")
+                    logger.debug(f"  Normalized: {norm_name!r}")
+                    logger.debug(f"  Allowed files: {allowed_files_set}")
+                    total_skipped += 1
+                    continue
+                    
+                logger.info(f"File {file_source} is in allowed list (normalized: {norm_name})")
+                total_allowed += 1
 
             # Initialize file entry if not exists
             if file_source not in file_chunks:
@@ -141,75 +186,104 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
                 }
             }
             file_chunks[file_source].append(chunk_data)
+        
+        logger.info(f"Processed {len(search_results.get('semantic_results', []))} documents - Allowed: {total_allowed}, Skipped: {total_skipped}")
 
         # Process each file's chunks for optimal context
         for file_source, chunks in file_chunks.items():
-            # Sort chunks by score (descending)
-            chunks.sort(key=lambda x: x['score'], reverse=True)
-            
-            # Take top chunks but ensure we don't exceed reasonable context length
-            max_chunks = 5  # Maximum chunks per file to include
-            selected_chunks = chunks[:max_chunks]
-            
-            # Calculate aggregate relevance score (weighted average)
-            total_score = sum(c['score'] for c in selected_chunks)
-            avg_score = total_score / len(selected_chunks) if selected_chunks else 0
-            
-            # Combine chunks with separators
-            combined_content = "\n\n---\n\n".join(
-                f"[Relevance: {c['score']:.2f}]\n{c['content']}" 
-                for c in selected_chunks
-            )
-            
-            # Add file metadata
-            file_metadata = {}
-            if selected_chunks and 'metadata' in selected_chunks[0]:
-                file_metadata = selected_chunks[0]['metadata']
-            
-            relevant_files.append({
-                "file_path": file_source,
-                "file_name": os.path.basename(file_source),
-                "relevance_score": avg_score,
-                "content": combined_content,
-                "chunks": selected_chunks,
-                "metadata": file_metadata
-            })
-            seen_files.add(file_source)
+            try:
+                # Sort chunks by score (descending)
+                chunks.sort(key=lambda x: x['score'], reverse=True)
+                
+                # Take top chunks but ensure we don't exceed reasonable context length
+                max_chunks = 5  # Maximum chunks per file to include
+                selected_chunks = chunks[:max_chunks]
+                
+                # Calculate aggregate relevance score (weighted average)
+                total_score = sum(c['score'] for c in selected_chunks)
+                avg_score = total_score / len(selected_chunks) if selected_chunks else 0
+                
+                # Combine chunks with separators
+                combined_content = "\n\n---\n\n".join(
+                    f"[Relevance: {c['score']:.2f}]\n{c['content']}" 
+                    for c in selected_chunks
+                )
+                
+                # Add file metadata
+                file_metadata = {}
+                if selected_chunks and 'metadata' in selected_chunks[0]:
+                    file_metadata = selected_chunks[0]['metadata']
+                
+                relevant_files.append({
+                    "file_path": file_source,
+                    "file_name": os.path.basename(file_source),
+                    "relevance_score": avg_score,
+                    "content": combined_content,
+                    "chunks": selected_chunks,
+                    "metadata": file_metadata
+                })
+                seen_files.add(file_source)
+                logger.debug(f"Added file {file_source} with score {avg_score:.2f} and {len(selected_chunks)} chunks")
+                
+            except Exception as e:
+                logger.error(f"Error processing file {file_source}: {str(e)}", exc_info=True)
+                continue
 
         # Add filename matches if we don't have enough results
-        logger.info(f"Found {len(relevant_files)} relevant files, looking for up to {k}")
-        if len(relevant_files) < k:
-            for filename, match in search_results.get('filename_matches', {}).items():
+        logger.info(f"Found {len(relevant_files)} relevant files after semantic search, looking for up to {k}")
+        filename_matches_added = 0
+        
+        if len(relevant_files) < k and 'filename_matches' in search_results:
+            logger.info(f"Checking {len(search_results['filename_matches'])} filename matches")
+            
+            for filename, match in search_results['filename_matches'].items():
                 if filename not in seen_files:
                     # Only check access if user has restricted access (not an admin)
                     if allowed_files_set is not None:  # If not None, user has restricted access
                         norm_name = normalize_filename(filename)
                         if not norm_name or norm_name not in allowed_files_set:
-                            logger.debug(f"Skipping filename match {filename} - not in allowed list")
+                            logger.debug(f"Skipping filename match {filename} - not in allowed list (normalized: {norm_name}, allowed: {allowed_files_set})")
                             continue  # Skip files not in the allowed list
+                        else:
+                            logger.debug(f"Filename match {filename} is in allowed list (normalized: {norm_name})")
 
-                    seen_files.add(filename)
-                    relevant_files.append({
-                        "file_path": filename,
-                        "file_name": os.path.basename(filename),
-                        "relevance_score": 1.0 - match.get('similarity', 0.3),
-                        "content": match.get('content', '')[:500],
-                        "is_filename_match": True
-                    })
+                    try:
+                        seen_files.add(filename)
+                        relevant_files.append({
+                            "file_path": filename,
+                            "file_name": os.path.basename(filename),
+                            "relevance_score": 1.0 - match.get('similarity', 0.3),
+                            "content": match.get('content', '')[:500],
+                            "is_filename_match": True
+                        })
+                        filename_matches_added += 1
+                        logger.debug(f"Added filename match: {filename} (score: {1.0 - match.get('similarity', 0.3):.2f})")
+                        
+                        # Stop if we have enough results
+                        if len(relevant_files) >= k:
+                            break
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing filename match {filename}: {str(e)}", exc_info=True)
+                        continue
+
+        logger.info(f"Added {filename_matches_added} filename matches, total results: {len(relevant_files)}")
 
         # Sort by relevance score (higher is better) and take top k
         relevant_files.sort(key=lambda x: x["relevance_score"], reverse=True)
-
-        # Ensure we don't return more than k files
         result = relevant_files[:k]
-        tracker.end_operation("process_semantic_results", f"Returning {len(result)} relevant files")
-
+        
+        # Log final results
+        logger.info(f"Returning {len(result)} relevant files")
+        for i, file_info in enumerate(result, 1):
+            logger.info(f"  {i}. {file_info['file_name']} (score: {file_info['relevance_score']:.2f})")
+        
+        tracker.end_operation("process_semantic_results")
         tracker.log_summary()
         return result
 
     except Exception as e:
-        logger.error(f"Error in get_relevant_files_for_query: {str(e)}")
-        logger.exception("Full traceback:")
+        logger.error(f"Error in get_relevant_files_for_query: {str(e)}", exc_info=True)
         tracker.log_summary()
         return []
 
