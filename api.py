@@ -18,6 +18,7 @@ import aiofiles
 import aiofiles.os
 import glob
 import asyncio
+import aiosqlite
 
 from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
@@ -94,7 +95,7 @@ if ADVANCED_ANALYTICS_ENABLED:
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5175", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "https://wikiai.by","https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -111,6 +112,7 @@ app.add_middleware(MetricsMiddleware)
 @app.on_event("startup")
 async def _startup_events():
     await init_quiz_db()
+    await init_opencart_db()
     
     # Initialize advanced analytics
     if ADVANCED_ANALYTICS_ENABLED:
@@ -174,6 +176,28 @@ class UserEditRequest(BaseModel):
     role: str = ""
     allowed_files: Optional[List[str]] = None
 
+# OpenCart ingest payloads
+class OCProductPayload(BaseModel):
+    product_id: str
+    name: str
+    sku: Optional[str] = None
+    price: str
+    special: Optional[str] = None
+    description: Optional[str] = None
+    url: str
+    image: Optional[str] = None
+    quantity: Optional[str] = None
+    status: Optional[str] = None
+    rating: Optional[int] = None
+
+
+class OCProductsImport(BaseModel):
+    success: bool
+    total_products: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+    products: List[OCProductPayload]
+
 # User authentication and authorization using session_id
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
@@ -209,6 +233,130 @@ def resolve_actual_filename_case_insensitive(requested_filename: str) -> str:
         pass
     return requested_filename
 
+# === OpenCart ingest helpers ===
+OC_DB_PATH = os.path.join(os.path.dirname(__file__), "integration_toolkit", "OpenCart", "Backend", "opencart_products.db")
+
+
+async def init_opencart_db():
+    os.makedirs(os.path.dirname(OC_DB_PATH), exist_ok=True)
+    async with aiosqlite.connect(OC_DB_PATH) as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS products (
+                product_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                sku TEXT,
+                price REAL,
+                special TEXT,
+                description TEXT,
+                url TEXT,
+                image TEXT,
+                quantity INTEGER,
+                status INTEGER,
+                rating INTEGER,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await conn.commit()
+
+
+def _oc_parse_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _oc_parse_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str, int]:
+    inserted = 0
+    updated = 0
+    now = datetime.datetime.utcnow().isoformat()
+
+    async with aiosqlite.connect(OC_DB_PATH) as conn:
+        for product in products:
+            pid = _oc_parse_int(product.product_id)
+            if pid is None:
+                continue
+
+            price = _oc_parse_float(product.price)
+            qty = _oc_parse_int(product.quantity)
+            status = _oc_parse_int(product.status)
+            rating = _oc_parse_int(str(product.rating)) if product.rating is not None else None
+
+            update_cursor = await conn.execute(
+                """
+                UPDATE products SET
+                    name=?,
+                    sku=?,
+                    price=?,
+                    special=?,
+                    description=?,
+                    url=?,
+                    image=?,
+                    quantity=?,
+                    status=?,
+                    rating=?,
+                    updated_at=?
+                WHERE product_id=?
+                """,
+                (
+                    product.name,
+                    product.sku,
+                    price,
+                    product.special,
+                    product.description,
+                    product.url,
+                    product.image,
+                    qty,
+                    status,
+                    rating,
+                    now,
+                    pid,
+                ),
+            )
+
+            if update_cursor.rowcount:
+                updated += 1
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO products (
+                        product_id, name, sku, price, special, description, url,
+                        image, quantity, status, rating, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pid,
+                        product.name,
+                        product.sku,
+                        price,
+                        product.special,
+                        product.description,
+                        product.url,
+                        product.image,
+                        qty,
+                        status,
+                        rating,
+                        now,
+                    ),
+                )
+                inserted += 1
+        await conn.commit()
+
+    return {"inserted": inserted, "updated": updated, "received": len(products)}
+
 # Endpoints
 @app.get("/", include_in_schema=False)
 async def landing_page():
@@ -226,9 +374,51 @@ async def landing_page():
             "/files/list": {"method": "GET", "description": "List accessible documents (auth required)"},
             "/files/delete": {"method": "DELETE", "description": "Delete document from RAG (admin only)"},
             "/accounts": {"method": "GET", "description": "List user accounts (admin only)"},
+            "/opencart/products/import": {"method": "POST", "description": "Import OpenCart products JSON (auth required)"},
             "/docs": {"method": "GET", "description": "Interactive API documentation"}
         }
     }
+
+
+@app.post("/opencart/products/import", response_model=APIResponse)
+async def import_opencart_products(
+    payload: OCProductsImport,
+    current_user=Depends(get_current_user),
+):
+    stats = await upsert_opencart_products(payload.products)
+    return APIResponse(
+        status="success",
+        message="Products imported",
+        response=stats,
+    )
+
+
+# Backward-compatible alias if clients POST to /opencart directly
+@app.post("/opencart", response_model=APIResponse, include_in_schema=False)
+async def import_opencart_products_alias(
+    payload: OCProductsImport,
+    current_user=Depends(get_current_user),
+):
+    stats = await upsert_opencart_products(payload.products)
+    return APIResponse(
+        status="success",
+        message="Products imported",
+        response=stats,
+    )
+
+
+# Additional alias for legacy clients calling /opencart/sync
+@app.post("/opencart/sync", response_model=APIResponse, include_in_schema=False)
+async def import_opencart_products_sync(
+    payload: OCProductsImport,
+    current_user=Depends(get_current_user),
+):
+    stats = await upsert_opencart_products(payload.products)
+    return APIResponse(
+        status="success",
+        message="Products imported",
+        response=stats,
+    )
 
 # User registration (requires master key)
 @app.post("/register", response_model=APIResponse)

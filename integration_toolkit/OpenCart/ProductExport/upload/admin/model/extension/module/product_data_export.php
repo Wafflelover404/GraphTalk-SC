@@ -51,8 +51,9 @@ class ModelExtensionModuleProductDataExport extends Model {
                 'product_id' => $product['product_id'],
                 'name' => $product['name'],
                 'sku' => $product['sku'],
-                'price' => $this->currency->format($product['price'], $this->config->get('config_currency')),
-                'special' => $product['special'] ? $this->currency->format($product['special'], $this->config->get('config_currency')) : null,
+                // Use raw numeric values so downstream APIs (e.g., Graphtalk ingest) can parse reliably
+                'price' => $product['price'],
+                'special' => $product['special'],
                 'description' => html_entity_decode(strip_tags($product['description'])),
                 'url' => $product['url'],
                 'image' => $image ? $this->config->get('config_url') . 'image/' . $image : '',

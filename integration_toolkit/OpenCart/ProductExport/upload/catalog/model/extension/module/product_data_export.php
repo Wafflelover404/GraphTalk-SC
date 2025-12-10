@@ -34,7 +34,7 @@ class ModelExtensionModuleProductDataExport extends Model {
         $products = array();
         
         foreach ($query->rows as $product) {
-            // Get product image
+
             $image_query = $this->db->query(
                 "SELECT image FROM " . DB_PREFIX . "product_image 
                 WHERE product_id = '" . (int)$product['product_id'] . "' 
@@ -46,7 +46,6 @@ class ModelExtensionModuleProductDataExport extends Model {
                 $image = $image_query->row['image'];
             }
 
-            // Format product data
             $products[] = array(
                 'product_id' => $product['product_id'],
                 'name' => $product['name'],

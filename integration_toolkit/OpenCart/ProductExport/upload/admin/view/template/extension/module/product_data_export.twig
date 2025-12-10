@@ -57,6 +57,31 @@
               <span id="export-status"></span>
             </div>
           </div>
+
+          <div class="form-group" style="border-top: 1px solid #ddd; padding-top: 20px; margin-top: 20px;">
+            <label class="col-sm-2 control-label">Send to Endpoint</label>
+            <div class="col-sm-10">
+              <input type="url" id="endpoint-url" class="form-control" placeholder="https://your-graphtalk-host/opencart/products/import" />
+              <span class="help-block">Enter the Graphtalk ingest URL (FastAPI) that accepts the exported JSON</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">Bearer/Session Token</label>
+            <div class="col-sm-10">
+              <input type="text" id="endpoint-token" class="form-control" placeholder="Paste Graphtalk session_id or access_token" />
+              <span class="help-block">Uses the same Authorization Bearer token/session_id as Graphtalk <code>api.py</code></span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">&nbsp;</label>
+            <div class="col-sm-10">
+              <button type="button" class="btn btn-warning" id="btn-save-endpoint"><i class="fa fa-save"></i> Save Endpoint</button>
+              <button type="button" class="btn btn-info" id="btn-send-endpoint"><i class="fa fa-send"></i> Send to Endpoint</button>
+              <span id="send-status"></span>
+            </div>
+          </div>
         </form>
 
         <div id="preview-container" style="display:none; margin-top: 20px;">
@@ -78,6 +103,54 @@ $(document).ready(function() {
     // Get the base URL for API calls
     var baseUrl = window.location.origin || (window.location.protocol + '//' + window.location.host);
     var apiUrl = baseUrl + '/index.php?route=extension/module/product_data_export';
+    
+    // Load saved endpoint URL from localStorage on page load
+    var savedEndpoint = localStorage.getItem('productExportEndpoint');
+    if (savedEndpoint) {
+        $('#endpoint-url').val(savedEndpoint);
+    }
+    var savedToken = localStorage.getItem('productExportBearer');
+    if (savedToken) {
+        $('#endpoint-token').val(savedToken);
+    }
+    
+    // Update send button state based on URL and export data
+    function updateSendButtonState() {
+        var hasEndpoint = $('#endpoint-url').val().trim().length > 0;
+        var hasToken = $('#endpoint-token').val().trim().length > 0;
+        var hasExportData = window.exportData && window.exportData.products && window.exportData.products.length > 0;
+        $('#btn-send-endpoint').prop('disabled', !(hasEndpoint && hasToken && hasExportData));
+    }
+    
+    // Enable save endpoint button when URL is entered
+    $('#endpoint-url').on('input', function() {
+        var hasUrl = $(this).val().trim().length > 0;
+        $('#btn-save-endpoint').prop('disabled', !hasUrl);
+        updateSendButtonState();
+    });
+
+    // Enable send when token changes
+    $('#endpoint-token').on('input', function() {
+        updateSendButtonState();
+    });
+    
+    // Save endpoint button
+    $('#btn-save-endpoint').click(function() {
+        var endpointUrl = $('#endpoint-url').val().trim();
+        var endpointToken = $('#endpoint-token').val().trim();
+        if (!endpointUrl) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a valid URL</span>');
+            return;
+        }
+        if (!endpointToken) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a bearer/session token</span>');
+            return;
+        }
+        localStorage.setItem('productExportEndpoint', endpointUrl);
+        localStorage.setItem('productExportBearer', endpointToken);
+        $('#send-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Endpoint saved successfully</span>');
+        updateSendButtonState();
+    });
     
     // Preview button
     $('#btn-preview').click(function() {
@@ -182,8 +255,9 @@ $(document).ready(function() {
                     $('#export-results').show();
                     $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Export completed</span>');
                     
-                    // Store data globally for download
                     window.exportData = json;
+                    
+                    updateSendButtonState();
                 },
                 error: function(xhr, status, error) {
                     btn.prop('disabled', false);
@@ -199,28 +273,25 @@ $(document).ready(function() {
         }
     });
 
-    // Export ALL button - fetches all products with large limit
     $('#btn-export-all').click(function() {
         var format = $('#export-format').val();
         var btn = $(this);
-        var maxLimit = 10000; // Maximum products per request
+        var maxLimit = 10000; 
 
         btn.prop('disabled', true);
         $('#export-status').html('<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Exporting all products...</span>');
 
         if (format === 'csv') {
-            // CSV download - use maximum limit
             window.location.href = apiUrl + '/exportcsv?limit=' + maxLimit + '&offset=0';
             btn.prop('disabled', false);
             $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Download started</span>');
         } else {
-            // JSON export - fetch all with maximum limit
             $.ajax({
                 url: apiUrl + '/export',
                 type: 'get',
                 data: { limit: maxLimit, offset: 0, format: 'json' },
                 dataType: 'json',
-                timeout: 120000, // 2 minutes for large export
+                timeout: 120000, 
                 success: function(json) {
                     btn.prop('disabled', false);
                     
@@ -244,8 +315,11 @@ $(document).ready(function() {
                     $('#export-results').show();
                     $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Export completed</span>');
                     
-                    // Store data globally for download
+                    // Store data globally for download and sending
                     window.exportData = json;
+                    
+                    // Update send button state
+                    updateSendButtonState();
                 },
                 error: function(xhr, status, error) {
                     btn.prop('disabled', false);
@@ -259,6 +333,65 @@ $(document).ready(function() {
                 }
             });
         }
+    });
+
+    // Send to Endpoint button
+    $('#btn-send-endpoint').click(function() {
+        var endpointUrl = $('#endpoint-url').val().trim();
+        var endpointToken = $('#endpoint-token').val().trim();
+        var btn = $(this);
+
+        if (!endpointUrl) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter an endpoint URL</span>');
+            return;
+        }
+        if (!endpointToken) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a bearer/session token</span>');
+            return;
+        }
+
+        if (!window.exportData || !window.exportData.products || window.exportData.products.length === 0) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> No data to send. Please export data first.</span>');
+            return;
+        }
+
+        btn.prop('disabled', true);
+        $('#send-status').html('<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Sending data to endpoint...</span>');
+
+        $.ajax({
+            url: endpointUrl,
+            type: 'POST',
+            data: JSON.stringify(window.exportData),
+            contentType: 'application/json',
+            headers: {
+                'Authorization': 'Bearer ' + endpointToken
+            },
+            timeout: 30000,
+            success: function(response) {
+                btn.prop('disabled', false);
+                $('#send-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Successfully sent ' + window.exportData.count + ' products to endpoint</span>');
+                console.log('Response from endpoint:', response);
+            },
+            error: function(xhr, status, error) {
+                btn.prop('disabled', false);
+                var errorMsg = error;
+                var statusText = '';
+                
+                if (xhr.status === 0) {
+                    errorMsg = 'Network error or CORS blocked. Check if the endpoint is accessible.';
+                } else if (xhr.status === 404) {
+                    statusText = ' (404 Not Found)';
+                } else if (xhr.status === 401 || xhr.status === 403) {
+                    statusText = ' (Authentication/Authorization failed)';
+                } else if (xhr.status === 500) {
+                    statusText = ' (Server error)';
+                }
+                
+                var fullError = 'Error sending data: ' + errorMsg + statusText;
+                $('#send-status').html('<span class="text-danger"><i class="fa fa-exclamation-circle"></i> ' + fullError + '</span>');
+                console.error('Endpoint error:', xhr);
+            }
+        });
     });
 });
 

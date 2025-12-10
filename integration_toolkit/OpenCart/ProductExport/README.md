@@ -158,6 +158,12 @@ curl "http://yourshop.com/index.php?route=extension/module/product_data_export/c
 curl "http://yourshop.com/index.php?route=extension/module/product_data_export/exportcsv" -o products.csv
 ```
 
+#### Send export directly to Graphtalk ingest (FastAPI)
+- In the admin UI, export products (JSON).
+- Enter your Graphtalk ingest URL (e.g., `https://your-graphtalk-host/opencart/products/import`).
+- Paste the Graphtalk Bearer token/session_id from `api.py` auth.
+- Click **Send to Endpoint** to push the JSON with `Authorization: Bearer <token>`.
+
 ## Data Fields Included
 
 Each product includes:
