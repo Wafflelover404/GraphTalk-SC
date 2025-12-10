@@ -94,7 +94,7 @@ if ADVANCED_ANALYTICS_ENABLED:
 # CORS setup for Vue.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5175", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "wikiai","https://meet-tadpole-resolved.ngrok-free.app"],
+    allow_origins=["http://localhost:5173", "http://localhost:5175", "http://127.0.0.1:5173", "https://kb-sage.vercel.app", "https://wikiai.by","https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]

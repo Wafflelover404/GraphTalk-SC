@@ -3,7 +3,31 @@ import asyncio
 import os
 import datetime
 from typing import List, Optional
-from passlib.hash import bcrypt
+import bcrypt
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate_password_for_bcrypt(password: str) -> bytes:
+    """Ensure password does not exceed 72 bytes (bcrypt limit).
+
+    Returns a bytes object containing at most 72 bytes of the UTF-8
+    encoding of the password. Any partial trailing UTF-8 sequence is
+    dropped to ensure valid encoding when decoding is needed.
+    """
+    if password is None:
+        return b''
+    try:
+        pw_bytes = password.encode('utf-8')
+    except Exception:
+        pw_bytes = str(password).encode('utf-8', errors='ignore')
+    original_len = len(pw_bytes)
+    if original_len <= 72:
+        return pw_bytes
+    truncated = pw_bytes[:72]
+    logger.warning('Password too long for bcrypt; truncated from %d to 72 bytes', original_len)
+    return truncated
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'users.db')
 
@@ -47,7 +71,8 @@ except Exception as e:
     print(f"Warning: Could not initialize user database on import: {e}")
 
 async def create_user(username: str, password: str, role: str, allowed_files: Optional[List[str]] = None):
-    password_hash = bcrypt.hash(password)
+    safe_password = _truncate_password_for_bcrypt(password)
+    password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
     # Ensure allowed_files is a list and not None
     if allowed_files is None:
         allowed_files = []
@@ -74,14 +99,23 @@ async def update_access_token(username: str, token: str):
 
 async def verify_user(username: str, password: str):
     user = await get_user(username)
-    if user and bcrypt.verify(password, user[2]):
-        # Update last_login timestamp
-        import datetime
-        async with aiosqlite.connect(DB_PATH) as conn:
-            await conn.execute('UPDATE users SET last_login = ? WHERE username = ?',
-                              (datetime.datetime.utcnow().isoformat(), username))
-            await conn.commit()
-        return True
+    if user:
+        safe_password = _truncate_password_for_bcrypt(password)
+        try:
+            stored_hash = user[2]
+            if isinstance(stored_hash, str):
+                stored_hash = stored_hash.encode('utf-8')
+            verified = bcrypt.checkpw(safe_password, stored_hash)
+        except Exception:
+            return False
+        if verified:
+            # Update last_login timestamp
+            import datetime
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute('UPDATE users SET last_login = ? WHERE username = ?',
+                                  (datetime.datetime.utcnow().isoformat(), username))
+                await conn.commit()
+            return True
     return False
 async def list_users():
     """
@@ -201,7 +235,8 @@ async def update_username(old_username: str, new_username: str) -> bool:
     
 async def update_password(username: str, new_password: str) -> bool:
     """Update a user's password in the database."""
-    new_password_hash = bcrypt.hash(new_password)
+    safe_password = _truncate_password_for_bcrypt(new_password)
+    new_password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
     async with aiosqlite.connect(DB_PATH) as conn:
         cursor = await conn.execute(
             'UPDATE users SET password_hash = ? WHERE username = ?',
