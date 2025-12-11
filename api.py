@@ -23,9 +23,24 @@ import aiosqlite
 from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
 from userdb import (
-    create_user, verify_user, update_access_token, get_user, get_allowed_files, 
-    get_user_by_token, list_users, create_session, get_user_by_session_id, 
-    logout_session_by_id, cleanup_expired_sessions, check_file_access
+    create_user,
+    verify_user,
+    update_access_token,
+    get_user,
+    get_allowed_files,
+    get_user_by_token,
+    list_users,
+    create_session,
+    get_user_by_session_id,
+    logout_session_by_id,
+    cleanup_expired_sessions,
+    check_file_access,
+)
+from orgdb import (
+    init_org_db,
+    create_organization,
+    get_organization_by_slug,
+    create_organization_membership,
 )
 from rag_security import SecureRAGRetriever, get_filtered_rag_context
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -113,6 +128,7 @@ app.add_middleware(MetricsMiddleware)
 async def _startup_events():
     await init_quiz_db()
     await init_opencart_db()
+    await init_org_db()
     
     # Initialize advanced analytics
     if ADVANCED_ANALYTICS_ENABLED:
@@ -175,6 +191,34 @@ class UserEditRequest(BaseModel):
     password: str = ""
     role: str = ""
     allowed_files: Optional[List[str]] = None
+    # Note: organization membership and roles are managed via org endpoints.
+
+
+class OrganizationCreateRequest(BaseModel):
+    organization_name: str
+    admin_username: str
+    admin_password: str
+
+
+def _slugify_org_name(name: str) -> str:
+    """Generate a URL-safe slug from organization name."""
+    import re
+
+    slug = name.strip().lower()
+    slug = re.sub(r"[^a-z0-9\\s_-]", "", slug)
+    slug = re.sub(r"[\\s_-]+", "-", slug)
+    slug = slug.strip("-")
+    return slug or "org-" + uuid.uuid4().hex[:8]
+
+
+def _get_active_org_id(user_tuple):
+    """Extract organization_id from the authenticated user session tuple."""
+    try:
+        if user_tuple and len(user_tuple) >= 11:
+            return user_tuple[-1]
+    except Exception:
+        pass
+    return None
 
 # OpenCart ingest payloads
 class OCProductPayload(BaseModel):
@@ -426,9 +470,10 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
     # Allow registration if admin is authenticated or valid master key is provided via Bearer
     is_admin = False
     is_master = False
+    admin_user = None
     if credentials:
-        user = await get_user_by_token(credentials.credentials)
-        if user and user[3] == "admin":
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
             is_admin = True
         # If not admin, check if Bearer token is master key
         if not is_admin:
@@ -451,7 +496,14 @@ async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuth
         return APIResponse(status="error", message="Username already exists", response={})
     if request.role not in ["user", "admin"]:
         return APIResponse(status="error", message="Role must be 'user' or 'admin'", response={})
-    await create_user(request.username, request.password, request.role, request.allowed_files)
+    
+    # Get organization_id from the authenticated admin
+    organization_id = None
+    if is_admin and admin_user:
+        org_id = _get_active_org_id(admin_user)
+        organization_id = org_id
+    
+    await create_user(request.username, request.password, request.role, request.allowed_files, organization_id=organization_id)
     return APIResponse(status="success", message="User registered", response={})
 
 # Handle CORS preflight requests for all endpoints
@@ -518,8 +570,13 @@ async def login_user(request: LoginRequest, request_obj: Request):
     # Generate new session_id (UUID-based for better security)
     session_id = str(uuid.uuid4())
     
-    # Create session in database with session_id as primary key
-    await create_session(request.username, session_id, expires_hours=24)
+    # Get user's organization_id from database
+    user = await get_user(request.username)
+    organization_id = user[7] if user and len(user) > 7 else None  # organization_id is at index 7
+    
+    # Create session in database with session_id as primary key.
+    # Include organization_id from user's profile
+    await create_session(request.username, session_id, expires_hours=24, organization_id=organization_id)
     
     # Also update legacy access token for backward compatibility
     await update_access_token(request.username, session_id)
@@ -560,6 +617,87 @@ async def login_user(request: LoginRequest, request_obj: Request):
         message="Login successful - session_id created", 
         token=session_id,  # Return session_id as token for compatibility
         role=role
+    )
+
+
+@app.post("/organizations/create_with_admin", response_model=TokenRoleResponse)
+async def create_organization_with_admin(request: OrganizationCreateRequest, request_obj: Request):
+    """
+    Create a new organization and its initial admin (owner) account, then return a session token.
+
+    This is the entry point for multi-tenant onboarding and is intended to replace
+    the standalone user login/registration flow in the UI.
+    """
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+
+    # Normalize username/password similar to /register
+    request.admin_username = request.admin_username.replace(" ", "_")
+    request.admin_password = request.admin_password.replace(" ", "_")
+
+    # Generate slug and ensure it is unique
+    slug = _slugify_org_name(request.organization_name)
+    existing_org = await get_organization_by_slug(slug)
+    if existing_org:
+        return TokenRoleResponse(
+            status="error",
+            message="Organization with this name/slug already exists",
+            token=None,
+            role=None,
+        )
+
+    # Ensure admin username is not taken yet (we can relax this later for shared users)
+    if await get_user(request.admin_username):
+        return TokenRoleResponse(
+            status="error",
+            message="Admin username already exists",
+            token=None,
+            role=None,
+        )
+
+    # Create admin user with full file access by default
+    org_id = await create_organization(name=request.organization_name, slug=slug)
+    
+    await create_user(
+        username=request.admin_username,
+        password=request.admin_password,
+        role="admin",
+        allowed_files=["all"],
+        organization_id=org_id,
+    )
+
+    # Create organization and membership
+    await create_organization_membership(
+        organization_id=org_id,
+        username=request.admin_username,
+        role="owner",
+    )
+
+    # Create an org-scoped session
+    session_id = str(uuid.uuid4())
+    await create_session(
+        request.admin_username,
+        session_id,
+        expires_hours=24,
+        organization_id=org_id,
+    )
+    await update_access_token(request.admin_username, session_id)
+
+    # Log event into metrics
+    log_event(
+        event_type="organization_created",
+        user_id=request.admin_username,
+        session_id=session_id,
+        ip_address=client_ip,
+        role="owner",
+        success=True,
+        details={"organization_id": org_id, "slug": slug},
+    )
+
+    return TokenRoleResponse(
+        status="success",
+        message="Organization and admin created - session_id issued",
+        token=session_id,
+        role="owner",
     )
 
 # User logout using session_id
@@ -1046,6 +1184,9 @@ async def process_secure_rag_query(
     try:
         username = user[1]  # Extract username from user tuple
         role = user[3]  # Get user role
+        organization_id = _get_active_org_id(user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required for queries.")
         session_id = str(uuid.uuid4())  # Generate session for this query
         client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
@@ -1068,7 +1209,7 @@ async def process_secure_rag_query(
 
         # Use secure RAG retriever that respects file permissions
         tracker.start_operation("secure_retrieval")
-        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id)
+        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             rag_chain=rag_chain,
             query=request.question,
@@ -1604,6 +1745,10 @@ async def upload_document(
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
 
+    organization_id = _get_active_org_id(current_user)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Organization context required for upload.")
+
     # Extended support for PDF, DOCX, DOC, HTML, TXT, MD, and ZIP archives
     allowed_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md', '.zip']
     file_extension = os.path.splitext(file.filename)[1].lower()
@@ -1712,7 +1857,7 @@ async def upload_document(
                                 logger.info(f"Processing extracted file: {extracted_filename}")
                                 
                                 # Check if file already exists
-                                if get_file_content_by_filename(extracted_filename) is not None:
+                                if get_file_content_by_filename(extracted_filename, organization_id=organization_id) is not None:
                                     logger.warning(f"File {extracted_filename} already exists in DB, skipping")
                                     continue
                                 
@@ -1721,7 +1866,7 @@ async def upload_document(
                                     extracted_content = f.read()
                                 
                                 # Save each extracted file to database as separate file (with unicode support)
-                                extracted_file_id = insert_document_record(extracted_filename, extracted_content)
+                                extracted_file_id = insert_document_record(extracted_filename, extracted_content, organization_id=organization_id)
                                 logger.info(f"  Saved to database: {extracted_filename} (file_id: {extracted_file_id})")
                                 
                                 # Index to Chroma
@@ -1729,7 +1874,7 @@ async def upload_document(
                                 with open(temp_index_path, 'wb') as buffer:
                                     buffer.write(extracted_content)
                                 
-                                if index_document_to_chroma(temp_index_path, extracted_file_id):
+                                if index_document_to_chroma(temp_index_path, extracted_file_id, organization_id=organization_id):
                                     logger.info(f"✓ Indexed {extracted_filename}")
                                     extracted_files.append({
                                         "filename": extracted_filename,
@@ -1738,7 +1883,7 @@ async def upload_document(
                                     })
                                     # Fire-and-forget: generate quiz for extracted file
                                     try:
-                                        asyncio.create_task(create_quiz_for_filename(extracted_filename))
+                                        asyncio.create_task(create_quiz_for_filename(extracted_filename, organization_id=organization_id))
                                     except Exception:
                                         pass
                                 else:
@@ -1779,11 +1924,11 @@ async def upload_document(
         else:
             # Handle regular (non-ZIP) files
             # Check if file with the same name already exists in DB
-            if get_file_content_by_filename(original_filename) is not None:
+            if get_file_content_by_filename(original_filename, organization_id=organization_id) is not None:
                 raise HTTPException(status_code=400, detail="A file with this name already exists.")
             
             # Insert document record and get file_id
-            file_id = insert_document_record(original_filename, content_bytes)
+            file_id = insert_document_record(original_filename, content_bytes, organization_id=organization_id)
             logger.info(f"  - Database file_id: {file_id}")
 
             # Index document to Chroma
@@ -1791,13 +1936,13 @@ async def upload_document(
             with open(temp_file_path, "wb") as buffer:
                 buffer.write(content_bytes)
             
-            success = index_document_to_chroma(temp_file_path, file_id)
+            success = index_document_to_chroma(temp_file_path, file_id, organization_id=organization_id)
             os.remove(temp_file_path)
 
             if success:
                 # Fire-and-forget: generate a quiz for this uploaded file in background
                 try:
-                    asyncio.create_task(create_quiz_for_filename(original_filename))
+                    asyncio.create_task(create_quiz_for_filename(original_filename, organization_id=organization_id))
                 except Exception:
                     pass
                 
@@ -1847,7 +1992,10 @@ async def upload_document(
 async def list_documents(user=Depends(get_current_user)):
     """List all uploaded documents the user has access to"""
     try:
-        documents = get_all_documents()
+        organization_id = _get_active_org_id(user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        documents = get_all_documents(organization_id=organization_id)
         allowed_files = await get_allowed_files(user[1])
         logger.info(f"User {user[1]} role {user[3]} allowed files: {allowed_files}")
         # Admins see all files, others only their allowed
@@ -1875,7 +2023,8 @@ async def delete_document(
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
     try:
-        chroma_delete_success = delete_doc_from_chroma(request.file_id)
+        organization_id = _get_active_org_id(current_user)
+        chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id)
         
         if chroma_delete_success:
             db_delete_success = delete_document_record(request.file_id)
@@ -1916,9 +2065,14 @@ async def list_available_filenames():
             if os.path.isfile(file_path):
                 files.append(file)
         
-        # Also get files from the database
+        # Also get files from the database (org context not available here; return filesystem only)
         db_files = await get_all_documents()
-        db_filenames = [doc[1] for doc in db_files]  # doc[1] is filename in DB
+        db_filenames = []
+        for doc in db_files:
+            if isinstance(doc, dict):
+                db_filenames.append(doc.get("filename"))
+            elif isinstance(doc, (list, tuple)) and len(doc) > 1:
+                db_filenames.append(doc[1])
         
         # Combine and deduplicate
         all_files = list(set(files + db_filenames))
@@ -1944,8 +2098,12 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
     # Decode percent-encoded filename
     filename = unquote(filename) 
     print(f"Deleting file by filename: {filename}")
+    organization_id = _get_active_org_id(current_user)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Organization context required.")
+
     # Find file_id by filename
-    documents = get_all_documents()
+    documents = get_all_documents(organization_id=organization_id)
     file_id = None
     for doc in documents:
         # doc is a dict with keys: id, filename, upload_timestamp
@@ -1958,7 +2116,7 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
     if not file_id:
         raise HTTPException(status_code=404, detail="File not found in database.")
     # Delete from Chroma
-    chroma_delete_success = delete_doc_from_chroma(file_id)
+    chroma_delete_success = delete_doc_from_chroma(file_id, organization_id=organization_id)
     # Delete from DB
     db_delete_success = delete_document_record(file_id)
     # Delete from uploads directory
@@ -1989,11 +2147,17 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
 async def get_accounts(current_user=Depends(get_current_user)):
     """
     List all accounts with their username, role, and last login.
-    Requires admin authentication.
+    Requires admin authentication. Returns only users in the admin's organization.
     """
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
-    users = await list_users()
+    
+    # Get organization_id from the authenticated admin user
+    organization_id = _get_active_org_id(current_user)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Organization context required.")
+    
+    users = await list_users(organization_id=organization_id)
     return users
 
 if __name__ == "__main__":
@@ -2006,12 +2170,14 @@ async def delete_user_endpoint(
 ):
     """
     Delete a user by username. Requires admin or master key.
+    Admin can only delete users in their own organization.
     """
     is_admin = False
     is_master = False
+    admin_user = None
     if credentials:
-        user = await get_user_by_token(credentials.credentials)
-        if user and user[3] == "admin":
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
             is_admin = True
         if not is_admin:
             if os.path.exists(SECRETS_PATH):
@@ -2026,9 +2192,18 @@ async def delete_user_endpoint(
                         pass
     if not (is_admin or is_master):
         raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
     user = await get_user(username)
     if not user:
         return APIResponse(status="error", message="User not found", response={})
+    
+    # Check organization isolation: admin can only delete users in their own organization
+    if is_admin and admin_user:
+        admin_org_id = _get_active_org_id(admin_user)
+        user_org_id = user[7] if len(user) > 7 else None  # organization_id is at index 7
+        if admin_org_id != user_org_id:
+            raise HTTPException(status_code=403, detail="Cannot delete users from other organizations.")
+    
     # Remove user from DB
     import userdb
     await userdb.delete_user(username)
@@ -2042,12 +2217,14 @@ async def edit_user_endpoint(
 ):
     """
     Edit user fields. Only provided fields are changed. Requires admin or master key.
+    Admin can only edit users in their own organization.
     """
     is_admin = False
     is_master = False
+    admin_user = None
     if credentials:
-        user = await get_user_by_token(credentials.credentials)
-        if user and user[3] == "admin":
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
             is_admin = True
         if not is_admin:
             if os.path.exists(SECRETS_PATH):
@@ -2065,6 +2242,14 @@ async def edit_user_endpoint(
     user = await get_user(request.username)
     if not user:
         return APIResponse(status="error", message="User not found", response={})
+    
+    # Check organization isolation: admin can only edit users in their own organization
+    if is_admin and admin_user:
+        admin_org_id = _get_active_org_id(admin_user)
+        user_org_id = user[7] if len(user) > 7 else None  # organization_id is at index 7
+        if admin_org_id != user_org_id:
+            raise HTTPException(status_code=403, detail="Cannot edit users from other organizations.")
+    
     logs = []
     import userdb
     # Change username

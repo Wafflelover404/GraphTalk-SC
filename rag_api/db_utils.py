@@ -31,7 +31,17 @@ def create_document_store():
 				   (id INTEGER PRIMARY KEY AUTOINCREMENT,
 					filename TEXT,
 					content BLOB,
-					upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+					upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+					organization_id TEXT)''')
+	# Backfill column if missing
+	try:
+		cursor = conn.execute("PRAGMA table_info(document_store)")
+		cols = {row[1] for row in cursor.fetchall()}
+		if "organization_id" not in cols:
+			conn.execute("ALTER TABLE document_store ADD COLUMN organization_id TEXT")
+			conn.commit()
+	except Exception:
+		pass
 	conn.close()
 
 def insert_application_logs(session_id, user_query, gpt_response, model):
@@ -54,24 +64,32 @@ def get_chat_history(session_id):
 	conn.close()
 	return messages
 
-def insert_document_record(filename, content_bytes):
+def insert_document_record(filename, content_bytes=None, organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
 	# Ensure filename is properly encoded as UTF-8
 	if isinstance(filename, bytes):
 		filename = filename.decode('utf-8', errors='replace')
-	cursor.execute('INSERT INTO document_store (filename, content) VALUES (?, ?)', (filename, content_bytes))
+	if content_bytes is None:
+		content_bytes = b""
+	cursor.execute(
+		'INSERT INTO document_store (filename, content, organization_id) VALUES (?, ?, ?)',
+		(filename, content_bytes, organization_id)
+	)
 	file_id = cursor.lastrowid
 	conn.commit()
 	conn.close()
 	return file_id
-def get_file_content_by_filename(filename):
+def get_file_content_by_filename(filename, organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
 	# Ensure filename is properly encoded as UTF-8
 	if isinstance(filename, bytes):
 		filename = filename.decode('utf-8', errors='replace')
-	cursor.execute('SELECT content FROM document_store WHERE filename = ?', (filename,))
+	if organization_id:
+		cursor.execute('SELECT content FROM document_store WHERE filename = ? AND organization_id = ?', (filename, organization_id))
+	else:
+		cursor.execute('SELECT content FROM document_store WHERE filename = ?', (filename,))
 	row = cursor.fetchone()
 	conn.close()
 	if row:
@@ -85,27 +103,39 @@ def delete_document_record(file_id):
 	conn.close()
 	return True
 
-def get_all_documents():
+def get_all_documents(organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
-	cursor.execute('SELECT id, filename, upload_timestamp FROM document_store ORDER BY upload_timestamp DESC')
+	if organization_id:
+		cursor.execute(
+			'SELECT id, filename, upload_timestamp, organization_id FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
+			(organization_id,)
+		)
+	else:
+		cursor.execute('SELECT id, filename, upload_timestamp, organization_id FROM document_store ORDER BY upload_timestamp DESC')
 	documents = cursor.fetchall()
 	conn.close()
 	return [dict(doc) for doc in documents]
 
-def update_document_record(filename, new_content_bytes):
+def update_document_record(filename, new_content_bytes, organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
 	# Ensure filename is properly encoded as UTF-8
 	if isinstance(filename, bytes):
 		filename = filename.decode('utf-8', errors='replace')
-	cursor.execute('SELECT id FROM document_store WHERE filename = ?', (filename,))
+	if organization_id:
+		cursor.execute('SELECT id FROM document_store WHERE filename = ? AND organization_id = ?', (filename, organization_id))
+	else:
+		cursor.execute('SELECT id FROM document_store WHERE filename = ?', (filename,))
 	rows = cursor.fetchall()
 	if not rows:
 		conn.close()
 		return []
 	file_ids = [row['id'] for row in rows]
-	cursor.execute('UPDATE document_store SET content = ? WHERE filename = ?', (new_content_bytes, filename))
+	if organization_id:
+		cursor.execute('UPDATE document_store SET content = ? WHERE filename = ? AND organization_id = ?', (new_content_bytes, filename, organization_id))
+	else:
+		cursor.execute('UPDATE document_store SET content = ? WHERE filename = ?', (new_content_bytes, filename))
 	conn.commit()
 	conn.close()
 	return file_ids

@@ -29,7 +29,7 @@ from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
 logger = logging.getLogger(__name__)
 
-async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -> List[Dict[str, Any]]:
+async def get_relevant_files_for_query(username: str, query: str, k: int = 20, organization_id: str = None) -> List[Dict[str, Any]]:
     """
     Get list of relevant files and chunks for a query that the user has access to.
     Uses the enhanced search_documents function with filename similarity and semantic search.
@@ -93,7 +93,8 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
             max_chunks_per_file=5,  # Get more chunks per file
             min_relevance_score=0.25,  # Slightly lower minimum score
             filename_match_boost=1.3,  # Moderate boost for filename matches
-            language='russian'  # Explicitly set language for better tokenization
+            language='russian',  # Explicitly set language for better tokenization
+            organization_id=organization_id
         )
         
         # Log initial search results
@@ -111,7 +112,8 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
                 max_chunks_per_file=3,
                 min_relevance_score=0.2,
                 filename_match_boost=1.1,
-                language='russian'
+                language='russian',
+                organization_id=organization_id
             )
             # Log fallback results
             logger.info(f"Fallback search results - Semantic matches: {len(fallback_results.get('semantic_results', []))}, Filename matches: {len(fallback_results.get('filename_matches', {}))}")
@@ -469,9 +471,10 @@ class SecureRAGRetriever:
     Uses file-based retrieval without chat history.
     """
     
-    def __init__(self, username: str, session_id: str = None):
+    def __init__(self, username: str, session_id: str = None, organization_id: str = None):
         self.username = username
         self.session_id = session_id or str(uuid.uuid4())
+        self.organization_id = organization_id
         self.rag_chain = None
     
     async def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
@@ -481,7 +484,7 @@ class SecureRAGRetriever:
         """
         logger = logging.getLogger(__name__)
         try:
-            files = await get_relevant_files_for_query(self.username, query, k)
+            files = await get_relevant_files_for_query(self.username, query, k, organization_id=self.organization_id)
             
             # Convert to list of documents with proper format
             documents = []

@@ -41,7 +41,8 @@ async def init_db():
                 role TEXT NOT NULL CHECK(role IN ('user', 'admin')),
                 access_token TEXT,
                 allowed_files TEXT,
-                last_login TEXT
+                last_login TEXT,
+                organization_id TEXT
             )
         ''')
         
@@ -54,9 +55,32 @@ async def init_db():
                 last_activity TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
+                organization_id TEXT,
                 FOREIGN KEY (username) REFERENCES users (username)
             )
         ''')
+
+        # Backfill/upgrade: ensure organization_id column exists in existing DBs
+        try:
+            async with conn.execute("PRAGMA table_info(user_sessions)") as cursor:
+                cols = await cursor.fetchall()
+                col_names = {c[1] for c in cols}
+            if "organization_id" not in col_names:
+                await conn.execute("ALTER TABLE user_sessions ADD COLUMN organization_id TEXT")
+        except Exception:
+            # If this fails (e.g., older SQLite), fallback is to drop users.db manually.
+            pass
+        
+        # Backfill/upgrade: ensure organization_id column exists in users table
+        try:
+            async with conn.execute("PRAGMA table_info(users)") as cursor:
+                cols = await cursor.fetchall()
+                col_names = {c[1] for c in cols}
+            if "organization_id" not in col_names:
+                await conn.execute("ALTER TABLE users ADD COLUMN organization_id TEXT")
+        except Exception:
+            pass
+        
         await conn.commit()
 
 # Initialize database on import
@@ -70,7 +94,7 @@ try:
 except Exception as e:
     print(f"Warning: Could not initialize user database on import: {e}")
 
-async def create_user(username: str, password: str, role: str, allowed_files: Optional[List[str]] = None):
+async def create_user(username: str, password: str, role: str, allowed_files: Optional[List[str]] = None, organization_id: Optional[str] = None):
     safe_password = _truncate_password_for_bcrypt(password)
     password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
     # Ensure allowed_files is a list and not None
@@ -81,9 +105,9 @@ async def create_user(username: str, password: str, role: str, allowed_files: Op
     
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute('''
-            INSERT INTO users (username, password_hash, role, allowed_files, last_login) 
-            VALUES (?, ?, ?, ?, ?)
-        ''', (username, password_hash, role, allowed_files_str, None))
+            INSERT INTO users (username, password_hash, role, allowed_files, last_login, organization_id) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (username, password_hash, role, allowed_files_str, None, organization_id))
         await conn.commit()
 
 async def get_user(username: str):
@@ -117,20 +141,25 @@ async def verify_user(username: str, password: str):
                 await conn.commit()
             return True
     return False
-async def list_users():
+async def list_users(organization_id: Optional[str] = None):
     """
-    Returns a list of all users with username, role, and last_login.
+    Returns a list of users with username, role, and last_login.
+    If organization_id is provided, returns only users in that organization.
     """
     async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute('SELECT username, role, last_login FROM users') as cursor:
-            users = await cursor.fetchall()
-            return [
-                {
-                    'username': u[0],
-                    'role': u[1],
-                    'last_login': u[2]
-                } for u in users
-            ]
+        if organization_id:
+            async with conn.execute('SELECT username, role, last_login FROM users WHERE organization_id = ?', (organization_id,)) as cursor:
+                users = await cursor.fetchall()
+        else:
+            async with conn.execute('SELECT username, role, last_login FROM users') as cursor:
+                users = await cursor.fetchall()
+        return [
+            {
+                'username': u[0],
+                'role': u[1],
+                'last_login': u[2]
+            } for u in users
+        ]
 
 async def get_allowed_files(username: str):
     user = await get_user(username)
@@ -148,7 +177,7 @@ async def get_user_by_token(token: str):
             return user
 
 # Session management functions using session_id
-async def create_session(username: str, session_id: str, expires_hours: int = 24):
+async def create_session(username: str, session_id: str, expires_hours: int = 24, organization_id: Optional[str] = None):
     """Create a new user session with session_id"""
     import datetime
     now = datetime.datetime.utcnow()
@@ -157,9 +186,9 @@ async def create_session(username: str, session_id: str, expires_hours: int = 24
     async with aiosqlite.connect(DB_PATH) as conn:
         # Allow multiple active sessions per user (do not deactivate previous sessions)
         await conn.execute('''
-            INSERT INTO user_sessions (session_id, username, created_at, last_activity, expires_at, is_active)
-            VALUES (?, ?, ?, ?, ?, TRUE)
-        ''', (session_id, username, now.isoformat(), now.isoformat(), expires_at.isoformat()))
+            INSERT INTO user_sessions (session_id, username, created_at, last_activity, expires_at, is_active, organization_id)
+            VALUES (?, ?, ?, ?, ?, TRUE, ?)
+        ''', (session_id, username, now.isoformat(), now.isoformat(), expires_at.isoformat(), organization_id))
         await conn.commit()
 
 # Disrupt all sessions for a user (logout everywhere)
@@ -179,7 +208,7 @@ async def get_user_by_session_id(session_id: str):
     
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute('''
-            SELECT u.*, s.created_at, s.last_activity, s.expires_at
+            SELECT u.*, s.created_at, s.last_activity, s.expires_at, s.organization_id
             FROM users u 
             JOIN user_sessions s ON u.username = s.username 
             WHERE s.session_id = ? AND s.is_active = TRUE AND s.expires_at > ?

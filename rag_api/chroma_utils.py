@@ -351,7 +351,7 @@ def preprocess_query(query: str, language: str = 'russian') -> str:
     # Apply the same preprocessing as regular text
     return preprocess_text(query, language)
 
-def index_document_to_chroma(file_path: str, file_id: int) -> bool:
+def index_document_to_chroma(file_path: str, file_id: int, organization_id: str = None) -> bool:
 	try:
 		# Extract just the filename from the path
 		filename = os.path.basename(file_path)
@@ -367,6 +367,8 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 		for split in splits:
 			split.metadata['file_id'] = file_id
 			split.metadata['filename'] = filename  # Ensure filename is in metadata
+			if organization_id:
+				split.metadata['organization_id'] = organization_id
 			
 			# Log archive information if this file came from a ZIP
 			if 'archive_source' in split.metadata:
@@ -392,11 +394,14 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 		logger.error(f"Error indexing document {filename} (ID: {file_id}): {e}", exc_info=True)
 		return False
 
-def delete_doc_from_chroma(file_id: int) -> bool:
+def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
     try:
-        docs = vectorstore.get(where={"file_id": file_id})
+        where_clause = {"file_id": file_id}
+        if organization_id:
+            where_clause["organization_id"] = organization_id
+        docs = vectorstore.get(where=where_clause)
         print(f"Found {len(docs['ids'])} document chunks for file_id {file_id}")
-        vectorstore._collection.delete(where={"file_id": file_id})
+        vectorstore._collection.delete(where=where_clause)
         print(f"Deleted all documents with file_id {file_id}")
         return True
     except Exception as e:
@@ -593,7 +598,8 @@ def search_documents(
     batch_size: int = 100,
     max_chars_per_chunk: int = 1000,
     use_hybrid_search: bool = True,  # Enable hybrid semantic + keyword search
-    bm25_weight: float = 0.3  # Weight for BM25 score in hybrid search
+    bm25_weight: float = 0.3,  # Weight for BM25 score in hybrid search
+    organization_id: str = None
 ) -> Dict[str, Union[List[Document], Dict[str, any]]]:
     """
     Advanced hybrid document search combining semantic similarity and keyword matching.
@@ -637,7 +643,8 @@ def search_documents(
             'max_results': max_results,
             'max_chunks_per_file': max_chunks_per_file,
             'filename_match_boost': filename_match_boost,
-            'language': language
+            'language': language,
+            'organization_id': organization_id
         }, sort_keys=True).encode()).hexdigest()
         
         # Check cache first
@@ -676,7 +683,10 @@ def search_documents(
         tracker.start_operation("get_all_documents")
         try:
             # Get total count first
-            count = vectorstore._collection.count()
+            if organization_id:
+                count = vectorstore._collection.count(where={"organization_id": organization_id})
+            else:
+                count = vectorstore._collection.count()
             if count == 0:
                 return results
                 
@@ -690,7 +700,8 @@ def search_documents(
                 batch = vectorstore._collection.get(
                     limit=batch_size,
                     offset=i,
-                    include=['embeddings', 'metadatas', 'documents']
+                    include=['embeddings', 'metadatas', 'documents'],
+                    where={"organization_id": organization_id} if organization_id else None
                 )
                 doc_embeddings.extend(batch['embeddings'])
                 metadatas.extend(batch['metadatas'])
