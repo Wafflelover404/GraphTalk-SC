@@ -3,8 +3,8 @@ import json
 import logging
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from chroma_utils import vectorstore, search_documents
-from timing_utils import Timer, PerformanceTracker, time_block
+from .chroma_utils import vectorstore, search_documents
+from .timing_utils import Timer, PerformanceTracker, time_block
 
 # Load environment variables
 load_dotenv()

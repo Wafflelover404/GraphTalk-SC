@@ -107,3 +107,56 @@ async def list_user_organizations(username: str) -> List[Tuple]:
             return rows or []
 
 
+async def verify_user_in_organization(username: str, organization_id: str) -> bool:
+    """
+    Verify that a user belongs to an organization.
+    
+    Args:
+        username: The username to verify
+        organization_id: The organization ID to check membership
+        
+    Returns:
+        True if user is an active member, False otherwise
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            """
+            SELECT id FROM organization_users
+            WHERE username = ? AND organization_id = ? AND status = 'active'
+            """,
+            (username, organization_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
+
+
+async def get_organization_by_id(org_id: str) -> Optional[Tuple]:
+    """Get organization details by ID."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT id, name, slug, created_at, updated_at FROM organizations WHERE id = ?",
+            (org_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row if row else None
+
+
+async def get_user_organization_role(username: str, organization_id: str) -> Optional[str]:
+    """
+    Get a user's role in a specific organization.
+    
+    Returns:
+        The role ('owner', 'admin', 'member') or None if user is not in org
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            """
+            SELECT role FROM organization_users
+            WHERE username = ? AND organization_id = ? AND status = 'active'
+            """,
+            (username, organization_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+

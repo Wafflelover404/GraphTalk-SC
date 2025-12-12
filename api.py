@@ -939,7 +939,8 @@ async def get_user_from_token(token: str):
 # WebSocket endpoint for streaming query responses
 @app.websocket("/ws/query")
 async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
-    """WebSocket endpoint for streaming RAG queries with real-time responses"""
+    """WebSocket endpoint for streaming RAG queries with real-time responses.
+    Enforces organization isolation: users can only query documents from their organization."""
     logger = logging.getLogger(__name__)
     
     # Authenticate user
@@ -948,8 +949,14 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
         await websocket.close(code=1008, reason="Authentication required")
         return
     
+    # Verify organization context
+    organization_id = _get_active_org_id(user)
+    if not organization_id:
+        await websocket.close(code=1008, reason="Organization context required")
+        return
+    
     await websocket.accept()
-    logger.info(f"WebSocket connection established for user {user[1]}")
+    logger.info(f"WebSocket connection established for user {user[1]} in org {organization_id}")
     
     try:
         while True:
@@ -988,8 +995,8 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                 from rag_api.langchain_utils import get_rag_chain
                 rag_chain = get_rag_chain()
                 
-                # Use secure RAG retriever with skip_llm=True for immediate results
-                secure_retriever = SecureRAGRetriever(username)
+                # Use secure RAG retriever with organization isolation and skip_llm=True for immediate results
+                secure_retriever = SecureRAGRetriever(username=username, organization_id=organization_id)
                 rag_result = await secure_retriever.invoke_secure_rag_chain(
                     rag_chain=rag_chain,
                     query=question,
@@ -1475,11 +1482,18 @@ async def get_file_content(
 ):
     """
     Return the content of a file by its name (if user has access). Supports percent-encoded (e.g. Russian) filenames. Reads from DB.
+    Enforces organization-level access control: users can only access files from their organization.
     """
+    from org_security import enforce_organization_context
+    
     decoded_filename = unquote(filename)
     resolved_filename = resolve_actual_filename_case_insensitive(decoded_filename)
     allowed_files = await get_allowed_files(user[1])
-    logger.info(f"User {user[1]} requests file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
+    
+    # Enforce organization context
+    organization_id = enforce_organization_context(user, required=True)
+    
+    logger.info(f"User {user[1]} from org {organization_id} requests file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
     
     # Get client IP for metrics
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
@@ -1492,11 +1506,13 @@ async def get_file_content(
                 event_type="unauthorized_file_access",
                 ip_address=client_ip,
                 user_id=user[1],
-                details={"filename": resolved_filename},
+                details={"filename": resolved_filename, "organization_id": organization_id},
                 severity="medium"
             )
             raise HTTPException(status_code=403, detail="You do not have access to this file.")
-    content_bytes = get_file_content_by_filename(resolved_filename)
+    
+    # Retrieve file with organization filtering
+    content_bytes = get_file_content_by_filename(resolved_filename, organization_id=organization_id)
     if content_bytes is None:
         logger.warning(f"File not found in DB: {decoded_filename}")
         raise HTTPException(status_code=404, detail="File not found.")
@@ -1634,23 +1650,30 @@ async def secure_chat(
     session_id: str = Query(..., description="Session ID for chat history"),
     user=Depends(get_current_user)
 ):
-    """Secure chat using RAG with conversation history and file access control"""
+    """Secure chat using RAG with conversation history and file access control.
+    Enforces organization-level access: users can only chat within their organization."""
     try:
+        from org_security import enforce_organization_context
+        
         username = user[1]  # Extract username from user tuple
         role = user[3]  # Get user role
+        
+        # Enforce organization context
+        organization_id = enforce_organization_context(user, required=True)
+        
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
         
         # Start time for response time tracking
         start_time = datetime.datetime.now()
         
-        logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Query: {request.question}, Model: {model_type}")
+        logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Org: {organization_id}, Query: {request.question}, Model: {model_type}")
         
-        # Use secure RAG retriever that respects file permissions
-        secure_retriever = SecureRAGRetriever(username)
+        # Use secure RAG retriever that respects file permissions and organization isolation
+        secure_retriever = SecureRAGRetriever(username=username, organization_id=organization_id)
         chat_history = get_chat_history(session_id)
         
-        # Get secure RAG response with file access control
+        # Get secure RAG response with file access control and organization filtering
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             None, request.question, chat_history, model_type
         )
