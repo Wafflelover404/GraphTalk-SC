@@ -79,6 +79,16 @@ except ImportError as e:
     logger_temp.warning(f"Advanced analytics not available: {e}")
     ADVANCED_ANALYTICS_ENABLED = False
     AdvancedAnalyticsMiddleware = None
+    # Define stubs for type checking when analytics is not available
+    get_analytics_core = None  # type: ignore
+    QueryMetrics = None  # type: ignore
+    QueryType = None  # type: ignore
+    SecurityEventType = None  # type: ignore
+    SecurityEvent = None  # type: ignore
+    advanced_analytics_router = None  # type: ignore
+    PerformanceTracker = None  # type: ignore
+    UserBehaviorAnalyzer = None  # type: ignore
+    SecurityAnalyzer = None  # type: ignore
 
 # Initialize metrics database
 init_metrics_db()
@@ -102,7 +112,7 @@ app.include_router(metrics_router)
 app.include_router(metrics_user_router)
 
 # Include advanced analytics router if available
-if ADVANCED_ANALYTICS_ENABLED:
+if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
     app.include_router(advanced_analytics_router)
     logger = logging.getLogger(__name__)
     logger.info("✅ Advanced analytics enabled")
@@ -134,10 +144,11 @@ async def _startup_events():
     if ADVANCED_ANALYTICS_ENABLED:
         try:
             analytics = get_analytics_core()
-            logger.info("✅ Advanced Analytics Engine Started")
-            logger.info("   - 14 specialized analytics tables ready")
-            logger.info("   - 40+ REST API endpoints available at /analytics/*")
-            logger.info("   - Performance, user behavior, and security tracking enabled")
+            if analytics:
+                logger.info("✅ Advanced Analytics Engine Started")
+                logger.info("   - 14 specialized analytics tables ready")
+                logger.info("   - 40+ REST API endpoints available at /analytics/*")
+                logger.info("   - Performance, user behavior, and security tracking enabled")
         except Exception as e:
             logger.error(f"Failed to initialize advanced analytics: {e}")
 
@@ -542,7 +553,7 @@ async def login_user(request: LoginRequest, request_obj: Request):
         # Log failed login attempt
         log_security_event(
             event_type="failed_login",
-            ip_address=client_ip,
+            ip_address=client_ip or "unknown",
             user_id=request.username,
             details={"reason": "Invalid credentials"},
             severity="medium"
@@ -552,16 +563,16 @@ async def login_user(request: LoginRequest, request_obj: Request):
         if ADVANCED_ANALYTICS_ENABLED:
             try:
                 analytics = get_analytics_core()
-                security_event = SecurityEvent(
-                    event_id=str(uuid.uuid4()),
-                    event_type=SecurityEventType.FAILED_LOGIN,
-                    user_id=request.username,
-                    ip_address=client_ip,
-                    severity="medium",
-                    details={"reason": "Invalid credentials"},
-                    timestamp=datetime.datetime.now()
-                )
-                await analytics.log_security_event(security_event)
+                if analytics:
+                    security_event = SecurityEvent(
+                        event_type=SecurityEventType.FAILED_LOGIN,
+                        user_id=request.username,
+                        ip_address=client_ip or "unknown",
+                        severity="medium",
+                        details={"reason": "Invalid credentials"},
+                        timestamp=datetime.datetime.now().isoformat()
+                    )
+                    analytics.log_security_event(security_event)
             except Exception as e:
                 logger.warning(f"Failed to log security event to advanced analytics: {e}")
         
@@ -579,7 +590,12 @@ async def login_user(request: LoginRequest, request_obj: Request):
     await create_session(request.username, session_id, expires_hours=24, organization_id=organization_id)
     
     # Also update legacy access token for backward compatibility
-    await update_access_token(request.username, session_id)
+    if session_id:
+        # Only pass token if available, don't pass None
+        try:
+            await update_access_token(request.username, session_id)
+        except Exception as e:
+            logger.warning(f"Failed to update access token: {e}")
     
     role = await get_user_role(request.username)
     logger.info(f"User {request.username} logged in successfully with session_id: {session_id[:8]}...")
@@ -599,16 +615,16 @@ async def login_user(request: LoginRequest, request_obj: Request):
     if ADVANCED_ANALYTICS_ENABLED:
         try:
             analytics = get_analytics_core()
-            security_event = SecurityEvent(
-                event_id=str(uuid.uuid4()),
-                event_type=SecurityEventType.SUCCESSFUL_LOGIN,
-                user_id=request.username,
-                ip_address=client_ip,
-                severity="info",
-                details={"session_id": session_id[:8], "role": role},
-                timestamp=datetime.datetime.now()
-            )
-            await analytics.log_security_event(security_event)
+            if analytics:
+                security_event = SecurityEvent(
+                    event_type=SecurityEventType.FAILED_LOGIN,
+                    user_id=request.username,
+                    ip_address=client_ip or "unknown",
+                    severity="info",
+                    details={"session_id": session_id[:8], "role": role},
+                    timestamp=datetime.datetime.now().isoformat()
+                )
+                analytics.log_security_event(security_event)
         except Exception as e:
             logger.warning(f"Failed to log security event to advanced analytics: {e}")
     
@@ -1138,7 +1154,7 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                     source_document_count=len(source_docs),
                     security_filtered=security_filtered,
                     source_filenames=immediate_response["files"],
-                    ip_address=websocket.client.host if websocket.client else None,
+                    ip_address=websocket.client.host if websocket.client else "unknown",
                     response_time_ms=int(response_time)
                 )
                 
@@ -1150,7 +1166,7 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                         filename=filename,
                         access_type="retrieved_in_rag",
                         session_id=session_id,
-                        ip_address=websocket.client.host if websocket.client else None,
+                        ip_address=websocket.client.host if websocket.client else "unknown",
                         query_context=question[:100]
                     )
                 
@@ -1186,7 +1202,13 @@ async def process_secure_rag_query(
 ):
     """Process a query using RAG with file access security (HTTP fallback for compatibility)"""
     logger = logging.getLogger(__name__)
-    tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
+    # Only initialize tracker if analytics is enabled and available
+    tracker = None
+    if ADVANCED_ANALYTICS_ENABLED and PerformanceTracker:
+        try:
+            tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
+        except Exception:
+            tracker = None
 
     try:
         username = user[1]  # Extract username from user tuple
@@ -1200,31 +1222,38 @@ async def process_secure_rag_query(
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
 
         # Start time for response time tracking
-        tracker.start_operation("query_start")
+        if tracker:
+            tracker.start_operation("query_start")
         start_time = datetime.datetime.now()
 
         # Clean up expired sessions periodically
-        tracker.start_operation("cleanup_sessions")
+        if tracker:
+            tracker.start_operation("cleanup_sessions")
         await cleanup_expired_sessions()
-        tracker.end_operation("cleanup_sessions")
+        if tracker:
+            tracker.end_operation("cleanup_sessions")
 
         # Initialize the RAG chain
-        tracker.start_operation("init_rag_chain")
+        if tracker:
+            tracker.start_operation("init_rag_chain")
         from rag_api.langchain_utils import get_rag_chain
         rag_chain = get_rag_chain()
-        tracker.end_operation("init_rag_chain")
+        if tracker:
+            tracker.end_operation("init_rag_chain")
 
         # Use secure RAG retriever that respects file permissions
-        tracker.start_operation("secure_retrieval")
+        if tracker:
+            tracker.start_operation("secure_retrieval")
         secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             rag_chain=rag_chain,
             query=request.question,
             model_type=model_type,
-            humanize=request.humanize if hasattr(request, 'humanize') else True,
+            humanize=request.humanize if hasattr(request, 'humanize') and request.humanize is not None else True,
             skip_llm=True  # Skip LLM to return documents immediately
         )
-        tracker.end_operation("secure_retrieval")
+        if tracker:
+            tracker.end_operation("secure_retrieval")
 
         # Get the immediate response with source documents
         source_docs = rag_result.get("source_documents", [])
@@ -1280,17 +1309,22 @@ async def process_secure_rag_query(
                 overview = "Error generating overview. Showing raw results."
 
         # Calculate response time
-        tracker.start_operation("calculate_response_time")
+        if tracker:
+            tracker.start_operation("calculate_response_time")
         response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
-        tracker.end_operation("calculate_response_time")
+        if tracker:
+            tracker.end_operation("calculate_response_time")
 
         # Get client IP
-        tracker.start_operation("get_client_ip")
-        client_ip = request_obj.client.host if request_obj.client else None
-        tracker.end_operation("get_client_ip")
+        if tracker:
+            tracker.start_operation("get_client_ip")
+        client_ip = request_obj.client.host if request_obj.client else "unknown"
+        if tracker:
+            tracker.end_operation("get_client_ip")
 
         # Extract source filenames (prefer raw docs if available)
-        tracker.start_operation("extract_filenames")
+        if tracker:
+            tracker.start_operation("extract_filenames")
         filenames_docs = source_docs_raw if source_docs_raw else source_docs
         source_filenames = []
         for doc in filenames_docs:
@@ -1302,10 +1336,12 @@ async def process_secure_rag_query(
                     source_filenames.append(doc.metadata.get("source", "unknown"))
             except Exception:
                 source_filenames.append("unknown")
-        tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
+        if tracker:
+            tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
 
         # Log metrics
-        tracker.start_operation("log_metrics")
+        if tracker:
+            tracker.start_operation("log_metrics")
         
         # Create a response text for logging
         response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
@@ -1326,7 +1362,7 @@ async def process_secure_rag_query(
             source_document_count=len(source_docs),
             security_filtered=security_filtered,
             source_filenames=immediate_response["files"],
-            ip_address=client_ip,
+            ip_address=client_ip or "unknown",
             response_time_ms=int(response_time)
         )
 
@@ -1351,26 +1387,30 @@ async def process_secure_rag_query(
         )
         
         # Log to advanced analytics if available
-        if ADVANCED_ANALYTICS_ENABLED:
+        if ADVANCED_ANALYTICS_ENABLED and QueryMetrics:
             try:
                 analytics = get_analytics_core()
-                query_metrics = QueryMetrics(
-                    query_id=session_id,
-                    user_id=username,
-                    query_text=request.question,
-                    query_type=QueryType.DOCUMENT_SEARCH,
-                    num_documents_retrieved=len(source_docs),
-                    response_time_ms=int(response_time),
-                    success=True,
-                    cache_hit=False,
-                    tokens_input=0,
-                    tokens_output=0
-                )
-                await analytics.log_query(query_metrics)
+                if analytics and QueryMetrics:
+                    query_metrics = QueryMetrics(
+                        query_id=session_id,
+                        session_id=session_id,
+                        user_id=username,
+                        role=role,
+                        question=request.question,
+                        answer_length=len(response_text),
+                        model_type=model_type,
+                        query_type=QueryType.RAG_SEARCH if QueryType else "rag_search",
+                        response_time_ms=int(response_time),
+                        source_document_count=len(source_docs),
+                        success=True,
+                        ip_address=client_ip or "unknown"
+                    )
+                    analytics.log_query(query_metrics)
             except Exception as e:
                 logger.warning(f"Failed to log query to advanced analytics: {e}")
         
-        tracker.end_operation("log_metrics")
+        if tracker:
+            tracker.end_operation("log_metrics")
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
 
@@ -1406,8 +1446,9 @@ async def process_secure_rag_query(
 
         # If humanize is True (default): return response with immediate data and optional overview
         if request.humanize is None or request.humanize:
-            tracker.end_operation("query_start")
-            tracker.log_summary()
+            if tracker:
+                tracker.end_operation("query_start")
+                tracker.log_summary()
             
             response_data = {
                 "immediate": immediate_response,
@@ -1447,8 +1488,9 @@ async def process_secure_rag_query(
                     f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
                 )
 
-            tracker.end_operation("query_start")
-            tracker.log_summary()
+            if tracker:
+                tracker.end_operation("query_start")
+                tracker.log_summary()
             return APIResponse(
                 status="success",
                 message="Query processed with secure RAG (raw chunks)",
@@ -1466,8 +1508,10 @@ async def process_secure_rag_query(
                 }
             )
     except Exception as e:
-        logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
-        tracker.log_summary()
+        username_str = user[1] if user and len(user) > 1 else "unknown"
+        logger.exception(f"Secure RAG query processing error for user {username_str}")
+        if tracker:
+            tracker.log_summary()
         return APIResponse(status="error", message=str(e), response=None)
 from fastapi.responses import PlainTextResponse
 from urllib.parse import unquote
@@ -1504,7 +1548,7 @@ async def get_file_content(
             # Log security event for unauthorized access attempt
             log_security_event(
                 event_type="unauthorized_file_access",
-                ip_address=client_ip,
+                ip_address=client_ip or "unknown",
                 user_id=user[1],
                 details={"filename": resolved_filename, "organization_id": organization_id},
                 severity="medium"
@@ -1530,7 +1574,7 @@ async def get_file_content(
             filename=resolved_filename,
             access_type="view",
             session_id=None,
-            ip_address=client_ip
+            ip_address=client_ip or "unknown"
         )
 
         if include_quiz:
@@ -1551,7 +1595,7 @@ async def get_file_content(
                     "logs": quiz_row[4]
                 }
             else:
-                quiz_payload = None
+                quiz_payload: Dict[str, Any] = {}
 
             return JSONResponse(
                 content={
@@ -1590,7 +1634,7 @@ async def create_or_get_quiz(
             client_ip = request_obj.client.host if request_obj and request_obj.client else None
             log_security_event(
                 event_type="unauthorized_file_access",
-                ip_address=client_ip,
+                ip_address=client_ip or "unknown",
                 user_id=user[1],
                 details={"filename": resolved_filename, "action": "quiz_access"},
                 severity="medium"
@@ -1634,7 +1678,7 @@ async def create_or_get_quiz(
             filename=resolved_filename,
             access_type="quiz_view" if not regenerate else "quiz_regenerate",
             session_id=None,
-            ip_address=client_ip
+            ip_address=client_ip or "unknown"
         )
 
         return APIResponse(status="success", message="Quiz ready", response=payload)
@@ -1670,15 +1714,21 @@ async def secure_chat(
         logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Org: {organization_id}, Query: {request.question}, Model: {model_type}")
         
         # Use secure RAG retriever that respects file permissions and organization isolation
-        secure_retriever = SecureRAGRetriever(username=username, organization_id=organization_id)
+        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id or "")
         chat_history = get_chat_history(session_id)
         
         # Get secure RAG response with file access control and organization filtering
+        from rag_api.langchain_utils import get_rag_chain
+        rag_chain = get_rag_chain()
         rag_result = await secure_retriever.invoke_secure_rag_chain(
-            None, request.question, chat_history, model_type
+            rag_chain=rag_chain, 
+            query=request.question, 
+            model_type=model_type,
+            humanize=request.humanize if request.humanize is not None else True,
+            skip_llm=False
         )
         
-        answer = rag_result["answer"]
+        answer = rag_result.get("answer", "")
         source_docs = rag_result.get("source_documents", [])
         security_filtered = rag_result.get("security_filtered", False)
 
@@ -1686,7 +1736,7 @@ async def secure_chat(
         response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
         
         # Get client IP
-        client_ip = request_obj.client.host if request_obj and request_obj.client else None
+        client_ip = request_obj.client.host if request_obj and request_obj.client else "unknown"
         
         # Extract source filenames
         source_filenames = [
@@ -1713,7 +1763,7 @@ async def secure_chat(
             security_filtered=security_filtered,
             source_filenames=source_filenames,
             response_time_ms=int(response_time),
-            ip_address=request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
+            ip_address=client_ip or "unknown"
         )
 
         # Log file access for each source document
@@ -1774,7 +1824,7 @@ async def upload_document(
 
     # Extended support for PDF, DOCX, DOC, HTML, TXT, MD, and ZIP archives
     allowed_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md', '.zip']
-    file_extension = os.path.splitext(file.filename)[1].lower()
+    file_extension = os.path.splitext(file.filename or "")[1].lower()
 
     if file_extension not in allowed_extensions:
         raise HTTPException(
@@ -1784,7 +1834,7 @@ async def upload_document(
 
     upload_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
-    original_filename = file.filename
+    original_filename = file.filename or "unknown"
     file_extension = os.path.splitext(original_filename)[1].lower()
 
     try:
@@ -1897,7 +1947,7 @@ async def upload_document(
                                 with open(temp_index_path, 'wb') as buffer:
                                     buffer.write(extracted_content)
                                 
-                                if index_document_to_chroma(temp_index_path, extracted_file_id, organization_id=organization_id):
+                                if extracted_file_id and index_document_to_chroma(temp_index_path, extracted_file_id, organization_id=organization_id):
                                     logger.info(f"✓ Indexed {extracted_filename}")
                                     extracted_files.append({
                                         "filename": extracted_filename,
@@ -1911,7 +1961,8 @@ async def upload_document(
                                         pass
                                 else:
                                     logger.error(f"Failed to index {extracted_filename}")
-                                    delete_document_record(extracted_file_id)
+                                    if extracted_file_id:
+                                        delete_document_record(extracted_file_id)
                                     failed_files.append(extracted_filename)
                                 
                                 if os.path.exists(temp_index_path):
@@ -1959,8 +2010,13 @@ async def upload_document(
             with open(temp_file_path, "wb") as buffer:
                 buffer.write(content_bytes)
             
-            success = index_document_to_chroma(temp_file_path, file_id, organization_id=organization_id)
-            os.remove(temp_file_path)
+            if file_id:
+                success = index_document_to_chroma(temp_file_path, file_id, organization_id=organization_id)
+            else:
+                success = False
+            
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
 
             if success:
                 # Fire-and-forget: generate a quiz for this uploaded file in background
@@ -1976,14 +2032,17 @@ async def upload_document(
                 if ADVANCED_ANALYTICS_ENABLED:
                     try:
                         analytics = get_analytics_core()
-                        await analytics.log_file_access(
-                            user_id=current_user[1],
-                            filename=original_filename,
-                            file_id=file_id,
-                            access_type="upload",
-                            ip_address=None,
-                            details={"file_size": len(content_bytes), "upload_id": upload_id}
-                        )
+                        if analytics and file_id:
+                            # Only log if analytics methods are available
+                            if hasattr(analytics, 'log_file_access'):
+                                analytics.log_file_access(
+                                    user_id=current_user[1],
+                                    filename=original_filename,
+                                    file_id=file_id,
+                                    access_type="upload",
+                                    ip_address="unknown",
+                                    details={"file_size": len(content_bytes), "upload_id": upload_id}
+                                )
                     except Exception as e:
                         logger.warning(f"Failed to log file access to advanced analytics: {e}")
                 
@@ -1998,7 +2057,8 @@ async def upload_document(
                     }
                 )
             else:
-                delete_document_record(file_id)
+                if file_id:
+                    delete_document_record(file_id)
                 logger.error(f"Failed to index {original_filename} (ID: {file_id})")
                 raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
 
@@ -2047,7 +2107,9 @@ async def delete_document(
     
     try:
         organization_id = _get_active_org_id(current_user)
-        chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id)
+        if not organization_id:
+            organization_id = ""  # Default to empty string if not available
+        chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id or "")
         
         if chroma_delete_success:
             db_delete_success = delete_document_record(request.file_id)
@@ -2083,13 +2145,14 @@ async def list_available_filenames():
     try:
         # Get all files from the uploads directory
         files = []
-        for file in os.listdir(UPLOAD_DIR):
-            file_path = os.path.join(UPLOAD_DIR, file)
-            if os.path.isfile(file_path):
-                files.append(file)
+        if os.path.exists(UPLOAD_DIR):
+            for file in os.listdir(UPLOAD_DIR):
+                file_path = os.path.join(UPLOAD_DIR, file)
+                if os.path.isfile(file_path):
+                    files.append(file)
         
         # Also get files from the database (org context not available here; return filesystem only)
-        db_files = await get_all_documents()
+        db_files = get_all_documents()  # Not async, remove await
         db_filenames = []
         for doc in db_files:
             if isinstance(doc, dict):
