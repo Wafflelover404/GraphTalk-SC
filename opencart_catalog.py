@@ -69,11 +69,28 @@ async def init_catalog_db():
     """Initialize the catalog database with required tables."""
     os.makedirs(os.path.dirname(CATALOG_DB_PATH), exist_ok=True)
     async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+        # OpenCart shops table - stores shop connections
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS opencart_shops (
+                shop_id TEXT PRIMARY KEY,
+                shop_name TEXT NOT NULL,
+                shop_url TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                organization_id TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        
         # Catalogs table
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS catalogs (
                 catalog_id TEXT PRIMARY KEY,
+                shop_id TEXT,
                 shop_name TEXT NOT NULL,
                 shop_url TEXT,
                 user_id INTEGER NOT NULL,
@@ -84,7 +101,8 @@ async def init_catalog_db():
                 is_active BOOLEAN DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_indexed_at TEXT
+                last_indexed_at TEXT,
+                FOREIGN KEY (shop_id) REFERENCES opencart_shops(shop_id)
             )
             """
         )
@@ -136,9 +154,83 @@ async def init_catalog_db():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_org_id ON catalogs(organization_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_catalog_id ON catalog_products(catalog_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_indexed ON catalog_products(indexed)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_shop_user ON opencart_shops(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_shop_org ON opencart_shops(organization_id)")
         
         await conn.commit()
 
+
+# ====== SHOP MANAGEMENT ======
+
+async def register_shop(
+    shop_name: str,
+    shop_url: str,
+    user_id: int,
+    organization_id: Optional[str]
+) -> str:
+    """Register an OpenCart shop. Returns shop_id."""
+    shop_id = str(uuid.uuid4())
+    now = datetime.datetime.utcnow().isoformat()
+    
+    async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+        await conn.execute(
+            """
+            INSERT INTO opencart_shops (
+                shop_id, shop_name, shop_url, user_id, organization_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (shop_id, shop_name, shop_url, user_id, organization_id, now, now)
+        )
+        await conn.commit()
+    
+    logger.info(f"Registered shop {shop_id}: {shop_name}")
+    return shop_id
+
+
+async def list_shops_by_user(user_id: int, organization_id: Optional[str] = None) -> List[Dict]:
+    """List all shops for a user, optionally filtered by organization."""
+    async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        if organization_id:
+            cursor = await conn.execute(
+                "SELECT * FROM opencart_shops WHERE user_id = ? AND organization_id = ? AND is_active = 1 ORDER BY created_at DESC",
+                (user_id, organization_id)
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT * FROM opencart_shops WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC",
+                (user_id,)
+            )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_shop(shop_id: str) -> Optional[Dict]:
+    """Get shop details."""
+    async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM opencart_shops WHERE shop_id = ?",
+            (shop_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_shop(shop_id: str) -> bool:
+    """Delete a shop (soft delete - marks as inactive)."""
+    async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE opencart_shops SET is_active = 0 WHERE shop_id = ?",
+            (shop_id,)
+        )
+        await conn.commit()
+    logger.info(f"Deleted shop {shop_id}")
+    return True
+
+
+# ====== CATALOG MANAGEMENT ======
 
 async def create_catalog(
     shop_name: str,
@@ -434,14 +526,111 @@ def _parse_float(value) -> float:
         return 0.0
 
 
-def _parse_int(value) -> int:
+def _parse_int(value):
     """Parse value to int."""
-    if value is None:
-        return 0
     try:
-        return int(float(str(value)))
+        return int(value) if value is not None else None
     except (ValueError, TypeError):
-        return 0
+        return None
+
+
+async def search_products_in_catalogs(
+    catalog_ids: List[str],
+    search_term: str = None,
+    min_price: float = None,
+    max_price: float = None,
+    in_stock: bool = None,
+    status: int = None,
+    limit: int = 20,
+    offset: int = 0
+) -> List[Dict]:
+    """
+    Search products across multiple catalogs with filtering.
+    
+    Args:
+        catalog_ids: List of catalog IDs to search in
+        search_term: Optional search term to match against name, SKU, or description
+        min_price: Optional minimum price filter
+        max_price: Optional maximum price filter
+        in_stock: Optional filter for in-stock items
+        status: Optional status filter
+        limit: Maximum number of results to return
+        offset: Offset for pagination
+        
+    Returns:
+        List of matching product dictionaries
+    """
+    if not catalog_ids:
+        return []
+        
+    query = """
+        SELECT 
+            p.product_id, p.catalog_id, p.name, p.sku, p.price, p.special as special_price,
+            p.description, p.url, p.image, p.quantity, p.status, p.rating, p.updated_at,
+            c.shop_name, c.shop_url
+        FROM catalog_products p
+        JOIN catalogs c ON p.catalog_id = c.catalog_id
+        WHERE p.catalog_id IN ({})
+    """.format(",".join(["?"] * len(catalog_ids)))
+    
+    params = list(catalog_ids)
+    conditions = []
+    
+    # Add search conditions
+    if search_term:
+        # Split search terms and add wildcards
+        search_terms = search_term.strip().split()
+        search_conditions = []
+        
+        for term in search_terms:
+            term = f"%{term}%"
+            # Case-insensitive search with COLLATE NOCASE
+            search_conditions.append("""
+                (LOWER(p.name) LIKE LOWER(?) OR 
+                 LOWER(p.sku) LIKE LOWER(?) OR 
+                 LOWER(p.description) LIKE LOWER(?))
+            """.strip())
+            params.extend([term, term, term])
+        
+        # Combine with AND to require all terms to match
+        if search_conditions:
+            conditions.append(f"({' AND '.join(search_conditions)})")
+    
+    # Add price filters
+    if min_price is not None:
+        conditions.append("p.price >= ?")
+        params.append(min_price)
+    if max_price is not None:
+        conditions.append("p.price <= ?")
+        params.append(max_price)
+    
+    # Add stock filter
+    if in_stock is not None:
+        conditions.append("p.quantity > 0" if in_stock else "p.quantity <= 0")
+    
+    # Add status filter
+    if status is not None:
+        conditions.append("p.status = ?")
+        params.append(status)
+    
+    # Combine conditions
+    if conditions:
+        query += " AND " + " AND ".join(conditions)
+    
+    # Add sorting and pagination
+    query += " ORDER BY p.updated_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    
+    try:
+        async with aiosqlite.connect(CATALOG_DB_PATH) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error searching products in catalogs: {e}")
+        return []
 
 
 async def load_opencart_products_from_db(opencart_db_path: str, catalog_id: str, shop_url: str) -> Tuple[int, int]:

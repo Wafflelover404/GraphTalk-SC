@@ -1,11 +1,15 @@
 # opencart_api.py
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 import datetime
 import aiosqlite
 import os
 from pydantic import BaseModel
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/opencart", tags=["OpenCart"])
 
@@ -205,57 +209,101 @@ async def import_products(payload: ProductsImport, user=Depends(get_current_user
 
 @router.get("/products", response_model=APIResponse)
 async def list_products(
-    limit: int = 100,
-    offset: int = 0,
+    q: Optional[str] = Query(None, description="Search query to filter products by name, SKU, or description"),
+    limit: int = Query(50, le=100, description="Number of products per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    min_price: Optional[float] = Query(None, description="Minimum price filter"),
+    max_price: Optional[float] = Query(None, description="Maximum price filter"),
+    in_stock: Optional[bool] = Query(None, description="Filter products in stock"),
+    status: Optional[int] = Query(None, description="Filter by product status"),
     user=Depends(get_current_user)
 ):
     """
-    List all products with pagination.
+    List and search products with filtering and pagination.
     
-    Returns a paginated list of products from the OpenCart database.
+    Supports text search across product names, SKUs, and descriptions,
+    with additional filtering by price, stock status, and product status.
     """
-    async with aiosqlite.connect(DB_PATH) as conn:
-        # Get total count
-        cursor = await conn.execute("SELECT COUNT(*) FROM products")
-        total = (await cursor.fetchone())[0]
-        
-        # Get paginated products
-        cursor = await conn.execute(
-            """
+    try:
+        query = """
             SELECT 
                 product_id, name, sku, price, special, description, 
                 url, image, quantity, status, rating, updated_at
             FROM products
-            ORDER BY updated_at DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset)
-        )
+            WHERE 1=1
+        """
+        params: List[Any] = []
         
-        products = []
-        async for row in cursor:
-            products.append({
-                "product_id": row[0],
-                "name": row[1],
-                "sku": row[2],
-                "price": row[3],
-                "special": row[4],
-                "description": row[5],
-                "url": row[6],
-                "image": row[7],
-                "quantity": row[8],
-                "status": row[9],
-                "rating": row[10],
-                "updated_at": row[11]
-            })
-    
-    return APIResponse(
-        status="success",
-        message=f"Retrieved {len(products)} of {total} products",
-        response={
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "products": products
-        }
-    )
+        # Add search query conditions
+        if q:
+            query += " AND (name LIKE ? OR sku LIKE ? OR description LIKE ?)"
+            search_term = f"%{q}%"
+            params.extend([search_term, search_term, search_term])
+        
+        # Add price filters
+        if min_price is not None:
+            query += " AND price >= ?"
+            params.append(min_price)
+        if max_price is not None:
+            query += " AND price <= ?"
+            params.append(max_price)
+        
+        # Add stock filter
+        if in_stock is not None:
+            query += " AND quantity > 0" if in_stock else " AND quantity <= 0"
+        
+        # Add status filter
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        
+        # Get total count with filters applied
+        count_query = f"SELECT COUNT(*) FROM ({query})"
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute(count_query, params)
+            total = (await cursor.fetchone())[0]
+            
+            # Add sorting and pagination
+            query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            # Execute the query
+            cursor = await conn.execute(query, params)
+            
+            products = []
+            async for row in cursor:
+                products.append({
+                    "product_id": row[0],
+                    "name": row[1],
+                    "sku": row[2],
+                    "price": row[3],
+                    "special": row[4],
+                    "description": row[5],
+                    "url": row[6],
+                    "image": row[7],
+                    "quantity": row[8],
+                    "status": row[9],
+                    "rating": row[10],
+                    "updated_at": row[11]
+                })
+        
+        return APIResponse(
+            status="success",
+            message=f"Found {total} matching products" if q else f"Retrieved {len(products)} of {total} products",
+            response={
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "products": products,
+                "filters": {
+                    "query": q,
+                    "min_price": min_price,
+                    "max_price": max_price,
+                    "in_stock": in_stock,
+                    "status": status
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error searching products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
