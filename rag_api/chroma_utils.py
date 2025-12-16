@@ -1,6 +1,21 @@
 import os
 import re
 import logging
+import nltk
+
+# Ensure NLTK data is downloaded
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    try:
+        nltk.download('punkt_tab', quiet=True)
+    except:
+        # If punkt_tab is not available, use the standard punkt tokenizer
+        pass
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -150,6 +165,15 @@ chroma_settings = {
         "hnsw:M": 16                   # Higher = more memory usage but better accuracy
     }
 }
+
+def get_vectorstore():
+    """
+    Get the global vectorstore instance.
+    
+    Returns:
+        The global Chroma vectorstore instance
+    """
+    return vectorstore
 
 # Initialize Chroma with optimized settings
 vectorstore = Chroma(**chroma_settings)
@@ -351,7 +375,7 @@ def preprocess_query(query: str, language: str = 'russian') -> str:
     # Apply the same preprocessing as regular text
     return preprocess_text(query, language)
 
-def index_document_to_chroma(file_path: str, file_id: int, organization_id: str = None) -> bool:
+def index_document_to_chroma(file_path: str, file_id: int, organization_id: str = None, metadata: Dict[str, str] = None) -> bool:
 	try:
 		# Extract just the filename from the path
 		filename = os.path.basename(file_path)
@@ -370,12 +394,18 @@ def index_document_to_chroma(file_path: str, file_id: int, organization_id: str 
 			if organization_id:
 				split.metadata['organization_id'] = organization_id
 			
-			# Log archive information if this file came from a ZIP
-			if 'archive_source' in split.metadata:
-				archive_source = split.metadata['archive_source']
-				archive_filename = split.metadata.get('archive_filename', 'unknown')
-				archive_path = split.metadata.get('archive_path', 'unknown')
-				logger.debug(f"  Chunk from archive '{archive_filename}' (source: {archive_source}, path: {archive_path})")
+		# Add source_type - determine if this is a document or from external source
+		split.metadata['source_type'] = 'document'
+		
+		# Add custom metadata if provided
+		if metadata:
+			for key, value in metadata.items():
+				split.metadata[key] = value
+			# If metadata contains 'catalog_id', this is an OpenCart product
+			if 'catalog_id' in metadata:
+				split.metadata['source_type'] = 'opencart_product'  # Must match the filter in search
+				if 'archive_filename' in locals() and 'archive_source' in locals() and 'archive_path' in locals():
+					logger.debug(f"  Chunk from archive '{archive_filename}' (source: {archive_source}, path: {archive_path})")
 		
 		vectorstore.add_documents(splits)
 		
@@ -599,7 +629,8 @@ def search_documents(
     max_chars_per_chunk: int = 1000,
     use_hybrid_search: bool = True,  # Enable hybrid semantic + keyword search
     bm25_weight: float = 0.3,  # Weight for BM25 score in hybrid search
-    organization_id: str = None
+    organization_id: str = None,
+    filter_conditions: Optional[Dict] = None
 ) -> Dict[str, Union[List[Document], Dict[str, any]]]:
     """
     Advanced hybrid document search combining semantic similarity and keyword matching.
@@ -685,10 +716,16 @@ def search_documents(
             # Get all documents from vectorstore using similarity search
             logger.info(f"Searching in vectorstore (org_id: {organization_id})")
             
+            # Prepare filter for similarity search
+            filter_dict = None
+            if filter_conditions:
+                filter_dict = filter_conditions
+            
             # Perform similarity search to get relevant documents with metadata
             similar_docs = vectorstore.similarity_search_with_score(
                 preprocessed_query,
-                k=max_results * 2  # Get more results for filtering
+                k=max_results * 2,  # Get more results for filtering
+                filter=filter_dict
             )
             
             if not similar_docs:

@@ -531,6 +531,16 @@ class SecureRAGRetriever:
                     "relevant_files": [],
                     "security_filtered": True
                 }
+                
+            # If we're using the new RAG chain format, extract the retriever
+            if hasattr(rag_chain, 'retriever'):
+                # Use the retriever from the RAG chain if available
+                retriever = rag_chain.retriever
+                rag_chain = rag_chain.chain  # Use the actual chain for processing
+            else:
+                # Fallback to the default retriever
+                from rag_api.langchain_utils import retriever
+                retriever = retriever
             
             # Group documents by file
             files_dict = {}

@@ -217,11 +217,21 @@ def get_rag_chain(model: str = None):
             tracker.log_summary()
             return f"Error generating response: {str(e)}"
     
-    # Create the chain
-    rag_chain = {
-        "input": lambda x: x.get("input", ""),
-        "context": lambda x: x.get("context", ""),
-        "answer": answer_chain
-    }
+    # Create a simple object with the retriever and chain
+    class RAGChain:
+        def __init__(self, chain, retriever):
+            self.chain = chain
+            self.retriever = retriever
+            
+        def __call__(self, *args, **kwargs):
+            return self.chain(*args, **kwargs)
     
-    return rag_chain
+    # Return an object with both the chain and retriever
+    return RAGChain(
+        chain={
+            "input": lambda x: x.get("input", ""),
+            "context": lambda x: x.get("context", ""),
+            "answer": answer_chain
+        },
+        retriever=retriever
+    )
