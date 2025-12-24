@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCart AI Chatbot - Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            padding-top: 40px;
+        }
+
+        .header h1 {
+            font-size: 42px;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-bottom: 30px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 24px;
+            margin-bottom: 40px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .card h3 {
+            color: #667eea;
+            margin-bottom: 12px;
+            font-size: 20px;
+        }
+
+        .card p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .card ul {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 16px;
+        }
+
+        .card li {
+            color: #666;
+            font-size: 14px;
+            padding: 6px 0;
+            padding-left: 24px;
+            position: relative;
+        }
+
+        .card li:before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .code-block {
+            background: #f5f5f5;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #333;
+            overflow-x: auto;
+            margin-bottom: 16px;
+        }
+
+        .integration-section {
+            background: white;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 40px;
+        }
+
+        .integration-section h2 {
+            color: #667eea;
+            margin-bottom: 24px;
+            font-size: 28px;
+        }
+
+        .step {
+            margin-bottom: 32px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .step:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .step h3 {
+            color: #333;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 18px;
+        }
+
+        .step-number {
+            background: #667eea;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .step p {
+            color: #666;
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        .code-block {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.6;
+            margin-bottom: 16px;
+        }
+
+        .code-block code {
+            font-family: 'Courier New', monospace;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 24px;
+            margin-top: 32px;
+        }
+
+        .feature {
+            text-align: center;
+        }
+
+        .feature-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .feature h4 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+
+        .feature p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            padding: 40px 20px;
+            opacity: 0.9;
+        }
+
+        .button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-block;
+            margin-top: 16px;
+        }
+
+        .button:hover {
+            background: #764ba2;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .highlight {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 16px;
+            border-radius: 4px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 OpenCart AI Chatbot</h1>
+            <p>Jivo-like messenger widget with AI-powered product search</p>
+            <p style="font-size: 14px; opacity: 0.8; margin-top: 15px;">Catalog ID: <strong style="font-family: 'Courier New', monospace;">demo-catalog</strong></p>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>💬 Live Demo</h3>
+                <p>The chatbot widget is already active on this page. Click the purple bubble in the bottom right corner to start chatting!</p>
+                <p style="color: #999; font-size: 12px;">Try asking: "High performance laptops" or "wireless headphones"</p>
+            </div>
+
+            <div class="card">
+                <h3>🚀 Key Features</h3>
+                <ul>
+                    <li>Jivo-style messenger bubble</li>
+                    <li>AI-powered product overviews</li>
+                    <li>Real-time LLM integration</li>
+                    <li>Mobile responsive</li>
+                    <li>Easy to integrate</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h3>🔐 Authentication</h3>
+                <p>Uses Bearer token authentication with your GraphTalk API key.</p>
+                <p>The widget is pre-configured with your API credentials.</p>
+            </div>
+        </div>
+
+        <div class="integration-section">
+            <h2>📋 Integration Guide</h2>
+
+            <div class="step">
+                <h3>
+                    <span class="step-number">1</span>
+                    Add Configuration Script
+                </h3>
+                <p>Add this before the widget script to configure the chatbot:</p>
+                <div class="code-block"><code>&lt;script&gt;
+  window.GraphTalkChatbot = {
+    apiKey: 'wk_N7WsBd1_cGsbgLI7DFihlK5KfLO80pxI5JZ9uqH1mwE',
+    catalogId: 'demo-catalog',
+    apiEndpoint: 'http://localhost:9001',
+    position: 'bottom-right' // or 'bottom-left'
+  };
+&lt;/script&gt;</code></div>
+            </div>
+
+            <div class="step">
+                <h3>
+                    <span class="step-number">2</span>
+                    Load Widget Script
+                </h3>
+                <p>Add the widget script just before closing &lt;/body&gt; tag:</p>
+                <div class="code-block"><code>&lt;script src="opencart_chatbot_widget.js"&gt;&lt;/script&gt;</code></div>
+            </div>
+
+            <div class="step">
+                <h3>
+                    <span class="step-number">3</span>
+                    Configure Your Store
+                </h3>
+                <p>Update the configuration parameters:</p>
+                <ul>
+                    <li><strong>apiKey:</strong> Your GraphTalk API key</li>
+                    <li><strong>catalogId:</strong> Your OpenCart catalog ID</li>
+                    <li><strong>apiEndpoint:</strong> GraphTalk API endpoint URL</li>
+                    <li><strong>deepseekApiKey:</strong> DeepSeek API key for LLM (optional)</li>
+                    <li><strong>position:</strong> 'bottom-right' or 'bottom-left'</li>
+                </ul>
+            </div>
+
+            <div class="step">
+                <h3>
+                    <span class="step-number">4</span>
+                    Test the Widget
+                </h3>
+                <p>Open your OpenCart store and click the chatbot bubble to test.</p>
+                <p>You should see the AI assistant ready to help with product searches.</p>
+            </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 40px;">
+            <h3>✨ Features & Capabilities</h3>
+            <div class="features">
+                <div class="feature">
+                    <div class="feature-icon">💬</div>
+                    <h4>Chat Interface</h4>
+                    <p>User-friendly conversation UI with typing indicators</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🤖</div>
+                    <h4>AI Overview</h4>
+                    <p>LLM-powered summaries using top 5 results</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">⚡</div>
+                    <h4>Real-time</h4>
+                    <p>Instant API responses with loading states</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">📱</div>
+                    <h4>Mobile Ready</h4>
+                    <p>Fully responsive on all devices</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🎨</div>
+                    <h4>Customizable</h4>
+                    <p>Easy theme and position configuration</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🔒</div>
+                    <h4>Secure</h4>
+                    <p>Bearer token authentication included</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="integration-section">
+            <h2>🔧 Advanced Configuration</h2>
+            <div class="highlight">
+                <strong>💡 Tip:</strong> You can also dynamically update the configuration after loading:
+            </div>
+            <div class="code-block"><code>// Update API endpoint
+window.GraphTalkChatbot.apiEndpoint = 'https://api.example.com';
+
+// Change catalog
+window.GraphTalkChatbot.catalogId = 'new-catalog-id';</code></div>
+        </div>
+
+        <div class="integration-section">
+            <h2>📡 API Endpoint Used</h2>
+            <p><strong>Endpoint:</strong> <code style="background: #f0f0f0; padding: 4px 8px; border-radius: 4px;">POST /api/v1/catalog/{catalog_id}/ai-overview</code></p>
+            <p style="margin-top: 12px; color: #666;">The widget sends user queries to this endpoint which returns AI-generated overviews of the top 5 most relevant products.</p>
+            
+            <p style="margin-top: 20px; font-weight: 600;">Request Body:</p>
+            <div class="code-block"><code>{
+  "query": "user search query",
+  "limit": 20,
+  "min_relevance": 0.2
+}</code></div>
+
+            <p style="margin-top: 20px; font-weight: 600;">Response:</p>
+            <div class="code-block"><code>{
+  "overview": "AI-generated product overview text..."
+}</code></div>
+        </div>
+
+        <div class="footer">
+            <p>OpenCart AI Chatbot Widget &copy; 2025</p>
+            <p style="font-size: 14px; margin-top: 8px;">Powered by GraphTalk AI Engine</p>
+        </div>
+    </div>
+
+    <!-- Configuration -->
+    <script>
+        window.GraphTalkChatbot = {
+            apiKey: 'wk_N7WsBd1_cGsbgLI7DFihlK5KfLO80pxI5JZ9uqH1mwE',
+            catalogId: 'demo-catalog',
+            apiEndpoint: 'http://localhost:9001',
+            position: 'bottom-right'
+        };
+    </script>
+
+    <!-- Widget Script -->
+    <script src="opencart_chatbot_widget.js"></script>
+</body>
+</html>
