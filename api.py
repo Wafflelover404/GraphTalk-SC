@@ -793,6 +793,11 @@ async def landing_page():
         "security": "Session-based authentication with file access control",
         "endpoints": {
             "/register": {"method": "POST", "description": "Register a new user (admin/master key required)"},
+            "/users": {"method": "GET", "description": "List all users (admin/master key required)"},
+            "/user/{username}": {"method": "GET", "description": "Get user details (admin/master key required)"},
+            "/user/{username}": {"method": "PUT", "description": "Update user by username (admin/master key required)"},
+            "/user/edit": {"method": "POST", "description": "Edit user (admin/master key required)"},
+            "/user/delete": {"method": "DELETE", "description": "Delete user (admin/master key required)"},
             "/login": {"method": "POST", "description": "Login and get session token"},
             "/logout": {"method": "POST", "description": "Logout and invalidate session (auth required)"},
             "/query": {"method": "POST", "description": "Secure RAG query with file access control (auth required)"},
@@ -1534,6 +1539,125 @@ async def logout_user(
         return APIResponse(status="error", message=str(e), response=None)
 
 
+@app.post("/register", response_model=APIResponse)
+async def register_user(
+    request: RegisterRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    request_obj: Request = None
+):
+    """
+    Register a new user. Requires admin authentication or master key.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    # Validate input
+    if not request.username or not request.password or not request.role:
+        return APIResponse(
+            status="error", 
+            message="Username, password, and role are required", 
+            response=None
+        )
+    
+    if request.role not in ["admin", "user"]:
+        return APIResponse(
+            status="error", 
+            message="Role must be either 'admin' or 'user'", 
+            response=None
+        )
+    
+    # Check if user already exists
+    existing_user = await get_user(request.username)
+    if existing_user:
+        return APIResponse(
+            status="error", 
+            message=f"User '{request.username}' already exists", 
+            response=None
+        )
+    
+    try:
+        import userdb
+        
+        # Get organization context for admin users
+        organization_id = None
+        if is_admin and admin_user:
+            organization_id = _get_active_org_id(admin_user)
+            if not organization_id:
+                return APIResponse(
+                    status="error", 
+                    message="Admin must have an active organization context", 
+                    response=None
+                )
+        
+        # Create the user
+        await create_user(
+            username=request.username,
+            password=request.password,
+            role=request.role,
+            allowed_files=request.allowed_files or [],
+            organization_id=organization_id
+        )
+        
+        # Log the creation
+        log_event(
+            event_type="user_created",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "created_username": request.username,
+                "created_role": request.role,
+                "organization_id": organization_id,
+                "allowed_files": request.allowed_files
+            }
+        )
+        
+        logger.info(f"User '{request.username}' created with role '{request.role}' by {admin_user[1] if admin_user else 'master'}")
+        
+        return APIResponse(
+            status="success",
+            message=f"User '{request.username}' created successfully",
+            response={
+                "username": request.username,
+                "role": request.role,
+                "allowed_files": request.allowed_files or [],
+                "organization_id": organization_id,
+                "created_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error creating user '{request.username}'")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to create user: {str(e)}", 
+            response=None
+        )
+
+
 @app.get("/token/validate", response_model=APIResponse)
 async def validate_token(user=Depends(get_current_user)):
     try:
@@ -1685,353 +1809,6 @@ async def get_user_from_token(token: str):
     return user
 
 
-@app.websocket("/ws/query")
-async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
-    logger = logging.getLogger(__name__)
-    
-    tracker = None
-    if ADVANCED_ANALYTICS_ENABLED and PerformanceTracker:
-        try:
-            tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
-        except Exception:
-            tracker = None
-
-    try:
-        username = user[1]  
-        role = user[3]  
-        organization_id = _get_active_org_id(user)
-        if not organization_id:
-            raise HTTPException(status_code=400, detail="Organization context required for queries.")
-        session_id = str(uuid.uuid4())  
-        client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
-        
-        model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
-
-        
-        if tracker:
-            tracker.start_operation("query_start")
-        start_time = datetime.datetime.now()
-
-        
-        if tracker:
-            tracker.start_operation("cleanup_sessions")
-        await cleanup_expired_sessions()
-        if tracker:
-            tracker.end_operation("cleanup_sessions")
-
-        
-        if tracker:
-            tracker.start_operation("init_rag_chain")
-        from rag_api.langchain_utils import get_rag_chain
-        rag_chain = get_rag_chain()
-        if tracker:
-            tracker.end_operation("init_rag_chain")
-
-        
-        if tracker:
-            tracker.start_operation("secure_retrieval")
-        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id)
-        rag_result = await secure_retriever.invoke_secure_rag_chain(
-            rag_chain=rag_chain,
-            query=request.question,
-            model_type=model_type,
-            humanize=request.humanize if hasattr(request, 'humanize') and request.humanize is not None else True,
-            skip_llm=True  
-        )
-        if tracker:
-            tracker.end_operation("secure_retrieval")
-
-        
-        source_docs = rag_result.get("source_documents", [])
-        source_docs_raw = rag_result.get("source_documents_raw", [])
-        security_filtered = rag_result.get("security_filtered", False)
-        
-        
-        immediate_response = {
-            "files": [],
-            "snippets": [],
-            "model": model_type,
-            "security_info": {
-                "user_filtered": True,
-                "username": username,
-                "source_documents_count": len(source_docs),
-                "security_filtered": security_filtered
-            }
-        }
-        
-        
-        filenames_docs = source_docs_raw if source_docs_raw else source_docs
-        for doc in filenames_docs:
-            try:
-                if isinstance(doc, dict):
-                    meta = doc.get("metadata", {})
-                    source = meta.get("source", "unknown")
-                    content = doc.get("page_content", "") or ""
-                else:
-                    meta = doc.metadata if hasattr(doc, "metadata") else {}
-                    source = meta.get("source", "unknown")
-                    content = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                
-                if source not in immediate_response["files"]:
-                    immediate_response["files"].append(source)
-                
-                
-                snippet = {
-                    "content": content,
-                    "source": source
-                }
-                
-                
-                if isinstance(doc, dict):
-                    meta = doc.get("metadata", {})
-                else:
-                    meta = doc.metadata if hasattr(doc, "metadata") else {}
-                
-                if "catalog_id" in meta:
-                    
-                    snippet["source_type"] = "opencart"
-                    snippet["opencart"] = {
-                        "catalog_id": meta.get("catalog_id"),
-                        "product_id": meta.get("product_id"),
-                        "name": meta.get("name"),
-                        "sku": meta.get("sku"),
-                        "price": meta.get("price"),
-                        "special_price": meta.get("special_price"),
-                        "description": meta.get("description"),
-                        "url": meta.get("url"),
-                        "image": meta.get("image"),
-                        "quantity": meta.get("quantity"),
-                        "rating": meta.get("rating"),
-                        "shop_name": meta.get("shop_name"),
-                        "indexed_at": meta.get("indexed_at")
-                    }
-                else:
-                    snippet["source_type"] = "document"
-                
-                immediate_response["snippets"].append(snippet)
-            except Exception as e:
-                logger.warning(f"Error processing document: {e}")
-        
-        
-        overview = None
-        if request.humanize is None or request.humanize:
-            try:
-                from llm import generate_llm_overview
-                overview = await generate_llm_overview(
-                    request.question,
-                    {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
-                )
-            except Exception as e:
-                logger.error(f"Error generating LLM overview: {e}")
-                overview = "Error generating overview. Showing raw results."
-
-        
-        if tracker:
-            tracker.start_operation("calculate_response_time")
-        response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
-        if tracker:
-            tracker.end_operation("calculate_response_time")
-
-        
-        if tracker:
-            tracker.start_operation("get_client_ip")
-        client_ip = request_obj.client.host if request_obj.client else "unknown"
-        if tracker:
-            tracker.end_operation("get_client_ip")
-
-        
-        if tracker:
-            tracker.start_operation("extract_filenames")
-        filenames_docs = source_docs_raw if source_docs_raw else source_docs
-        source_filenames = []
-        for doc in filenames_docs:
-            try:
-                if isinstance(doc, dict):
-                    meta = doc.get("metadata", {})
-                    source_filenames.append(meta.get("source", "unknown"))
-                elif hasattr(doc, "metadata"):
-                    source_filenames.append(doc.metadata.get("source", "unknown"))
-            except Exception:
-                source_filenames.append("unknown")
-        if tracker:
-            tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
-
-        
-        if tracker:
-            tracker.start_operation("log_metrics")
-        
-        
-        response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
-        
-        
-        if not session_id:
-            logger.error("session_id is None or empty before log_query call")
-            session_id = str(uuid.uuid4())
-        
-        log_query(
-            session_id=session_id,
-            user_id=username,
-            role=role,
-            question=request.question,
-            answer=response_text,
-            model_type=model_type,
-            humanize=request.humanize if request.humanize is not None else True,
-            source_document_count=len(source_docs),
-            security_filtered=security_filtered,
-            source_filenames=immediate_response["files"],
-            ip_address=client_ip or "unknown",
-            response_time_ms=int(response_time)
-        )
-
-        
-        for filename in immediate_response["files"]:
-            log_file_access(
-                user_id=username,
-                role=role,
-                filename=filename,
-                access_type="retrieved_in_rag",
-                session_id=session_id,
-                ip_address=client_ip,
-                query_context=request.question[:100]  
-            )
-
-        
-        insert_application_logs(
-            session_id,
-            request.question,
-            f"Found {len(source_docs)} source documents [Security filtered: {security_filtered}]",
-            model_type
-        )
-        
-        
-        if ADVANCED_ANALYTICS_ENABLED and QueryMetrics:
-            try:
-                analytics = get_analytics_core()
-                if analytics and QueryMetrics:
-                    query_metrics = QueryMetrics(
-                        query_id=session_id,
-                        session_id=session_id,
-                        user_id=username,
-                        role=role,
-                        organization_id=organization_id,
-                        question=request.question,
-                        answer_preview=(response_text[:500] if response_text else None),
-                        answer_length=len(response_text),
-                        model_type=model_type,
-                        query_type=QueryType.RAG_SEARCH if QueryType else "rag_search",
-                        response_time_ms=int(response_time),
-                        source_document_count=len(source_docs),
-                        success=True,
-                        ip_address=client_ip or "unknown"
-                    )
-                    analytics.log_query(query_metrics)
-            except Exception as e:
-                logger.warning(f"Failed to log query to advanced analytics: {e}")
-        
-        if tracker:
-            tracker.end_operation("log_metrics")
-
-        logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
-
-        
-        if not source_docs and not source_docs_raw:
-            from reports_db import submit_report
-            permitted_files = await get_allowed_files(username)
-            if permitted_files is None:
-                permitted_files = []
-            submit_report(
-                user=username,
-                permitted_files=permitted_files,
-                issue=f"No documents found for query: {request.question}"
-            )
-            return APIResponse(
-                status="success",
-                message="No matching documents found",
-                response={
-                    "immediate": {
-                        "files": [],
-                        "snippets": [],
-                        "model": model_type,
-                        "security_info": {
-                            "user_filtered": True,
-                            "username": username,
-                            "source_documents_count": 0,
-                            "security_filtered": security_filtered
-                        }
-                    },
-                    "model": model_type
-                }
-            )
-
-        
-        if request.humanize is None or request.humanize:
-            if tracker:
-                tracker.end_operation("query_start")
-                tracker.log_summary()
-            
-            response_data = {
-                "immediate": immediate_response,
-                "model": model_type,
-                "security_info": immediate_response["security_info"]
-            }
-            
-            if overview is not None:
-                response_data["overview"] = overview
-            
-            return APIResponse(
-                status="success",
-                message=f"Query processed with secure RAG using {model_type} model",
-                response=response_data
-            )
-        else:
-            
-            
-            available_files = await get_available_filenames(username)
-            possible_files_by_title = await get_possible_files_by_title(username)
-
-            rag_chunks = []
-            chunk_docs = source_docs_raw if source_docs_raw else source_docs
-            for doc in chunk_docs:
-                
-                if isinstance(doc, dict):
-                    meta = doc.get("metadata", {})
-                    fname = meta.get("source", "unknown")
-                    chunk = doc.get("page_content", "") or ""
-                else:
-                    fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
-                    chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                
-                base_title = extract_title_from_chunk(chunk)
-                possible_files = possible_files_by_title.get(base_title, []) if base_title else []
-                rag_chunks.append(
-                    f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
-                )
-
-            if tracker:
-                tracker.end_operation("query_start")
-                tracker.log_summary()
-            return APIResponse(
-                status="success",
-                message="Query processed with secure RAG (raw chunks)",
-                response={
-                    "chunks": rag_chunks,
-                    "model": model_type,
-                    "available_files": available_files,
-                    "possible_files_by_title": possible_files_by_title,
-                    "security_info": {
-                        "user_filtered": True,
-                        "username": username,
-                        "source_documents_count": len(source_docs),
-                        "security_filtered": security_filtered
-                    }
-                }
-            )
-    except Exception as e:
-        username_str = user[1] if user and len(user) > 1 else "unknown"
-        logger.exception(f"Secure RAG query processing error for user {username_str}")
-        if tracker:
-            tracker.log_summary()
-        return APIResponse(status="error", message=str(e), response=None)
 
 
 @app.post("/search/opencart", response_model=APIResponse)
@@ -2308,6 +2085,511 @@ async def search_opencart_products(
 from fastapi.responses import PlainTextResponse, JSONResponse, Response
 from urllib.parse import unquote
 
+
+# WebSocket endpoint for streaming query responses
+@app.websocket("/ws/query")
+async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
+    """WebSocket endpoint for streaming RAG queries with real-time responses"""
+    logger = logging.getLogger(__name__)
+    
+    # Authenticate user
+    user = await get_user_from_token(token) if token else None
+    if not user:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    
+    await websocket.accept()
+    logger.info(f"WebSocket connection established for user {user[1]}")
+    
+    try:
+        while True:
+            # Receive query message
+            data = await websocket.receive_json()
+            
+            question = data.get("question")
+            humanize = data.get("humanize", True)
+            session_id = data.get("session_id", str(uuid.uuid4()))
+            
+            if not question:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Question is required"
+                })
+                continue
+            
+            username = user[1]
+            role = user[3]
+            model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+            
+            # Send acknowledgment
+            await websocket.send_json({
+                "type": "status",
+                "message": "Processing query...",
+                "status": "processing"
+            })
+            
+            start_time = datetime.datetime.now()
+            
+            try:
+                # Cleanup expired sessions
+                await cleanup_expired_sessions()
+                
+                # Initialize RAG chain
+                from rag_api.langchain_utils import get_rag_chain
+                rag_chain = get_rag_chain()
+                
+                # Use secure RAG retriever with skip_llm=True for immediate results
+                secure_retriever = SecureRAGRetriever(username)
+                rag_result = await secure_retriever.invoke_secure_rag_chain(
+                    rag_chain=rag_chain,
+                    query=question,
+                    model_type=model_type,
+                    humanize=humanize,
+                    skip_llm=True  # Skip LLM to return documents immediately
+                )
+                
+                # Get source documents
+                source_docs = rag_result.get("source_documents", [])
+                source_docs_raw = rag_result.get("source_documents_raw", [])
+                security_filtered = rag_result.get("security_filtered", False)
+                
+                # Prepare response data
+                immediate_response = {
+                    "files": [],
+                    "snippets": [],
+                    "model": model_type,
+                    "security_info": {
+                        "user_filtered": True,
+                        "username": username,
+                        "source_documents_count": len(source_docs),
+                        "security_filtered": security_filtered
+                    }
+                }
+                
+                # Extract file information and snippets
+                filenames_docs = source_docs_raw if source_docs_raw else source_docs
+                for doc in filenames_docs:
+                    try:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            source = meta.get("source", "unknown")
+                            content = doc.get("page_content", "") or ""
+                        else:
+                            source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+                            content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                        
+                        if source not in immediate_response["files"]:
+                            immediate_response["files"].append(source)
+                        
+                        immediate_response["snippets"].append({
+                            "content": content,
+                            "source": source
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error processing document: {e}")
+                
+                # Send immediate results
+                await websocket.send_json({
+                    "type": "immediate",
+                    "data": immediate_response
+                })
+                
+                # Generate LLM overview if humanize is enabled (in background)
+                if humanize:
+                    try:
+                        from llm import generate_llm_overview
+                        # Generate overview asynchronously without blocking
+                        overview = await generate_llm_overview(
+                            question,
+                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
+                        )
+                        
+                        if overview:
+                            await websocket.send_json({
+                                "type": "overview",
+                                "data": overview
+                            })
+                    except Exception as e:
+                        logger.error(f"Error generating LLM overview: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Error generating overview"
+                        })
+                
+                # Handle non-humanized response (raw chunks)
+                if not humanize:
+                    available_files = await get_available_filenames(username)
+                    possible_files_by_title = await get_possible_files_by_title(username)
+                    
+                    rag_chunks = []
+                    chunk_docs = source_docs_raw if source_docs_raw else source_docs
+                    for doc in chunk_docs:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            fname = meta.get("source", "unknown")
+                            chunk = doc.get("page_content", "") or ""
+                        else:
+                            fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
+                            chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                        
+                        base_title = extract_title_from_chunk(chunk)
+                        possible_files = possible_files_by_title.get(base_title, []) if base_title else []
+                        rag_chunks.append(
+                            f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
+                        )
+                    
+                    await websocket.send_json({
+                        "type": "chunks",
+                        "data": {
+                            "chunks": rag_chunks,
+                            "available_files": available_files,
+                            "possible_files_by_title": possible_files_by_title
+                        }
+                    })
+                
+                # Calculate response time
+                response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+                
+                # Extract source filenames for logging
+                source_filenames = []
+                for doc in filenames_docs:
+                    try:
+                        if isinstance(doc, dict):
+                            meta = doc.get("metadata", {})
+                            source_filenames.append(meta.get("source", "unknown"))
+                        elif hasattr(doc, "metadata"):
+                            source_filenames.append(doc.metadata.get("source", "unknown"))
+                    except Exception:
+                        source_filenames.append("unknown")
+                
+                # Log metrics
+                response_text = rag_result.get("answer", "") if humanize else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
+                
+                # Ensure session_id is valid before logging
+                if not session_id:
+                    logger.error("session_id is None or empty before log_query call in websocket")
+                    session_id = str(uuid.uuid4())
+                
+                log_query(
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=question,
+                    answer=response_text,
+                    model_type=model_type,
+                    humanize=humanize,
+                    source_document_count=len(source_docs),
+                    security_filtered=security_filtered,
+                    source_filenames=immediate_response["files"],
+                    ip_address=websocket.client.host if websocket.client else None,
+                    response_time_ms=int(response_time)
+                )
+                
+                # Log file access
+                for filename in immediate_response["files"]:
+                    log_file_access(
+                        user_id=username,
+                        role=role,
+                        filename=filename,
+                        access_type="retrieved_in_rag",
+                        session_id=session_id,
+                        ip_address=websocket.client.host if websocket.client else None,
+                        query_context=question[:100]
+                    )
+                
+                # Send completion
+                await websocket.send_json({
+                    "type": "complete",
+                    "message": "Query processed successfully",
+                    "response_time_ms": int(response_time)
+                })
+                
+            except Exception as e:
+                logger.exception(f"Error processing WebSocket query for user {username}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(e)
+                })
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for user {user[1] if user else 'unknown'}")
+    except Exception as e:
+        logger.exception(f"WebSocket error: {e}")
+        try:
+            await websocket.close(code=1011, reason="Internal server error")
+        except:
+            pass
+
+# SECURE RAG Query endpoint with file access control (HTTP fallback)
+@app.post("/query", response_model=APIResponse)
+async def process_secure_rag_query(
+    request: RAGQueryRequest,
+    request_obj: Request,
+    user=Depends(get_current_user)
+):
+    """Process a query using RAG with file access security (HTTP fallback for compatibility)"""
+    logger = logging.getLogger(__name__)
+    tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
+
+    try:
+        username = user[1]  # Extract username from user tuple
+        role = user[3]  # Get user role
+        session_id = str(uuid.uuid4())  # Generate session for this query
+        client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
+        # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
+        model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
+
+        # Start time for response time tracking
+        tracker.start_operation("query_start")
+        start_time = datetime.datetime.now()
+
+        # Clean up expired sessions periodically
+        tracker.start_operation("cleanup_sessions")
+        await cleanup_expired_sessions()
+        tracker.end_operation("cleanup_sessions")
+
+        # Initialize the RAG chain
+        tracker.start_operation("init_rag_chain")
+        from rag_api.langchain_utils import get_rag_chain
+        rag_chain = get_rag_chain()
+        tracker.end_operation("init_rag_chain")
+
+        # Use secure RAG retriever that respects file permissions
+        tracker.start_operation("secure_retrieval")
+        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id)
+        rag_result = await secure_retriever.invoke_secure_rag_chain(
+            rag_chain=rag_chain,
+            query=request.question,
+            model_type=model_type,
+            humanize=request.humanize if hasattr(request, 'humanize') else True,
+            skip_llm=True  # Skip LLM to return documents immediately
+        )
+        tracker.end_operation("secure_retrieval")
+
+        # Get the immediate response with source documents
+        source_docs = rag_result.get("source_documents", [])
+        source_docs_raw = rag_result.get("source_documents_raw", [])
+        security_filtered = rag_result.get("security_filtered", False)
+        
+        # Prepare immediate response data
+        immediate_response = {
+            "files": [],
+            "snippets": [],
+            "model": model_type,
+            "security_info": {
+                "user_filtered": True,
+                "username": username,
+                "source_documents_count": len(source_docs),
+                "security_filtered": security_filtered
+            }
+        }
+        
+        # Extract file information and snippets
+        filenames_docs = source_docs_raw if source_docs_raw else source_docs
+        for doc in filenames_docs:
+            try:
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    source = meta.get("source", "unknown")
+                    content = doc.get("page_content", "") or ""
+                else:
+                    source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+                    content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                
+                if source not in immediate_response["files"]:
+                    immediate_response["files"].append(source)
+                
+                immediate_response["snippets"].append({
+                    "content": content,
+                    "source": source
+                })
+            except Exception as e:
+                logger.warning(f"Error processing document: {e}")
+        
+        # Generate LLM overview if humanize is enabled
+        overview = None
+        if request.humanize is None or request.humanize:
+            try:
+                from llm import generate_llm_overview
+                overview = await generate_llm_overview(
+                    request.question,
+                    {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
+                )
+            except Exception as e:
+                logger.error(f"Error generating LLM overview: {e}")
+                overview = "Error generating overview. Showing raw results."
+
+        # Calculate response time
+        tracker.start_operation("calculate_response_time")
+        response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+        tracker.end_operation("calculate_response_time")
+
+        # Get client IP
+        tracker.start_operation("get_client_ip")
+        client_ip = request_obj.client.host if request_obj.client else None
+        tracker.end_operation("get_client_ip")
+
+        # Extract source filenames (prefer raw docs if available)
+        tracker.start_operation("extract_filenames")
+        filenames_docs = source_docs_raw if source_docs_raw else source_docs
+        source_filenames = []
+        for doc in filenames_docs:
+            try:
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    source_filenames.append(meta.get("source", "unknown"))
+                elif hasattr(doc, "metadata"):
+                    source_filenames.append(doc.metadata.get("source", "unknown"))
+            except Exception:
+                source_filenames.append("unknown")
+        tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
+
+        # Log metrics
+        tracker.start_operation("log_metrics")
+        
+        # Create a response text for logging
+        response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
+        
+        # Ensure session_id is valid before logging
+        if not session_id:
+            logger.error("session_id is None or empty before log_query call")
+            session_id = str(uuid.uuid4())
+        
+        log_query(
+            session_id=session_id,
+            user_id=username,
+            role=role,
+            question=request.question,
+            answer=response_text,
+            model_type=model_type,
+            humanize=request.humanize if request.humanize is not None else True,
+            source_document_count=len(source_docs),
+            security_filtered=security_filtered,
+            source_filenames=immediate_response["files"],
+            ip_address=client_ip,
+            response_time_ms=int(response_time)
+        )
+
+        # Log file access for each source document
+        for filename in immediate_response["files"]:
+            log_file_access(
+                user_id=username,
+                role=role,
+                filename=filename,
+                access_type="retrieved_in_rag",
+                session_id=session_id,
+                ip_address=client_ip,
+                query_context=request.question[:100]  # First 100 chars of query
+            )
+
+        # Log the interaction with security info
+        insert_application_logs(
+            session_id,
+            request.question,
+            f"Found {len(source_docs)} source documents [Security filtered: {security_filtered}]",
+            model_type
+        )
+        tracker.end_operation("log_metrics")
+
+        logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
+
+        # If no documents found, auto-submit report
+        if not source_docs and not source_docs_raw:
+            from reports_db import submit_report
+            permitted_files = await get_allowed_files(username)
+            if permitted_files is None:
+                permitted_files = []
+            submit_report(
+                user=username,
+                permitted_files=permitted_files,
+                issue=f"No documents found for query: {request.question}"
+            )
+            return APIResponse(
+                status="success",
+                message="No matching documents found",
+                response={
+                    "immediate": {
+                        "files": [],
+                        "snippets": [],
+                        "model": model_type,
+                        "security_info": {
+                            "user_filtered": True,
+                            "username": username,
+                            "source_documents_count": 0,
+                            "security_filtered": security_filtered
+                        }
+                    },
+                    "model": model_type
+                }
+            )
+
+        # If humanize is True (default): return response with immediate data and optional overview
+        if request.humanize is None or request.humanize:
+            tracker.end_operation("query_start")
+            tracker.log_summary()
+            
+            response_data = {
+                "immediate": immediate_response,
+                "model": model_type,
+                "security_info": immediate_response["security_info"]
+            }
+            
+            if overview is not None:
+                response_data["overview"] = overview
+            
+            return APIResponse(
+                status="success",
+                message=f"Query processed with secure RAG using {model_type} model",
+                response=response_data
+            )
+        else:
+            # If humanize is False: return array of RAG chunks with <filename></filename> tag
+            # Get available filenames and mapping by title, filtered by user permissions
+            available_files = await get_available_filenames(username)
+            possible_files_by_title = await get_possible_files_by_title(username)
+
+            rag_chunks = []
+            chunk_docs = source_docs_raw if source_docs_raw else source_docs
+            for doc in chunk_docs:
+                # Try to get filename from doc metadata, fallback to 'unknown'
+                if isinstance(doc, dict):
+                    meta = doc.get("metadata", {})
+                    fname = meta.get("source", "unknown")
+                    chunk = doc.get("page_content", "") or ""
+                else:
+                    fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
+                    chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
+                # Try to extract a base title from the chunk and map to possible filenames
+                base_title = extract_title_from_chunk(chunk)
+                possible_files = possible_files_by_title.get(base_title, []) if base_title else []
+                rag_chunks.append(
+                    f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
+                )
+
+            tracker.end_operation("query_start")
+            tracker.log_summary()
+            return APIResponse(
+                status="success",
+                message="Query processed with secure RAG (raw chunks)",
+                response={
+                    "chunks": rag_chunks,
+                    "model": model_type,
+                    "available_files": available_files,
+                    "possible_files_by_title": possible_files_by_title,
+                    "security_info": {
+                        "user_filtered": True,
+                        "username": username,
+                        "source_documents_count": len(source_docs),
+                        "security_filtered": security_filtered
+                    }
+                }
+            )
+    except Exception as e:
+        logger.exception(f"Secure RAG query processing error for user {username if 'username' in locals() else 'unknown'}")
+        tracker.log_summary()
+        return APIResponse(status="error", message=str(e), response=None)
+from fastapi.responses import PlainTextResponse
+from urllib.parse import unquote
 
 @app.get("/files/content/{filename}")
 async def get_file_content(
@@ -3222,8 +3504,14 @@ async def get_accounts(current_user=Depends(get_current_user)):
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required.")
     
-    users = await list_users(organization_id=organization_id)
-    return users
+    try:
+        import userdb
+        users = await userdb.list_users(organization_id=organization_id)
+        return users
+        
+    except Exception as e:
+        logger.exception("Error getting accounts")
+        raise HTTPException(status_code=500, detail=f"Failed to get accounts: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
@@ -3274,6 +3562,7 @@ async def delete_user_endpoint(
 @app.post("/user/edit", response_model=APIResponse)
 async def edit_user_endpoint(
     request: UserEditRequest,
+    request_obj: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
     is_admin = False
@@ -3296,9 +3585,32 @@ async def edit_user_endpoint(
                         pass
     if not (is_admin or is_master):
         raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    # Validate input
+    if not request.username:
+        return APIResponse(status="error", message="Username is required", response={})
+    
+    if request.role and request.role not in ["admin", "user"]:
+        return APIResponse(
+            status="error", 
+            message="Role must be either 'admin' or 'user'", 
+            response={}
+        )
+    
+    # Check if user exists
     user = await get_user(request.username)
     if not user:
         return APIResponse(status="error", message="User not found", response={})
+    
+    # Check if new username already exists (if changing username)
+    if request.new_username and request.new_username != request.username:
+        existing_user = await get_user(request.new_username)
+        if existing_user:
+            return APIResponse(
+                status="error", 
+                message=f"Username '{request.new_username}' already exists", 
+                response={}
+            )
     
     
     if is_admin and admin_user:
@@ -3308,53 +3620,330 @@ async def edit_user_endpoint(
             raise HTTPException(status_code=403, detail="Cannot edit users from other organizations.")
     
     logs = []
+    client_ip = None
+    if hasattr(request_obj, 'client') and request_obj.client:
+        client_ip = request_obj.client.host
+    
     import userdb
     
-    if request.new_username:
-        await userdb.update_username(request.username, request.new_username)
-        logs.append(f"Username changed to {request.new_username}")
-        request.username = request.new_username
-    
-    if request.password:
-        await userdb.update_password(request.username, request.password)
-        logs.append("Password updated")
-    
-    if request.role:
-        await userdb.update_role(request.username, request.role)
-        logs.append(f"Role changed to {request.role}")
-    
-    if request.allowed_files is not None:
-        previous_files = await userdb.get_allowed_files(request.username)
-        await userdb.update_allowed_files(request.username, request.allowed_files)
-        logs.append(f"Allowed files updated to {request.allowed_files}")
-
+    try:
+        if request.new_username and request.new_username != request.username:
+            await userdb.update_username(request.username, request.new_username)
+            logs.append(f"Username changed to {request.new_username}")
+            old_username = request.username
+            request.username = request.new_username
+            
+            # Log the username change
+            log_event(
+                event_type="username_updated",
+                user_id=admin_user[1] if admin_user else "master",
+                ip_address=client_ip,
+                role=admin_user[3] if admin_user else "master",
+                success=True,
+                details={
+                    "old_username": old_username,
+                    "new_username": request.new_username
+                }
+            )
         
-        if previous_files and request.allowed_files:
-            new_files = set(request.allowed_files) - set(previous_files if previous_files else [])
-            if new_files:
-                from rag_api.db_utils import get_file_content_by_filename
-                from rag_api.chroma_utils import index_document_to_chroma
-                import tempfile
-                import os
+        if request.password:
+            # Basic password validation
+            if len(request.password) < 6:
+                return APIResponse(
+                    status="error", 
+                    message="Password must be at least 6 characters long", 
+                    response={}
+                )
+            
+            await userdb.update_password(request.username, request.password)
+            logs.append("Password updated")
+            
+            # Log password change
+            log_event(
+                event_type="password_updated",
+                user_id=admin_user[1] if admin_user else "master",
+                ip_address=client_ip,
+                role=admin_user[3] if admin_user else "master",
+                success=True,
+                details={"username": request.username}
+            )
+        
+        if request.role:
+            current_role = user[3] if len(user) > 3 else None
+            if request.role != current_role:
+                await userdb.update_role(request.username, request.role)
+                logs.append(f"Role changed to {request.role}")
+                
+                # Log role change
+                log_event(
+                    event_type="role_updated",
+                    user_id=admin_user[1] if admin_user else "master",
+                    ip_address=client_ip,
+                    role=admin_user[3] if admin_user else "master",
+                    success=True,
+                    details={
+                        "username": request.username,
+                        "old_role": current_role,
+                        "new_role": request.role
+                    }
+                )
+        
+        if request.allowed_files is not None:
+            previous_files = await userdb.get_allowed_files(request.username)
+            await userdb.update_allowed_files(request.username, request.allowed_files)
+            logs.append(f"Allowed files updated to {request.allowed_files}")
+            
+            # Log file permissions change
+            log_event(
+                event_type="file_permissions_updated",
+                user_id=admin_user[1] if admin_user else "master",
+                ip_address=client_ip,
+                role=admin_user[3] if admin_user else "master",
+                success=True,
+                details={
+                    "username": request.username,
+                    "previous_files": previous_files,
+                    "new_files": request.allowed_files
+                }
+            )
 
-                for filename in new_files:
+            
+            if previous_files and request.allowed_files:
+                new_files = set(request.allowed_files) - set(previous_files if previous_files else [])
+                if new_files:
+                    from rag_api.db_utils import get_file_content_by_filename
+                    from rag_api.chroma_utils import index_document_to_chroma
+                    import tempfile
+
+                    for filename in new_files:
+                        try:
+                            content = get_file_content_by_filename(filename)
+                            if content:
+                                
+                                with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+                                    temp_file.write(content)
+                                    temp_path = temp_file.name
+
+                                
+                                index_document_to_chroma(temp_path, filename)
+                                os.unlink(temp_path)  
+                        except Exception as e:
+                            logger.error(f"Error reindexing file {filename} after permission update: {e}")
+
+        # Log the overall edit operation
+        log_event(
+            event_type="user_edited",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "edited_username": request.username,
+                "changes": logs
+            }
+        )
+
+        if not logs:
+            return APIResponse(status="success", message="No changes made", response={})
+        
+        logger.info(f"User '{request.username}' edited by {admin_user[1] if admin_user else 'master'}: {'; '.join(logs)}")
+        
+        return APIResponse(
+            status="success", 
+            message=f"User updated: {'; '.join(logs)}", 
+            response={
+                "username": request.username,
+                "changes": logs,
+                "edited_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error editing user '{request.username}'")
+        return APIResponse(status="error", message=f"Failed to update user: {str(e)}", response={})
+
+
+@app.get("/users", response_model=APIResponse)
+async def list_users(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    request_obj: Request = None
+):
+    """
+    List all users. Requires admin authentication or master key.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
                     try:
-                        content = get_file_content_by_filename(filename)
-                        if content:
-                            
-                            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
-                                temp_file.write(content)
-                                temp_path = temp_file.name
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    try:
+        import userdb
+        
+        # Get organization context for admin users
+        organization_id = None
+        if is_admin and admin_user:
+            organization_id = _get_active_org_id(admin_user)
+        
+        # Get users
+        users = await userdb.get_all_users(organization_id=organization_id)
+        
+        # Format user data
+        user_list = []
+        for user in users:
+            user_data = {
+                "id": user[0] if len(user) > 0 else None,
+                "username": user[1] if len(user) > 1 else None,
+                "role": user[3] if len(user) > 3 else None,
+                "created_at": user[5] if len(user) > 5 else None,
+                "organization_id": user[7] if len(user) > 7 else None,
+                "allowed_files": user[8] if len(user) > 8 else []
+            }
+            user_list.append(user_data)
+        
+        # Log the listing operation
+        log_event(
+            event_type="users_listed",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "organization_id": organization_id,
+                "user_count": len(user_list)
+            }
+        )
+        
+        logger.info(f"Users listed by {admin_user[1] if admin_user else 'master'}: {len(user_list)} users")
+        
+        return APIResponse(
+            status="success",
+            message=f"Retrieved {len(user_list)} users",
+            response={
+                "users": user_list,
+                "count": len(user_list),
+                "organization_id": organization_id,
+                "listed_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+    except Exception as e:
+        logger.exception("Error listing users")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to list users: {str(e)}", 
+            response=None
+        )
 
-                            
-                            index_document_to_chroma(temp_path, filename)
-                            os.unlink(temp_path)  
-                    except Exception as e:
-                        logger.error(f"Error reindexing file {filename} after permission update: {e}")
 
-    if not logs:
-        return APIResponse(status="success", message="No changes made", response={})
-    return APIResponse(status="success", message="; ".join(logs), response={})
+@app.get("/user/{username}", response_model=APIResponse)
+async def get_user_details(
+    username: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    request_obj: Request = None
+):
+    """
+    Get details for a specific user. Requires admin authentication or master key.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    try:
+        # Get user
+        user = await get_user(username)
+        if not user:
+            return APIResponse(
+                status="error", 
+                message=f"User '{username}' not found", 
+                response=None
+            )
+        
+        # Check organization permissions for admin users
+        if is_admin and admin_user:
+            admin_org_id = _get_active_org_id(admin_user)
+            user_org_id = user[7] if len(user) > 7 else None  
+            if admin_org_id != user_org_id:
+                raise HTTPException(status_code=403, detail="Cannot view users from other organizations.")
+        
+        # Format user data
+        user_data = {
+            "id": user[0] if len(user) > 0 else None,
+            "username": user[1] if len(user) > 1 else None,
+            "role": user[3] if len(user) > 3 else None,
+            "created_at": user[5] if len(user) > 5 else None,
+            "organization_id": user[7] if len(user) > 7 else None,
+            "allowed_files": user[8] if len(user) > 8 else []
+        }
+        
+        # Log the view operation
+        log_event(
+            event_type="user_viewed",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "viewed_username": username,
+                "organization_id": user_data["organization_id"]
+            }
+        )
+        
+        return APIResponse(
+            status="success",
+            message=f"Retrieved details for user '{username}'",
+            response=user_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error getting user details for '{username}'")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to get user details: {str(e)}", 
+            response=None
+        )
 
 
 @app.put("/user/{username}", response_model=APIResponse)
