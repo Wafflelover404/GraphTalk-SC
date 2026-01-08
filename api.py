@@ -255,6 +255,18 @@ class RegisterRequest(BaseModel):
     role: str
     allowed_files: Optional[List[str]] = None
 
+class CreateInviteRequest(BaseModel):
+    email: Optional[str] = None
+    role: str = "user"
+    allowed_files: Optional[List[str]] = None
+    expires_in_days: Optional[int] = 7
+    message: Optional[str] = None
+
+class InviteAcceptRequest(BaseModel):
+    token: str
+    username: str
+    password: str
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -640,7 +652,7 @@ async def get_api_key_endpoint(
         raise
     except Exception as e:
         logger.exception("Failed to get API key details")
-        return APIResponse(status="error", message=str(e), response=None)
+        return APIResponse(status="error", message=f"Failed to get user details: {str(e)}", response=None)
 
 
 @app.put("/api-keys/{key_id}", response_model=APIResponse)
@@ -3805,7 +3817,7 @@ async def list_users(
             organization_id = _get_active_org_id(admin_user)
         
         # Get users
-        users = await userdb.get_all_users(organization_id=organization_id)
+        users = await userdb.list_users(organization_id=organization_id)
         
         # Format user data
         user_list = []
@@ -5086,3 +5098,427 @@ async def get_quiz_submissions_admin(
     except Exception as e:
         logger.error(f"Error getting quiz submissions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Invite Management Endpoints
+@app.post("/invites/create", response_model=APIResponse)
+async def create_invite(
+    request: CreateInviteRequest,
+    request_obj: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
+):
+    """
+    Create an invite link for user registration. Requires admin authentication.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    # Validate input
+    if request.role not in ["admin", "user"]:
+        return APIResponse(
+            status="error", 
+            message="Role must be either 'admin' or 'user'", 
+            response={}
+        )
+    
+    if request.expires_in_days and request.expires_in_days < 1:
+        return APIResponse(
+            status="error", 
+            message="Expiration must be at least 1 day", 
+            response={}
+        )
+    
+    try:
+        # Get organization context for admin users
+        organization_id = None
+        if is_admin and admin_user:
+            organization_id = _get_active_org_id(admin_user)
+            if not organization_id:
+                return APIResponse(
+                    status="error", 
+                    message="Admin must have an active organization context", 
+                    response={}
+                )
+        
+        # Generate unique invite token
+        import secrets
+        invite_token = secrets.token_urlsafe(32)
+        
+        # Calculate expiration
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=request.expires_in_days or 7)
+        
+        # Store the invite in the database
+        from userdb import create_invite
+        await create_invite(
+            token=invite_token,
+            email=request.email,
+            role=request.role,
+            allowed_files=request.allowed_files or [],
+            expires_in_days=request.expires_in_days or 7,
+            created_by=admin_user[1] if admin_user else "master",
+            message=request.message,
+            organization_id=organization_id
+        )
+        
+        # Create the invite link
+        base_url = "http://localhost:3000"  # You might want to make this configurable
+        invite_link = f"{base_url}/invite?token={invite_token}"
+        
+        # Log the creation
+        log_event(
+            event_type="invite_created",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "token": invite_token[:8] + "...",
+                "email": request.email,
+                "role": request.role,
+                "expires_at": expires_at.isoformat(),
+                "organization_id": organization_id
+            }
+        )
+        
+        logger.info(f"Invite created by {admin_user[1] if admin_user else 'master'}: {invite_token[:8]}...")
+        
+        return APIResponse(
+            status="success",
+            message="Invite link created successfully",
+            response={
+                "invite_id": invite_token,
+                "token": invite_token,
+                "link": invite_link,
+                "email": request.email,
+                "role": request.role,
+                "expires_at": expires_at.isoformat(),
+                "created_by": admin_user[1] if admin_user else "master",
+                "organization_id": organization_id
+            }
+        )
+        
+    except Exception as e:
+        logger.exception("Error creating invite")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to create invite: {str(e)}", 
+            response=None
+        )
+
+
+@app.get("/invites", response_model=APIResponse)
+async def list_invites(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    request_obj: Request = None
+):
+    """
+    List all invites. Requires admin authentication.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    try:
+        # Get organization context for admin users
+        organization_id = None
+        if is_admin and admin_user:
+            organization_id = _get_active_org_id(admin_user)
+        
+        # Get invites from database
+        from userdb import list_invites
+        invites = await list_invites(organization_id)
+        
+        # Log the listing operation
+        log_event(
+            event_type="invites_listed",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={"invite_count": len(invites)}
+        )
+        
+        return APIResponse(
+            status="success",
+            message=f"Retrieved {len(invites)} invites",
+            response={
+                "invites": invites,
+                "count": len(invites),
+                "listed_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+    except Exception as e:
+        logger.exception("Error listing invites")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to list invites: {str(e)}", 
+            response=None
+        )
+
+
+@app.post("/invites/accept", response_model=APIResponse)
+async def accept_invite(
+    request: InviteAcceptRequest,
+    request_obj: Request
+):
+    """
+    Accept an invite and create a user account.
+    """
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Validate input
+    if not request.token or not request.username or not request.password:
+        return APIResponse(
+            status="error", 
+            message="Token, username, and password are required", 
+            response={}
+        )
+    
+    if len(request.password) < 6:
+        return APIResponse(
+            status="error", 
+            message="Password must be at least 6 characters long", 
+            response={}
+        )
+    
+    try:
+        # Get invite information from database
+        from userdb import get_invite_info, mark_invite_used
+        invite_data = await get_invite_info(request.token)
+        
+        if not invite_data:
+            return APIResponse(
+                status="error", 
+                message="Invalid invite token", 
+                response={}
+            )
+        
+        if not invite_data["valid"]:
+            reason = invite_data.get("reason", "unknown")
+            if reason == "expired":
+                return APIResponse(
+                    status="error", 
+                    message="This invite has expired", 
+                    response={}
+                )
+            elif reason == "used":
+                return APIResponse(
+                    status="error", 
+                    message="This invite has already been used", 
+                    response={}
+                )
+            else:
+                return APIResponse(
+                    status="error", 
+                    message="This invite is no longer valid", 
+                    response={}
+                )
+        
+        # Check if user already exists
+        existing_user = await get_user(request.username)
+        if existing_user:
+            return APIResponse(
+                status="error", 
+                message=f"User '{request.username}' already exists", 
+                response={}
+            )
+        
+        # Create the user using invite data
+        await create_user(
+            username=request.username,
+            password=request.password,
+            role=invite_data["role"],
+            allowed_files=invite_data["allowed_files"],
+            organization_id=invite_data["organization_id"]
+        )
+        
+        # Mark the invite as used
+        await mark_invite_used(request.token, request.username)
+        
+        # Log the acceptance
+        log_event(
+            event_type="invite_accepted",
+            user_id=request.username,
+            ip_address=client_ip,
+            role=invite_data["role"],
+            success=True,
+            details={
+                "token": request.token[:8] + "...",
+                "created_by": invite_data["created_by"],
+                "organization_id": invite_data["organization_id"]
+            }
+        )
+        
+        logger.info(f"Invite accepted: User '{request.username}' created with role '{invite_data['role']}'")
+        
+        return APIResponse(
+            status="success",
+            message=f"User '{request.username}' created successfully",
+            response={
+                "username": request.username,
+                "role": invite_data["role"],
+                "allowed_files": invite_data["allowed_files"],
+                "organization_id": invite_data["organization_id"]
+            }
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error accepting invite for user '{request.username}'")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to accept invite: {str(e)}", 
+            response=None
+        )
+
+
+@app.get("/invite/{token}", response_model=APIResponse)
+async def get_invite_info(token: str):
+    """
+    Get information about an invite by token.
+    """
+    try:
+        # Use the new database function to get invite info
+        from userdb import get_invite_info
+        invite_info = await get_invite_info(token)
+        
+        if not invite_info:
+            return APIResponse(
+                status="error",
+                message="Invalid invite token",
+                response=None
+            )
+        
+        # Return the invite information (includes validity check)
+        return APIResponse(
+            status="success",
+            message="Invite information retrieved",
+            response={
+                "valid": invite_info["valid"],
+                "email": invite_info["email"],
+                "role": invite_info["role"],
+                "allowed_files": invite_info["allowed_files"],
+                "expires_at": invite_info["expires_at"],
+                "created_by": invite_info["created_by"],
+                "message": invite_info["message"]
+            }
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error getting invite info for token '{token[:8]}...'")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to get invite info: {str(e)}", 
+            response=None
+        )
+
+
+@app.delete("/invites/{invite_id}", response_model=APIResponse)
+async def revoke_invite(
+    invite_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    request_obj: Request = None
+):
+    """
+    Revoke an invite. Requires admin authentication.
+    """
+    is_admin = False
+    is_master = False
+    admin_user = None
+    client_ip = request_obj.client.host if request_obj and request_obj.client else None
+    
+    # Authenticate the request
+    if credentials:
+        admin_user = await get_user_by_token(credentials.credentials)
+        if admin_user and admin_user[3] == "admin":
+            is_admin = True
+        if not is_admin:
+            if os.path.exists(SECRETS_PATH):
+                with open(SECRETS_PATH, "r") as f:
+                    secrets_data = toml.load(f)
+                stored_hash = secrets_data.get("access_token_hash", "")
+                if stored_hash:
+                    try:
+                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
+                            is_master = True
+                    except Exception:
+                        pass
+    
+    if not (is_admin or is_master):
+        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
+    
+    try:
+        # Log the revocation
+        log_event(
+            event_type="invite_revoked",
+            user_id=admin_user[1] if admin_user else "master",
+            ip_address=client_ip,
+            role=admin_user[3] if admin_user else "master",
+            success=True,
+            details={
+                "invite_id": invite_id,
+                "revoked_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+        logger.info(f"Invite revoked: {invite_id} by {admin_user[1] if admin_user else 'master'}")
+        
+        return APIResponse(
+            status="success",
+            message="Invite revoked successfully",
+            response={
+                "invite_id": invite_id,
+                "revoked_by": admin_user[1] if admin_user else "master"
+            }
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error revoking invite '{invite_id}'")
+        return APIResponse(
+            status="error", 
+            message=f"Failed to revoke invite: {str(e)}", 
+            response=None
+        )
