@@ -40,6 +40,7 @@ from orgdb import (
     init_org_db,
     create_organization,
     get_organization_by_slug,
+    get_organization_by_id,
     create_organization_membership,
 )
 from rag_security import SecureRAGRetriever, get_filtered_rag_context
@@ -304,8 +305,23 @@ def _slugify_org_name(name: str) -> str:
 def _get_active_org_id(user_tuple):
     """Extract organization_id from the authenticated user session tuple."""
     try:
-        if user_tuple and len(user_tuple) >= 11:
+        if not user_tuple:
+            return None
+
+        # API key tuples are a special format (see get_current_user)
+        # Format: (id, name, type, role, permissions, created_at, last_used, organization_id)
+        if len(user_tuple) >= 8 and user_tuple[3] == "api_key":
+            return user_tuple[7]
+
+        # Session tuples come from get_user_by_session_id:
+        # SELECT u.*, s.created_at, s.last_activity, s.expires_at, s.organization_id
+        if len(user_tuple) >= 12:
             return user_tuple[-1]
+
+        # User tuples come from users table (get_user/get_user_by_token):
+        # (id, username, password_hash, role, access_token, allowed_files, last_login, organization_id)
+        if len(user_tuple) >= 8:
+            return user_tuple[7]
     except Exception:
         pass
     return None
@@ -2165,10 +2181,16 @@ async def validate_token(user=Depends(get_current_user)):
     Returns: {status, created, expires}
     """
     try:
-        # user is (id, username, password_hash, role, allowed_files, created_at, last_login)
         username = user[1]
         role = user[3]
         created_at = user[5] if len(user) > 5 else None
+
+        organization_id = _get_active_org_id(user)
+        organization_name = None
+        if organization_id:
+            org_row = await get_organization_by_id(organization_id)
+            if org_row and len(org_row) > 1:
+                organization_name = org_row[1]
         
         logger.debug(f"Token validated for user: {username}")
         
@@ -2179,7 +2201,10 @@ async def validate_token(user=Depends(get_current_user)):
                 "valid": True,
                 "username": username,
                 "role": role,
-                "created_at": created_at
+                "created_at": created_at,
+                "organization_id": organization_id,
+                "organization_name": organization_name,
+                "organization": organization_name,
             }
         )
     except Exception as e:
@@ -3243,7 +3268,7 @@ async def search_opencart_products(
         logger.exception(f"OpenCart search processing error for user {username if 'username' in locals() else 'unknown'}")
         return APIResponse(status="error", message=str(e), response=None)
 
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, Response
 from urllib.parse import unquote
 
 # Endpoint to return file content by filename (from DB) or OpenCart product data
@@ -3356,7 +3381,59 @@ async def get_file_content(
         logger.warning(f"File not found in DB: {decoded_filename}")
         raise HTTPException(status_code=404, detail="File not found.")
     try:
-        # Try decode as utf-8, fallback to latin1 if needed
+        # If this is a known binary format, return raw bytes with correct content-type.
+        # Frontend will convert blob -> base64 when needed.
+        ext = os.path.splitext(resolved_filename)[1].lower()
+        binary_mime_types = {
+            ".pdf": "application/pdf",
+            ".doc": "application/msword",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xls": "application/vnd.ms-excel",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }
+        binary_mime = binary_mime_types.get(ext)
+
+        if binary_mime:
+            if include_quiz:
+                import base64 as _base64
+
+                # Fetch the latest quiz for this file, if any
+                quiz_row = await get_quiz_by_filename(resolved_filename)
+                quiz_payload: Dict[str, Any]
+                if quiz_row:
+                    try:
+                        quiz_dict = json.loads(quiz_row[3]) if quiz_row[3] else None
+                    except Exception:
+                        quiz_dict = {"questions": [], "raw": quiz_row[3]}
+                    quiz_payload = {
+                        "id": quiz_row[0],
+                        "filename": quiz_row[1],
+                        "timestamp": quiz_row[2],
+                        "quiz": quiz_dict,
+                        "logs": quiz_row[4],
+                    }
+                else:
+                    quiz_payload = {}
+
+                return JSONResponse(
+                    content={
+                        "filename": resolved_filename,
+                        "content": _base64.b64encode(content_bytes).decode("ascii"),
+                        "isBinary": True,
+                        "mimeType": binary_mime,
+                        "quiz": quiz_payload,
+                    }
+                )
+
+            return Response(content=content_bytes, media_type=binary_mime)
+
+        # Otherwise treat as text
         try:
             content = content_bytes.decode("utf-8")
         except UnicodeDecodeError:

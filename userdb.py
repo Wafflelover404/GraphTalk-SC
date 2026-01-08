@@ -143,21 +143,26 @@ async def verify_user(username: str, password: str):
     return False
 async def list_users(organization_id: Optional[str] = None):
     """
-    Returns a list of users with username, role, and last_login.
+    Returns a list of users with username, role, last_login, allowed_files, and organization_id.
     If organization_id is provided, returns only users in that organization.
     """
     async with aiosqlite.connect(DB_PATH) as conn:
         if organization_id:
-            async with conn.execute('SELECT username, role, last_login FROM users WHERE organization_id = ?', (organization_id,)) as cursor:
+            async with conn.execute(
+                'SELECT username, role, last_login, allowed_files, organization_id FROM users WHERE organization_id = ?',
+                (organization_id,),
+            ) as cursor:
                 users = await cursor.fetchall()
         else:
-            async with conn.execute('SELECT username, role, last_login FROM users') as cursor:
+            async with conn.execute('SELECT username, role, last_login, allowed_files, organization_id FROM users') as cursor:
                 users = await cursor.fetchall()
         return [
             {
                 'username': u[0],
                 'role': u[1],
-                'last_login': u[2]
+                'last_login': u[2],
+                'allowed_files': (u[3].split(',') if u[3] else []),
+                'organization_id': u[4]
             } for u in users
         ]
 
