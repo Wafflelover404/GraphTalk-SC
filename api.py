@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Depends, status, Body, WebSocket, WebSocketDisconnect
 from typing import Optional, List, Union, Dict, Any
 import datetime
+import aiofiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -2839,6 +2840,83 @@ async def secure_chat(
                 logger.error(f"Failed to index {original_filename} (ID: {file_id})")
                 raise HTTPException(status_code=500, detail=f"Failed to index {original_filename}.")
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"File upload failed for {original_filename}: {str(e)}")
+        logger.error(f"  - Upload ID: {upload_id}")
+        logger.error(f"  - File type: {file_extension}")
+        raise HTTPException(500, f"Failed to upload file: {e}")
+
+
+@app.post("/files/upload", response_model=APIResponse, tags=["Documents"])
+async def upload_file(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user)
+):
+    organization_id = _get_active_org_id(current_user)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Organization context required for upload.")
+
+    allowed_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md', '.zip']
+    file_extension = os.path.splitext(file.filename or "")[1].lower()
+
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed types are: {', '.join(allowed_extensions)}"
+        )
+
+    upload_id = str(uuid.uuid4())
+    timestamp = datetime.datetime.utcnow().isoformat()
+    original_filename = file.filename or "unknown"
+    file_extension = os.path.splitext(original_filename)[1].lower()
+
+    try:
+        content_bytes = await file.read()
+        
+        logger.info(f"Starting upload: {original_filename}")
+        logger.info(f"  - Upload ID: {upload_id}")
+        logger.info(f"  - User: {current_user[1]}")
+        logger.info(f"  - File type: {file_extension}")
+        logger.info(f"  - File size: {len(content_bytes)} bytes")
+        logger.info(f"  - Timestamp: {timestamp}")
+        
+        # Save file to upload directory
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        file_path = os.path.join(UPLOAD_DIR, original_filename)
+        
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content_bytes)
+        
+        # Add document to database
+        document_id = add_document(
+            filename=original_filename,
+            content=content_bytes.decode('utf-8', errors='ignore'),
+            organization_id=organization_id,
+            metadata={
+                "upload_id": upload_id,
+                "timestamp": timestamp,
+                "file_size": len(content_bytes),
+                "file_type": file_extension,
+                "uploaded_by": current_user[1]
+            }
+        )
+        
+        logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {document_id}, Upload ID: {upload_id})")
+        
+        return APIResponse(
+            status="success", 
+            message=f"File uploaded successfully: {original_filename}",
+            response={
+                "filename": original_filename,
+                "document_id": document_id,
+                "upload_id": upload_id,
+                "file_size": len(content_bytes),
+                "timestamp": timestamp
+            }
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
