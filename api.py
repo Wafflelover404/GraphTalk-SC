@@ -2890,17 +2890,10 @@ async def upload_file(
             await buffer.write(content_bytes)
         
         # Add document to database
-        document_id = add_document(
+        document_id = insert_document_record(
             filename=original_filename,
-            content=content_bytes.decode('utf-8', errors='ignore'),
-            organization_id=organization_id,
-            metadata={
-                "upload_id": upload_id,
-                "timestamp": timestamp,
-                "file_size": len(content_bytes),
-                "file_type": file_extension,
-                "uploaded_by": current_user[1]
-            }
+            content_bytes=content_bytes,
+            organization_id=organization_id
         )
         
         logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {document_id}, Upload ID: {upload_id})")
