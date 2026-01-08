@@ -4146,13 +4146,17 @@ async def create_quiz(
     request_obj: Request,
     current_user=Depends(get_current_user)
 ):
+    logger.info(f"Quiz creation attempt by user: {current_user[1]} with role: {current_user[3]}")
+    
     if current_user[3] != "admin":
+        logger.warning(f"Non-admin user {current_user[1]} attempted to create quiz")
         raise HTTPException(status_code=403, detail="Admin access required")
     
     organization_id = _get_active_org_id(current_user)
+    logger.info(f"Organization ID: {organization_id}")
     
     try:
-        
+        logger.info(f"Creating quiz: {quiz_data.title}")
         questions = [QuizQuestion(**q.dict()) for q in quiz_data.questions]
         
         quiz_id = await create_manual_quiz(
@@ -4166,6 +4170,8 @@ async def create_quiz(
             created_by=current_user[1],
             organization_id=organization_id
         )
+        
+        logger.info(f"Quiz created successfully with ID: {quiz_id}")
         
         return APIResponse(
             status="success",
