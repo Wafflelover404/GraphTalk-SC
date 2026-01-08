@@ -36,6 +36,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
         user_id = None
         role = None
         session_id = None
+        organization_id = None
         
         try:
             from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -44,12 +45,24 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
             if auth_header and auth_header.startswith('Bearer '):
                 token = auth_header[7:]
                 # Try to get user from token
-                from userdb import get_user_by_token
-                user = await get_user_by_token(token)
+                from userdb import get_user_by_session_id, get_user_by_token
+
+                user = await get_user_by_session_id(token)
+                if not user:
+                    user = await get_user_by_token(token)
                 if user:
                     user_id = user[1]  # username
                     role = user[3]  # role
                     session_id = token
+
+                    # Extract organization_id (mirrors api.py _get_active_org_id logic)
+                    try:
+                        if len(user) >= 12:
+                            organization_id = user[-1]
+                        elif len(user) >= 8:
+                            organization_id = user[7]
+                    except Exception:
+                        organization_id = None
         except Exception as e:
             logger.debug(f"Could not extract user info: {e}")
         
@@ -57,6 +70,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
         request.state.user_id = user_id
         request.state.role = role
         request.state.session_id = session_id
+        request.state.organization_id = organization_id
         request.state.start_time = start_time
         request.state.endpoint = endpoint
         request.state.client_ip = client_ip
@@ -78,6 +92,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
                 message=str(e),
                 endpoint=endpoint,
                 user_id=user_id,
+                organization_id=organization_id,
                 ip_address=client_ip,
                 method=method
             )
@@ -99,6 +114,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
             endpoint=endpoint,
             method=method,
             user_id=user_id,
+            organization_id=organization_id,
             status_code=response.status_code,
             response_time_ms=response_time_ms,
             request_size_bytes=request_size,
@@ -114,6 +130,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
             method=method,
             user_id=user_id,
             session_id=session_id,
+            organization_id=organization_id,
             success=(response.status_code < 400),
             response_time_ms=response_time_ms,
             ip_address=client_ip
@@ -125,6 +142,7 @@ class AdvancedAnalyticsMiddleware(BaseHTTPMiddleware):
             method=method,
             status_code=response.status_code,
             user_id=user_id,
+            organization_id=organization_id,
             ip_address=client_ip
         )
         
@@ -135,6 +153,7 @@ async def log_endpoint_access(
     endpoint: str,
     method: str,
     user_id: Optional[str],
+    organization_id: Optional[str],
     status_code: int,
     response_time_ms: int,
     request_size_bytes: int = 0,
@@ -152,6 +171,7 @@ async def log_endpoint_access(
             endpoint=endpoint,
             method=method,
             user_id=user_id,
+            organization_id=organization_id,
             status_code=status_code,
             response_time_ms=response_time_ms,
             request_size=request_size_bytes,
@@ -167,6 +187,7 @@ async def log_user_behavior_by_endpoint(
     method: str,
     user_id: Optional[str],
     session_id: Optional[str],
+    organization_id: Optional[str],
     success: bool,
     response_time_ms: int,
     ip_address: str = None
@@ -201,6 +222,7 @@ async def log_user_behavior_by_endpoint(
         event = UserBehaviorEvent(
             user_id=user_id,
             session_id=session_id,
+            organization_id=organization_id,
             event_type=event_type,
             event_subtype=event_subtype,
             duration_seconds=response_time_ms // 1000,
@@ -224,6 +246,7 @@ async def log_security_events_by_endpoint(
     method: str,
     status_code: int,
     user_id: Optional[str],
+    organization_id: Optional[str],
     ip_address: str = None
 ):
     """Log security-relevant events"""
@@ -236,6 +259,7 @@ async def log_security_events_by_endpoint(
             event = SecurityEvent(
                 event_type=SecurityEventType.FAILED_LOGIN,
                 user_id=user_id,
+                organization_id=organization_id,
                 ip_address=ip_address,
                 severity='medium'
             )
@@ -246,6 +270,7 @@ async def log_security_events_by_endpoint(
             event = SecurityEvent(
                 event_type=SecurityEventType.UNAUTHORIZED_ACCESS,
                 user_id=user_id,
+                organization_id=organization_id,
                 ip_address=ip_address,
                 severity='high'
             )
@@ -256,6 +281,7 @@ async def log_security_events_by_endpoint(
             event = SecurityEvent(
                 event_type=SecurityEventType.PERMISSION_DENIED,
                 user_id=user_id,
+                organization_id=organization_id,
                 ip_address=ip_address,
                 severity='medium',
                 details={'endpoint': endpoint}
@@ -270,6 +296,7 @@ async def log_error_event(
     message: str,
     endpoint: str = None,
     user_id: str = None,
+    organization_id: str = None,
     ip_address: str = None,
     method: str = None
 ):
@@ -283,6 +310,7 @@ async def log_error_event(
             message=message,
             endpoint=endpoint,
             user_id=user_id,
+            organization_id=organization_id,
             ip_address=ip_address
         )
     except Exception as e:

@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 
 # Configuration
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:9001"
 ADMIN_TOKEN = "29c63be0-06c1-4051-b3ef-034e46a6dfed"
 
 class AnalyticsQuickTest:
@@ -57,7 +57,9 @@ class AnalyticsQuickTest:
                         print(f"✅ {name}")
                         
                         # Print key metrics if available
-                        if "data" in data:
+                        if "response" in data:
+                            self._print_data_summary(data.get("response", {}))
+                        elif "data" in data:
                             self._print_data_summary(data.get("data", {}))
                         
                         self.passed += 1
@@ -116,18 +118,30 @@ class AnalyticsQuickTest:
         self.print_header("2️⃣  Metrics Summary Endpoints")
         self.test_curl(
             "GET /metrics/summary (last 24 hours)",
-            "/metrics/summary?since=24h"
+            "/metrics/summary?since=24h&scope=org"
         )
         self.test_curl(
             "GET /metrics/summary (last 7 days)",
-            "/metrics/summary?since=7d"
+            "/metrics/summary?since=7d&scope=org"
+        )
+        self.test_curl(
+            "GET /metrics/summary (user scope)",
+            "/metrics/summary?since=24h&scope=user"
+        )
+        self.test_curl(
+            "GET /metrics/summary (global scope)",
+            "/metrics/summary?since=24h&scope=global"
         )
         
         # Test 3: Metrics Queries
         self.print_header("3️⃣  Metrics Queries Endpoints")
         self.test_curl(
             "GET /metrics/queries",
-            "/metrics/queries?since=24h&limit=10"
+            "/metrics/queries?since=24h&limit=10&scope=org"
+        )
+        self.test_curl(
+            "GET /metrics/queries (user scope)",
+            "/metrics/queries?since=24h&limit=10&scope=user"
         )
         
         # Test 4: Metrics Performance

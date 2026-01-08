@@ -18,7 +18,8 @@ async def init_quiz_db():
                 source_filename TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 quiz_json TEXT NOT NULL,
-                logs TEXT
+                logs TEXT,
+                organization_id TEXT
             )
         ''')
         # Detect legacy schema with 'json-content' and migrate
@@ -58,31 +59,34 @@ async def init_quiz_db():
         await conn.commit()
 
 
-async def insert_quiz_record(source_filename: str, quiz_json: str, logs: Optional[str] = None) -> str:
+async def insert_quiz_record(source_filename: str, quiz_json: str, logs: Optional[str] = None, organization_id: Optional[str] = None) -> str:
     """Insert a quiz record and return its id."""
     quiz_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
-            'INSERT INTO quizes (id, source_filename, timestamp, quiz_json, logs) VALUES (?, ?, ?, ?, ?)',
-            (quiz_id, source_filename, timestamp, quiz_json, logs)
+            'INSERT INTO quizes (id, source_filename, timestamp, quiz_json, logs, organization_id) VALUES (?, ?, ?, ?, ?, ?)',
+            (quiz_id, source_filename, timestamp, quiz_json, logs, organization_id)
         )
         await conn.commit()
     return quiz_id
 
 
-async def get_quiz_by_filename(source_filename: str) -> Optional[Tuple[str, str, str, str, Optional[str]]]:
+async def get_quiz_by_filename(source_filename: str, organization_id: Optional[str] = None) -> Optional[Tuple[str, str, str, str, Optional[str], Optional[str]]]:
     """Return row for a given filename: (id, source_filename, timestamp, quiz_json, logs) or None."""
     async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute(
-            'SELECT id, source_filename, timestamp, quiz_json, logs FROM quizes WHERE source_filename = ? ORDER BY timestamp DESC LIMIT 1',
-            (source_filename,)
-        ) as cursor:
+        query = 'SELECT id, source_filename, timestamp, quiz_json, logs, organization_id FROM quizes WHERE source_filename = ?'
+        params = [source_filename]
+        if organization_id:
+            query += ' AND organization_id = ?'
+            params.append(organization_id)
+        query += ' ORDER BY timestamp DESC LIMIT 1'
+        async with conn.execute(query, tuple(params)) as cursor:
             row = await cursor.fetchone()
             return row if row else None
 
 
-async def create_quiz_for_filename(source_filename: str) -> Optional[str]:
+async def create_quiz_for_filename(source_filename: str, organization_id: Optional[str] = None) -> Optional[str]:
     """
     Generate a quiz for the given file (stored in DB) and save it into the quiz DB.
     The quiz is generated in the same language as the document.
@@ -90,7 +94,7 @@ async def create_quiz_for_filename(source_filename: str) -> Optional[str]:
     Returns the quiz_id if created, otherwise None.
     """
     try:
-        content_bytes = get_file_content_by_filename(source_filename)
+        content_bytes = get_file_content_by_filename(source_filename, organization_id=organization_id)
         if content_bytes is None:
             # File not found in DB
             return None
@@ -194,12 +198,12 @@ async def create_quiz_for_filename(source_filename: str) -> Optional[str]:
         logs_txt = None
         if last_err_text:
             logs_txt = f"llm_attempts={attempts}, last_error={last_err_text[:500]}"
-        quiz_id = await insert_quiz_record(source_filename=source_filename, quiz_json=quiz_json_str, logs=logs_txt)
+        quiz_id = await insert_quiz_record(source_filename=source_filename, quiz_json=quiz_json_str, logs=logs_txt, organization_id=organization_id)
         return quiz_id
     except Exception as e:
         # Store failure log row to help debugging
         try:
-            await insert_quiz_record(source_filename=source_filename, quiz_json=json.dumps({"questions": []}, ensure_ascii=False), logs=str(e))
+            await insert_quiz_record(source_filename=source_filename, quiz_json=json.dumps({"questions": []}, ensure_ascii=False), logs=str(e), organization_id=organization_id)
         except Exception:
             pass
         return None

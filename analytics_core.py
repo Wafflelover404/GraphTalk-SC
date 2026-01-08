@@ -73,6 +73,8 @@ class QueryMetrics:
     model_type: str
     query_type: QueryType
     response_time_ms: int
+    organization_id: Optional[str] = None
+    answer_preview: Optional[str] = None
     token_input: int = 0
     token_output: int = 0
     source_document_count: int = 0
@@ -93,6 +95,7 @@ class PerformanceMetrics:
     """System and operation performance metrics"""
     operation_name: str
     duration_ms: int
+    organization_id: Optional[str] = None
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
     disk_io_mb: float = 0.0
@@ -108,6 +111,7 @@ class UserBehaviorEvent:
     user_id: str
     session_id: str
     event_type: str
+    organization_id: Optional[str] = None
     event_subtype: str = None
     duration_seconds: int = 0
     interaction_count: int = 0
@@ -122,6 +126,7 @@ class SecurityEvent:
     """Security-related event"""
     event_type: SecurityEventType
     user_id: str = None
+    organization_id: Optional[str] = None
     ip_address: str = None
     session_id: str = None
     severity: str = "medium"  # low, medium, high, critical
@@ -150,6 +155,15 @@ class AnalyticsDB:
         conn = self.get_connection()
         cursor = conn.cursor()
         
+        def _ensure_column(table: str, column: str, column_type: str):
+            try:
+                cursor.execute(f"PRAGMA table_info({table})")
+                cols = {row[1] for row in cursor.fetchall()}
+                if column not in cols:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+            except Exception:
+                pass
+        
         # Query analytics table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS query_analytics (
@@ -158,7 +172,9 @@ class AnalyticsDB:
                 session_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 role TEXT,
+                organization_id TEXT,
                 question TEXT NOT NULL,
+                answer_preview TEXT,
                 answer_length INTEGER,
                 model_type TEXT,
                 query_type TEXT,
@@ -182,8 +198,12 @@ class AnalyticsDB:
         # Create indexes for query_analytics
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qa_user_id ON query_analytics(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qa_session_id ON query_analytics(session_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_qa_organization_id ON query_analytics(organization_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qa_timestamp ON query_analytics(timestamp)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qa_query_type ON query_analytics(query_type)')
+        
+        _ensure_column('query_analytics', 'organization_id', 'TEXT')
+        _ensure_column('query_analytics', 'answer_preview', 'TEXT')
         
         # Performance metrics table
         cursor.execute('''
@@ -191,6 +211,7 @@ class AnalyticsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 operation_name TEXT NOT NULL,
                 duration_ms INTEGER,
+                organization_id TEXT,
                 cpu_percent REAL DEFAULT 0.0,
                 memory_mb REAL DEFAULT 0.0,
                 disk_io_mb REAL DEFAULT 0.0,
@@ -204,7 +225,10 @@ class AnalyticsDB:
         # Create indexes for performance_metrics
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pm_operation ON performance_metrics(operation_name)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pm_component ON performance_metrics(component)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pm_organization_id ON performance_metrics(organization_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pm_timestamp ON performance_metrics(timestamp)')
+        
+        _ensure_column('performance_metrics', 'organization_id', 'TEXT')
         
         # User behavior events
         cursor.execute('''
@@ -212,6 +236,7 @@ class AnalyticsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                organization_id TEXT,
                 event_type TEXT NOT NULL,
                 event_subtype TEXT,
                 duration_seconds INTEGER DEFAULT 0,
@@ -227,7 +252,10 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ube_user_id ON user_behavior_events(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ube_session_id ON user_behavior_events(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ube_event_type ON user_behavior_events(event_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ube_organization_id ON user_behavior_events(organization_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ube_timestamp ON user_behavior_events(timestamp)')
+        
+        _ensure_column('user_behavior_events', 'organization_id', 'TEXT')
         
         # Security events
         cursor.execute('''
@@ -235,6 +263,7 @@ class AnalyticsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_type TEXT NOT NULL,
                 user_id TEXT,
+                organization_id TEXT,
                 ip_address TEXT NOT NULL,
                 session_id TEXT,
                 severity TEXT DEFAULT 'medium',
@@ -249,7 +278,10 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_ip_address ON security_events(ip_address)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_event_type ON security_events(event_type)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_severity ON security_events(severity)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_organization_id ON security_events(organization_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_timestamp ON security_events(timestamp)')
+        
+        _ensure_column('security_events', 'organization_id', 'TEXT')
         
         # Endpoint access logs
         cursor.execute('''
@@ -258,6 +290,7 @@ class AnalyticsDB:
                 endpoint TEXT NOT NULL,
                 method TEXT NOT NULL,
                 user_id TEXT,
+                organization_id TEXT,
                 status_code INTEGER,
                 response_time_ms INTEGER,
                 request_size_bytes INTEGER,
@@ -271,7 +304,10 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ea_endpoint ON endpoint_access(endpoint)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ea_user_id ON endpoint_access(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ea_status ON endpoint_access(status_code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ea_organization_id ON endpoint_access(organization_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ea_timestamp ON endpoint_access(timestamp)')
+        
+        _ensure_column('endpoint_access', 'organization_id', 'TEXT')
         
         # Error tracking
         cursor.execute('''
@@ -282,6 +318,7 @@ class AnalyticsDB:
                 error_stack TEXT,
                 endpoint TEXT,
                 user_id TEXT,
+                organization_id TEXT,
                 session_id TEXT,
                 ip_address TEXT,
                 frequency INTEGER DEFAULT 1,
@@ -294,6 +331,9 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_et_error_type ON error_tracking(error_type)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_et_endpoint ON error_tracking(endpoint)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_et_user_id ON error_tracking(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_et_organization_id ON error_tracking(organization_id)')
+        
+        _ensure_column('error_tracking', 'organization_id', 'TEXT')
         
         # Query funnel analysis
         cursor.execute('''
@@ -301,6 +341,7 @@ class AnalyticsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
+                organization_id TEXT,
                 step_number INTEGER,
                 query_question TEXT,
                 documents_found INTEGER,
@@ -315,10 +356,13 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qf_session_id ON query_funnel(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_qf_user_id ON query_funnel(user_id)')
         
+        _ensure_column('query_funnel', 'organization_id', 'TEXT')
+        
         # Document analytics
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS document_analytics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT,
                 filename TEXT NOT NULL,
                 file_id TEXT,
                 access_count INTEGER DEFAULT 0,
@@ -336,6 +380,9 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_da_filename ON document_analytics(filename)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_da_access_count ON document_analytics(access_count)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_da_rag_hit_count ON document_analytics(rag_hit_count)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_da_organization_id ON document_analytics(organization_id)')
+        
+        _ensure_column('document_analytics', 'organization_id', 'TEXT')
         
         # User journey tracking
         cursor.execute('''
@@ -343,6 +390,7 @@ class AnalyticsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                organization_id TEXT,
                 action_sequence JSON,
                 session_start DATETIME,
                 session_end DATETIME,
@@ -357,6 +405,8 @@ class AnalyticsDB:
         # Create indexes for user_journey
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_uj_user_id ON user_journey(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_uj_session_id ON user_journey(session_id)')
+        
+        _ensure_column('user_journey', 'organization_id', 'TEXT')
         
         conn.commit()
         conn.close()
@@ -381,14 +431,15 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO query_analytics 
-                (query_id, session_id, user_id, role, question, answer_length,
+                (query_id, session_id, user_id, role, organization_id, question, answer_preview, answer_length,
                  model_type, query_type, response_time_ms, token_input, token_output,
                  source_document_count, source_files, humanized, security_filtered,
                  rag_score, cache_hit, ip_address, user_agent, success, error_message, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 metrics.query_id, metrics.session_id, metrics.user_id, metrics.role,
-                metrics.question, metrics.answer_length, metrics.model_type,
+                metrics.organization_id,
+                metrics.question, metrics.answer_preview, metrics.answer_length, metrics.model_type,
                 metrics.query_type.value, metrics.response_time_ms, metrics.token_input,
                 metrics.token_output, metrics.source_document_count,
                 json.dumps(metrics.source_files), metrics.humanized, metrics.security_filtered,
@@ -403,16 +454,36 @@ class AnalyticsCore:
             self.logger.error(f"Error logging query metrics: {e}")
             return False
     
-    def get_query_analytics(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+    def get_query_analytics(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        since_hours: int = 24,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> List[Dict]:
         """Retrieve query analytics"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM query_analytics
-            ORDER BY timestamp DESC
-            LIMIT ? OFFSET ?
-        ''', (limit, offset))
+
+        where_clauses = []
+        params: List[Any] = []
+
+        where_clauses.append("timestamp >= datetime('now', ? || ' hours')")
+        params.append(-since_hours)
+        if user_id:
+            where_clauses.append('user_id = ?')
+            params.append(user_id)
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
+
+        sql = 'SELECT * FROM query_analytics'
+        if where_clauses:
+            sql += ' WHERE ' + ' AND '.join(where_clauses)
+        sql += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+        params.extend([limit, offset])
+        cursor.execute(sql, params)
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -428,11 +499,11 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO performance_metrics
-                (operation_name, duration_ms, cpu_percent, memory_mb, disk_io_mb,
+                (operation_name, duration_ms, organization_id, cpu_percent, memory_mb, disk_io_mb,
                  network_io_mb, component, details, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                metrics.operation_name, metrics.duration_ms, metrics.cpu_percent,
+                metrics.operation_name, metrics.duration_ms, metrics.organization_id, metrics.cpu_percent,
                 metrics.memory_mb, metrics.disk_io_mb, metrics.network_io_mb,
                 metrics.component, json.dumps(metrics.details), metrics.timestamp
             ))
@@ -454,11 +525,11 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO user_behavior_events
-                (user_id, session_id, event_type, event_subtype, duration_seconds,
+                (user_id, session_id, organization_id, event_type, event_subtype, duration_seconds,
                  interaction_count, success, details, ip_address, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                event.user_id, event.session_id, event.event_type, event.event_subtype,
+                event.user_id, event.session_id, event.organization_id, event.event_type, event.event_subtype,
                 event.duration_seconds, event.interaction_count, event.success,
                 json.dumps(event.details), event.ip_address, event.timestamp
             ))
@@ -480,10 +551,10 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO security_events
-                (event_type, user_id, ip_address, session_id, severity, details, blocked, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (event_type, user_id, organization_id, ip_address, session_id, severity, details, blocked, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                event.event_type.value, event.user_id, event.ip_address, event.session_id,
+                event.event_type.value, event.user_id, event.organization_id, event.ip_address, event.session_id,
                 event.severity, json.dumps(event.details), event.blocked, event.timestamp
             ))
             
@@ -496,10 +567,18 @@ class AnalyticsCore:
     
     # ========== ENDPOINT TRACKING ==========
     
-    def log_endpoint_access(self, endpoint: str, method: str, user_id: Optional[str],
-                           status_code: int, response_time_ms: int,
-                           request_size: int = 0, response_size: int = 0,
-                           ip_address: str = None) -> bool:
+    def log_endpoint_access(
+        self,
+        endpoint: str,
+        method: str,
+        user_id: Optional[str],
+        status_code: int,
+        response_time_ms: int,
+        organization_id: Optional[str] = None,
+        request_size: int = 0,
+        response_size: int = 0,
+        ip_address: str = None,
+    ) -> bool:
         """Log endpoint access"""
         try:
             conn = self.db.get_connection()
@@ -507,11 +586,20 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO endpoint_access
-                (endpoint, method, user_id, status_code, response_time_ms,
+                (endpoint, method, user_id, organization_id, status_code, response_time_ms,
                  request_size_bytes, response_size_bytes, ip_address)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (endpoint, method, user_id, status_code, response_time_ms,
-                  request_size, response_size, ip_address))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                endpoint,
+                method,
+                user_id,
+                organization_id,
+                status_code,
+                response_time_ms,
+                request_size,
+                response_size,
+                ip_address,
+            ))
             
             conn.commit()
             conn.close()
@@ -522,9 +610,17 @@ class AnalyticsCore:
     
     # ========== ERROR TRACKING ==========
     
-    def log_error(self, error_type: str, message: str, stack: str = None,
-                 endpoint: str = None, user_id: str = None,
-                 session_id: str = None, ip_address: str = None) -> bool:
+    def log_error(
+        self,
+        error_type: str,
+        message: str,
+        stack: str = None,
+        endpoint: str = None,
+        user_id: str = None,
+        organization_id: Optional[str] = None,
+        session_id: str = None,
+        ip_address: str = None,
+    ) -> bool:
         """Log error event"""
         try:
             conn = self.db.get_connection()
@@ -533,8 +629,8 @@ class AnalyticsCore:
             # Check if error already exists (for frequency tracking)
             cursor.execute('''
                 SELECT id, frequency FROM error_tracking
-                WHERE error_type = ? AND error_message = ? AND endpoint = ?
-            ''', (error_type, message, endpoint))
+                WHERE error_type = ? AND error_message = ? AND endpoint = ? AND organization_id IS ?
+            ''', (error_type, message, endpoint, organization_id))
             
             existing = cursor.fetchone()
             if existing:
@@ -548,9 +644,9 @@ class AnalyticsCore:
                 cursor.execute('''
                     INSERT INTO error_tracking
                     (error_type, error_message, error_stack, endpoint, user_id,
-                     session_id, ip_address, frequency)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                ''', (error_type, message, stack, endpoint, user_id, session_id, ip_address))
+                     organization_id, session_id, ip_address, frequency)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ''', (error_type, message, stack, endpoint, user_id, organization_id, session_id, ip_address))
             
             conn.commit()
             conn.close()
@@ -561,15 +657,25 @@ class AnalyticsCore:
     
     # ========== DOCUMENT ANALYTICS ==========
     
-    def update_document_analytics(self, filename: str, file_id: str = None,
-                                 size_bytes: int = 0, chunk_count: int = 0,
-                                 increment_access: int = 0, increment_rag_hits: int = 0) -> bool:
+    def update_document_analytics(
+        self,
+        filename: str,
+        file_id: str = None,
+        organization_id: Optional[str] = None,
+        size_bytes: int = 0,
+        chunk_count: int = 0,
+        increment_access: int = 0,
+        increment_rag_hits: int = 0,
+    ) -> bool:
         """Update or create document analytics entry"""
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor()
             
-            cursor.execute('SELECT id FROM document_analytics WHERE filename = ?', (filename,))
+            cursor.execute(
+                'SELECT id FROM document_analytics WHERE filename = ? AND organization_id IS ?',
+                (filename, organization_id),
+            )
             existing = cursor.fetchone()
             
             if existing:
@@ -578,14 +684,14 @@ class AnalyticsCore:
                     SET access_count = access_count + ?,
                         rag_hit_count = rag_hit_count + ?,
                         last_accessed = CURRENT_TIMESTAMP
-                    WHERE filename = ?
-                ''', (increment_access, increment_rag_hits, filename))
+                    WHERE filename = ? AND organization_id IS ?
+                ''', (increment_access, increment_rag_hits, filename, organization_id))
             else:
                 cursor.execute('''
                     INSERT INTO document_analytics
-                    (filename, file_id, access_count, rag_hit_count, size_bytes, chunk_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (filename, file_id, increment_access, increment_rag_hits, size_bytes, chunk_count))
+                    (organization_id, filename, file_id, access_count, rag_hit_count, size_bytes, chunk_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (organization_id, filename, file_id, increment_access, increment_rag_hits, size_bytes, chunk_count))
             
             conn.commit()
             conn.close()
@@ -596,9 +702,18 @@ class AnalyticsCore:
     
     # ========== QUERY FUNNEL ANALYSIS ==========
     
-    def log_funnel_step(self, session_id: str, user_id: str, step_number: int,
-                       query: str, documents_found: int, refinement_count: int = 0,
-                       total_time_ms: int = 0, user_satisfied: bool = None) -> bool:
+    def log_funnel_step(
+        self,
+        session_id: str,
+        user_id: str,
+        step_number: int,
+        organization_id: Optional[str] = None,
+        query: str = None,
+        documents_found: int = 0,
+        refinement_count: int = 0,
+        total_time_ms: int = 0,
+        user_satisfied: bool = None,
+    ) -> bool:
         """Log query funnel step"""
         try:
             conn = self.db.get_connection()
@@ -606,10 +721,10 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO query_funnel
-                (session_id, user_id, step_number, query_question, documents_found,
+                (session_id, user_id, organization_id, step_number, query_question, documents_found,
                  user_satisfied, refinement_count, total_time_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (session_id, user_id, step_number, query, documents_found,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (session_id, user_id, organization_id, step_number, query, documents_found,
                   user_satisfied, refinement_count, total_time_ms))
             
             conn.commit()
@@ -621,7 +736,7 @@ class AnalyticsCore:
     
     # ========== USER JOURNEY TRACKING ==========
     
-    def start_user_session(self, user_id: str, session_id: str) -> bool:
+    def start_user_session(self, user_id: str, session_id: str, organization_id: Optional[str] = None) -> bool:
         """Start tracking user session"""
         try:
             conn = self.db.get_connection()
@@ -629,10 +744,10 @@ class AnalyticsCore:
             
             cursor.execute('''
                 INSERT INTO user_journey
-                (user_id, session_id, session_start, action_sequence, queries_count,
+                (user_id, session_id, organization_id, session_start, action_sequence, queries_count,
                  files_accessed, errors_count)
-                VALUES (?, ?, CURRENT_TIMESTAMP, ?, 0, 0, 0)
-            ''', (user_id, session_id, json.dumps([])))
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 0, 0, 0)
+            ''', (user_id, session_id, organization_id, json.dumps([])))
             
             conn.commit()
             conn.close()
@@ -641,9 +756,7 @@ class AnalyticsCore:
             self.logger.error(f"Error starting user session: {e}")
             return False
     
-    def end_user_session(self, session_id: str, queries_count: int = 0,
-                        files_accessed: int = 0, errors_count: int = 0,
-                        conversion_flag: bool = False) -> bool:
+    def end_user_session(self, session_id: str, queries_count: int = 0, files_accessed: int = 0, errors_count: int = 0, conversion_flag: bool = False) -> bool:
         """End tracking user session"""
         try:
             conn = self.db.get_connection()
@@ -671,12 +784,26 @@ class AnalyticsCore:
     
     # ========== ANALYTICS QUERIES ==========
     
-    def get_query_statistics(self, since_hours: int = 24) -> Dict:
+    def get_query_statistics(
+        self,
+        since_hours: int = 24,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> Dict:
         """Get query statistics"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
+
+        where_clauses = ["timestamp >= datetime('now', ? || ' hours')"]
+        params: List[Any] = [-since_hours]
+        if user_id:
+            where_clauses.append('user_id = ?')
+            params.append(user_id)
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
+
+        cursor.execute(f'''
             SELECT
                 COUNT(*) as total_queries,
                 AVG(response_time_ms) as avg_response_time_ms,
@@ -690,19 +817,29 @@ class AnalyticsCore:
                 AVG(source_document_count) as avg_docs_per_query,
                 SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END) as cache_hits
             FROM query_analytics
-            WHERE timestamp >= datetime('now', ? || ' hours')
-        ''', (-since_hours,))
+            WHERE {' AND '.join(where_clauses)}
+        ''', params)
         
         result = dict(cursor.fetchone())
         conn.close()
         return result
     
-    def get_performance_statistics(self, since_hours: int = 24) -> Dict:
+    def get_performance_statistics(
+        self,
+        since_hours: int = 24,
+        organization_id: Optional[str] = None,
+    ) -> Dict:
         """Get performance statistics"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
+
+        where_clauses = ["timestamp >= datetime('now', ? || ' hours')"]
+        params: List[Any] = [-since_hours]
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
         
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 operation_name,
                 COUNT(*) as operation_count,
@@ -713,21 +850,32 @@ class AnalyticsCore:
                 AVG(memory_mb) as avg_memory_mb,
                 component
             FROM performance_metrics
-            WHERE timestamp >= datetime('now', ? || ' hours')
+            WHERE {' AND '.join(where_clauses)}
             GROUP BY operation_name, component
             ORDER BY avg_duration_ms DESC
-        ''', (-since_hours,))
+        ''', params)
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return results
     
-    def get_error_summary(self, since_hours: int = 24, limit: int = 50) -> List[Dict]:
+    def get_error_summary(
+        self,
+        since_hours: int = 24,
+        limit: int = 50,
+        organization_id: Optional[str] = None,
+    ) -> List[Dict]:
         """Get error summary"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
+
+        where_clauses = ["last_occurrence >= datetime('now', ? || ' hours')"]
+        params: List[Any] = [-since_hours]
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
         
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 error_type,
                 error_message,
@@ -736,21 +884,27 @@ class AnalyticsCore:
                 first_occurrence,
                 last_occurrence
             FROM error_tracking
-            WHERE last_occurrence >= datetime('now', ? || ' hours')
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY frequency DESC
             LIMIT ?
-        ''', (-since_hours, limit))
+        ''', (*params, limit))
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return results
     
-    def get_top_documents(self, limit: int = 20) -> List[Dict]:
+    def get_top_documents(self, limit: int = 20, organization_id: Optional[str] = None) -> List[Dict]:
         """Get top performing documents"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
+
+        where_clauses = []
+        params: List[Any] = []
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
+
+        sql = '''
             SELECT
                 filename,
                 file_id,
@@ -762,9 +916,12 @@ class AnalyticsCore:
                 size_bytes,
                 chunk_count
             FROM document_analytics
-            ORDER BY rag_hit_count DESC, access_count DESC
-            LIMIT ?
-        ''', (limit,))
+        '''
+        if where_clauses:
+            sql += ' WHERE ' + ' AND '.join(where_clauses)
+        sql += ' ORDER BY rag_hit_count DESC, access_count DESC LIMIT ?'
+        params.append(limit)
+        cursor.execute(sql, params)
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -794,12 +951,18 @@ class AnalyticsCore:
         conn.close()
         return results
     
-    def get_security_events_summary(self, since_hours: int = 24) -> Dict:
+    def get_security_events_summary(self, since_hours: int = 24, organization_id: Optional[str] = None) -> Dict:
         """Get security events summary"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
+
+        where_clauses = ["timestamp >= datetime('now', ? || ' hours')"]
+        params: List[Any] = [-since_hours]
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
         
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 event_type,
                 severity,
@@ -808,21 +971,32 @@ class AnalyticsCore:
                 COUNT(DISTINCT user_id) as affected_users,
                 COUNT(DISTINCT ip_address) as unique_ips
             FROM security_events
-            WHERE timestamp >= datetime('now', ? || ' hours')
+            WHERE {' AND '.join(where_clauses)}
             GROUP BY event_type, severity
             ORDER BY count DESC
-        ''', (-since_hours,))
+        ''', params)
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return results
     
-    def get_endpoint_performance(self, since_hours: int = 24, limit: int = 30) -> List[Dict]:
+    def get_endpoint_performance(
+        self,
+        since_hours: int = 24,
+        limit: int = 30,
+        organization_id: Optional[str] = None,
+    ) -> List[Dict]:
         """Get endpoint performance metrics"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
+
+        where_clauses = ["timestamp >= datetime('now', ? || ' hours')"]
+        params: List[Any] = [-since_hours]
+        if organization_id:
+            where_clauses.append('organization_id = ?')
+            params.append(organization_id)
         
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 endpoint,
                 method,
@@ -834,11 +1008,11 @@ class AnalyticsCore:
                 SUM(response_size_bytes) as total_response_bytes,
                 COUNT(DISTINCT user_id) as unique_users
             FROM endpoint_access
-            WHERE timestamp >= datetime('now', ? || ' hours')
+            WHERE {' AND '.join(where_clauses)}
             GROUP BY endpoint, method
             ORDER BY total_requests DESC
             LIMIT ?
-        ''', (-since_hours, limit))
+        ''', (*params, limit))
         
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()

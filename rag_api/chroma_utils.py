@@ -1,6 +1,21 @@
 import os
 import re
 import logging
+import nltk
+
+# Ensure NLTK data is downloaded
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    try:
+        nltk.download('punkt_tab', quiet=True)
+    except:
+        # If punkt_tab is not available, use the standard punkt tokenizer
+        pass
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -28,7 +43,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from difflib import SequenceMatcher
 import numpy as np
-from timing_utils import Timer, PerformanceTracker, time_block
+from .timing_utils import Timer, PerformanceTracker, time_block
 from cachetools import TTLCache
 
 # Download required NLTK data
@@ -150,6 +165,15 @@ chroma_settings = {
         "hnsw:M": 16                   # Higher = more memory usage but better accuracy
     }
 }
+
+def get_vectorstore():
+    """
+    Get the global vectorstore instance.
+    
+    Returns:
+        The global Chroma vectorstore instance
+    """
+    return vectorstore
 
 # Initialize Chroma with optimized settings
 vectorstore = Chroma(**chroma_settings)
@@ -351,7 +375,7 @@ def preprocess_query(query: str, language: str = 'russian') -> str:
     # Apply the same preprocessing as regular text
     return preprocess_text(query, language)
 
-def index_document_to_chroma(file_path: str, file_id: int) -> bool:
+def index_document_to_chroma(file_path: str, file_id: int, organization_id: str = None, metadata: Dict[str, str] = None) -> bool:
 	try:
 		# Extract just the filename from the path
 		filename = os.path.basename(file_path)
@@ -367,13 +391,21 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 		for split in splits:
 			split.metadata['file_id'] = file_id
 			split.metadata['filename'] = filename  # Ensure filename is in metadata
+			if organization_id:
+				split.metadata['organization_id'] = organization_id
 			
-			# Log archive information if this file came from a ZIP
-			if 'archive_source' in split.metadata:
-				archive_source = split.metadata['archive_source']
-				archive_filename = split.metadata.get('archive_filename', 'unknown')
-				archive_path = split.metadata.get('archive_path', 'unknown')
-				logger.debug(f"  Chunk from archive '{archive_filename}' (source: {archive_source}, path: {archive_path})")
+		# Add source_type - determine if this is a document or from external source
+		split.metadata['source_type'] = 'document'
+		
+		# Add custom metadata if provided
+		if metadata:
+			for key, value in metadata.items():
+				split.metadata[key] = value
+			# If metadata contains 'catalog_id', this is an OpenCart product
+			if 'catalog_id' in metadata:
+				split.metadata['source_type'] = 'opencart_product'  # Must match the filter in search
+				if 'archive_filename' in locals() and 'archive_source' in locals() and 'archive_path' in locals():
+					logger.debug(f"  Chunk from archive '{archive_filename}' (source: {archive_source}, path: {archive_path})")
 		
 		vectorstore.add_documents(splits)
 		
@@ -392,11 +424,14 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 		logger.error(f"Error indexing document {filename} (ID: {file_id}): {e}", exc_info=True)
 		return False
 
-def delete_doc_from_chroma(file_id: int) -> bool:
+def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
     try:
-        docs = vectorstore.get(where={"file_id": file_id})
+        where_clause = {"file_id": file_id}
+        if organization_id:
+            where_clause["organization_id"] = organization_id
+        docs = vectorstore.get(where=where_clause)
         print(f"Found {len(docs['ids'])} document chunks for file_id {file_id}")
-        vectorstore._collection.delete(where={"file_id": file_id})
+        vectorstore._collection.delete(where=where_clause)
         print(f"Deleted all documents with file_id {file_id}")
         return True
     except Exception as e:
@@ -593,7 +628,9 @@ def search_documents(
     batch_size: int = 100,
     max_chars_per_chunk: int = 1000,
     use_hybrid_search: bool = True,  # Enable hybrid semantic + keyword search
-    bm25_weight: float = 0.3  # Weight for BM25 score in hybrid search
+    bm25_weight: float = 0.3,  # Weight for BM25 score in hybrid search
+    organization_id: str = None,
+    filter_conditions: Optional[Dict] = None
 ) -> Dict[str, Union[List[Document], Dict[str, any]]]:
     """
     Advanced hybrid document search combining semantic similarity and keyword matching.
@@ -637,7 +674,8 @@ def search_documents(
             'max_results': max_results,
             'max_chunks_per_file': max_chunks_per_file,
             'filename_match_boost': filename_match_boost,
-            'language': language
+            'language': language,
+            'organization_id': organization_id
         }, sort_keys=True).encode()).hexdigest()
         
         # Check cache first
@@ -672,45 +710,75 @@ def search_documents(
             results['stats']['error'] = f"Error generating query embedding: {str(e)}"
             return results
 
-        # Get all documents with their embeddings in batches
+        # Get all documents with their embeddings
         tracker.start_operation("get_all_documents")
         try:
-            # Get total count first
-            count = vectorstore._collection.count()
-            if count == 0:
+            # Get all documents from vectorstore using similarity search
+            logger.info(f"Searching in vectorstore (org_id: {organization_id})")
+            
+            # Prepare filter for similarity search
+            filter_dict = None
+            if filter_conditions:
+                filter_dict = filter_conditions
+            
+            # Perform similarity search to get relevant documents with metadata
+            similar_docs = vectorstore.similarity_search_with_score(
+                preprocessed_query,
+                k=max_results * 2,  # Get more results for filtering
+                filter=filter_dict
+            )
+            
+            if not similar_docs:
+                logger.warning("No similar documents found in vectorstore")
                 return results
-                
-            # Process in batches to reduce memory usage
-            batch_size = min(batch_size, max(100, count // 10))  # Adaptive batch size
-            doc_embeddings = []
+            
+            logger.info(f"Found {len(similar_docs)} similar documents")
+            
+            # Extract documents, scores, and metadata
+            doc_scores = []
             metadatas = []
             documents = []
+            original_indices = []
             
-            for i in range(0, count, batch_size):
-                batch = vectorstore._collection.get(
-                    limit=batch_size,
-                    offset=i,
-                    include=['embeddings', 'metadatas', 'documents']
-                )
-                doc_embeddings.extend(batch['embeddings'])
-                metadatas.extend(batch['metadatas'])
-                documents.extend(batch['documents'])
-                
-            if not doc_embeddings:
+            for idx, (doc, score) in enumerate(similar_docs):
+                try:
+                    metadata = doc.metadata if hasattr(doc, 'metadata') else {}
+                    
+                    # Filter by organization_id if provided
+                    # Documents without organization_id are treated as legacy/shared documents
+                    if organization_id:
+                        doc_org_id = metadata.get('organization_id') if isinstance(metadata, dict) else None
+                        # Include document if it belongs to the user's org OR if it has no org (legacy)
+                        if doc_org_id != organization_id and doc_org_id is not None:
+                            continue  # Skip documents from other organizations
+                    
+                    doc_scores.append(float(score))
+                    metadatas.append(metadata)
+                    documents.append(doc.page_content if hasattr(doc, 'page_content') else str(doc))
+                    original_indices.append(idx)
+                except Exception as e:
+                    logger.debug(f"Error processing document: {e}")
+                    continue
+            
+            if not doc_scores:
+                logger.warning(f"No documents after org filtering (organization_id={organization_id})")
                 return results
-                
-            doc_embeddings_np = np.array(doc_embeddings, dtype=np.float32)
+            
+            logger.info(f"Org filter {organization_id}: {len(similar_docs)} total -> {len(doc_scores)} matching")
+            
+            # Invert scores so higher similarity = higher score (similarity_search_with_score returns distance)
+            semantic_similarities = np.array([1.0 - s for s in doc_scores], dtype=np.float32)
             tracker.end_operation("get_all_documents", 
-                               f"Loaded {len(doc_embeddings_np)} documents in {count//batch_size + 1} batches")
+                               f"Loaded {len(semantic_similarities)} documents")
         except Exception as e:
             logger.error(f"Error loading documents: {str(e)}")
             results['stats']['error'] = f"Error loading documents: {str(e)}"
             return results
 
-        # Calculate similarities in batch
+        # Similarities are already calculated from similarity_search_with_score
+        # No need to recalculate cosine similarity
         tracker.start_operation("calculate_similarities")
-        semantic_similarities = batch_cosine_similarity(query_embedding_np, doc_embeddings_np)
-        tracker.end_operation("calculate_similarities")
+        tracker.end_operation("calculate_similarities", "Using pre-computed similarities from vectorstore")
         
         # Calculate BM25 scores if hybrid search is enabled
         bm25_scores = None
@@ -731,9 +799,9 @@ def search_documents(
         tracker.start_operation("process_results")
         file_chunks = {}
         
-        # Get all documents by using a condition that's always true
-        all_docs = vectorstore.get(where={"filename": {"$ne": ""}})  # This will match all documents with a non-empty filename
-        metadatas = all_docs.get('metadatas', [])
+        # Metadatas are already filtered by organization above, so no need to filter again
+        
+        logger.debug(f"Processing {len(metadatas)} documents")
         
         # Get filename similar in batch
         filenames = [m.get('filename', '') for m in metadatas] if metadatas else []
@@ -779,7 +847,7 @@ def search_documents(
             
             # Add chunk
             chunk_data = {
-                'content': all_docs['documents'][idx],
+                'content': documents[idx],
                 'score': score,
                 'metadata': metadata
             }

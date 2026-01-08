@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 from typing import List, Dict, Any
 import logging
-from chroma_utils import reindex_documents
+from .chroma_utils import reindex_documents
 
 # Configure logging
 logging.basicConfig(

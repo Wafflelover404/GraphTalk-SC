@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 # Configuration
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:9001"
 ADMIN_TOKEN = "29c63be0-06c1-4051-b3ef-034e46a6dfed"
 
 # Test data
@@ -200,20 +200,21 @@ class AnalyticsTestSuite:
         
         # Test with different time ranges
         for since in ["1h", "24h", "7d"]:
-            response = self.test_endpoint(
-                f"GET /metrics/summary (since={since})",
-                "GET",
-                "/metrics/summary",
-                params={"since": since}
-            )
-            
-            if response:
-                data = response.get("data", {})
-                print(f"   Period: {since}")
-                print(f"     - Total Queries: {data.get('total_queries', 0)}")
-                print(f"     - Success Rate: {data.get('success_rate', 0)}%")
-                print(f"     - Avg Response Time: {data.get('avg_response_time_ms', 0)}ms")
-                print(f"     - Unique Users: {data.get('unique_users', 0)}")
+            for scope in ["org", "user"]:
+                response = self.test_endpoint(
+                    f"GET /metrics/summary (since={since}, scope={scope})",
+                    "GET",
+                    "/metrics/summary",
+                    params={"since": since, "scope": scope}
+                )
+                
+                if response:
+                    payload = response.get("response") or response.get("data") or {}
+                    print(f"   Period: {since} scope={scope}")
+                    print(f"     - Total Queries: {payload.get('total_queries', 0)}")
+                    print(f"     - Successful: {payload.get('successful_queries', 0)}")
+                    print(f"     - Failed: {payload.get('failed_queries', 0)}")
+                    print(f"     - Avg Response Time: {payload.get('avg_response_time', 0)}")
     
     def test_metrics_queries(self):
         """Test /metrics/queries endpoint"""
@@ -221,21 +222,21 @@ class AnalyticsTestSuite:
         
         # Test with pagination
         response = self.test_endpoint(
-            "GET /metrics/queries (limit=10, offset=0)",
+            "GET /metrics/queries (limit=10, offset=0, scope=org)",
             "GET",
             "/metrics/queries",
-            params={"since": "24h", "limit": 10, "offset": 0}
+            params={"since": "24h", "limit": 10, "offset": 0, "scope": "org"}
         )
         
         if response:
-            queries = response.get("data", {}).get("queries", [])
+            payload = response.get("response") or response.get("data") or {}
+            queries = payload.get("queries", [])
             print(f"   Total Queries Retrieved: {len(queries)}")
             if queries:
                 print(f"   Sample Query:")
                 first_query = queries[0]
-                print(f"     - User: {first_query.get('user_id', 'N/A')[:20]}...")
-                print(f"     - Response Time: {first_query.get('response_time_ms', 0)}ms")
-                print(f"     - Success: {first_query.get('success', False)}")
+                print(f"     - Question: {str(first_query.get('question', ''))[:40]}...")
+                print(f"     - Timestamp: {first_query.get('timestamp', 'N/A')}")
     
     def test_metrics_performance(self):
         """Test /metrics/performance endpoint"""
