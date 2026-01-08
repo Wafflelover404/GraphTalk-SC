@@ -4319,7 +4319,11 @@ async def get_available_quizzes(
     offset: int = Query(0, ge=0),
     current_user=Depends(get_current_user)
 ):
+    logger.info(f"Fetching available quizzes for user: {current_user[1]}")
+    logger.info(f"Query params - category: {category}, difficulty: {difficulty}, limit: {limit}, offset: {offset}")
+    
     organization_id = _get_active_org_id(current_user)
+    logger.info(f"Organization ID: {organization_id}")
     
     try:
         quizzes = await get_all_quizzes(
@@ -4330,6 +4334,7 @@ async def get_available_quizzes(
             offset=offset
         )
         
+        logger.info(f"Found {len(quizzes)} quizzes")
         
         quiz_summaries = []
         for quiz in quizzes:
@@ -4345,6 +4350,8 @@ async def get_available_quizzes(
                 "created_at": quiz.created_at
             })
         
+        logger.info(f"Returning {len(quiz_summaries)} quiz summaries")
+        
         return APIResponse(
             status="success",
             message="Quizzes retrieved successfully",
@@ -4355,6 +4362,7 @@ async def get_available_quizzes(
         )
     except Exception as e:
         logger.error(f"Error getting available quizzes: {e}")
+        logger.exception("Full traceback:")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
