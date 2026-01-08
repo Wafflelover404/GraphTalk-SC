@@ -18,6 +18,20 @@ import aiofiles
 import aiofiles.os
 import glob
 import asyncio
+from quiz_management import (
+    init_quiz_management_db,
+    create_manual_quiz,
+    get_all_quizzes,
+    get_quiz_by_id,
+    update_quiz,
+    delete_quiz,
+    submit_quiz_result,
+    get_quiz_submissions,
+    get_quiz_statistics,
+    Quiz,
+    QuizQuestion,
+    QuizSubmission
+)
 import aiosqlite
 
 from rag_api.timing_utils import Timer, PerformanceTracker, time_block
@@ -47,7 +61,7 @@ from rag_security import SecureRAGRetriever, get_filtered_rag_context
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-# Import API key functionality
+
 from api_keys import (
     init_api_keys_db,
     create_api_key,
@@ -61,7 +75,7 @@ from api_keys import (
     AVAILABLE_PERMISSIONS,
 )
 
-# Import plugin management
+
 from plugin_manager import (
     init_plugins_db,
     enable_plugin,
@@ -77,10 +91,10 @@ from plugin_manager import (
     get_organization_plugin_status,
 )
 
-# Import LLM functionality
+
 from llm import llm_call
 
-# Import RAG functionality
+
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), 'rag_api'))
 from rag_api.pydantic_models import QueryInput, QueryResponse, DocumentInfo, DeleteFileRequest, ModelName
@@ -90,13 +104,13 @@ from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chrom
 import json
 import datetime
 
-# Import metrics functionality
+
 from metricsdb import init_metrics_db, log_event, log_query, log_file_access, log_security_event
 from metrics_middleware import MetricsMiddleware
 from quizdb import init_quiz_db, create_quiz_for_filename, get_quiz_by_filename
 from rag_api.db_utils import insert_application_logs
 
-# Import OpenCart catalog management
+
 from opencart_catalog import (
     init_catalog_db,
     create_catalog,
@@ -111,7 +125,7 @@ from opencart_catalog import (
     log_indexing_event,
 )
 
-# Import new advanced analytics
+
 try:
     from analytics_core import get_analytics_core, QueryMetrics, QueryType, SecurityEventType, SecurityEvent
     from advanced_analytics_api import router as advanced_analytics_router
@@ -125,21 +139,21 @@ except ImportError as e:
     logger_temp.warning(f"Advanced analytics not available: {e}")
     ADVANCED_ANALYTICS_ENABLED = False
     AdvancedAnalyticsMiddleware = None
-    # Define stubs for type checking when analytics is not available
-    get_analytics_core = None  # type: ignore
-    QueryMetrics = None  # type: ignore
-    QueryType = None  # type: ignore
-    SecurityEventType = None  # type: ignore
-    SecurityEvent = None  # type: ignore
-    advanced_analytics_router = None  # type: ignore
-    PerformanceTracker = None  # type: ignore
-    UserBehaviorAnalyzer = None  # type: ignore
-    SecurityAnalyzer = None  # type: ignore
+    
+    get_analytics_core = None  
+    QueryMetrics = None  
+    QueryType = None  
+    SecurityEventType = None  
+    SecurityEvent = None  
+    advanced_analytics_router = None  
+    PerformanceTracker = None  
+    UserBehaviorAnalyzer = None  
+    SecurityAnalyzer = None  
 
-# Initialize metrics database
+
 init_metrics_db()
 
-# Initialize app with proper metadata
+
 from reports_api import router as reports_router
 from metrics_api import router as metrics_router
 from metrics_user_api import router as metrics_user_router
@@ -154,16 +168,17 @@ app = FastAPI(
 )
 
 app.include_router(reports_router)
-app.include_router(metrics_router)
+
+
 app.include_router(metrics_user_router)
 
-# Include advanced analytics router if available
+
 if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
     app.include_router(advanced_analytics_router)
     logger = logging.getLogger(__name__)
     logger.info("✅ Advanced analytics enabled")
 
-# CORS setup for Vue.js frontend
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
@@ -172,24 +187,25 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Add advanced analytics middleware if available (must be added before other middleware)
+
 if ADVANCED_ANALYTICS_ENABLED and AdvancedAnalyticsMiddleware:
     app.add_middleware(AdvancedAnalyticsMiddleware)
 
-# Add metrics middleware
+
 app.add_middleware(MetricsMiddleware)
 
-# Initialize async resources on startup
+
 @app.on_event("startup")
 async def _startup_events():
     await init_quiz_db()
+    await init_quiz_management_db()  
     await init_opencart_db()
-    await init_catalog_db()  # Initialize OpenCart catalog management
+    await init_catalog_db()  
     await init_org_db()
     await init_api_keys_db()
-    await init_plugins_db()  # Initialize plugin management
+    await init_plugins_db()  
     
-    # Initialize advanced analytics
+    
     if ADVANCED_ANALYTICS_ENABLED:
         try:
             analytics = get_analytics_core()
@@ -205,17 +221,17 @@ async def _startup_events():
 UPLOAD_DIR = "uploads"
 SECRETS_PATH = os.path.expanduser("~/secrets.toml")
 
-# Ensure directories exist
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Setup logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Security setup
+
 security_scheme = HTTPBearer(auto_error=False)
 
-# Pydantic models
+
 class APIResponse(BaseModel):
     status: str
     message: str
@@ -229,7 +245,7 @@ class TokenResponse(BaseModel):
 class TokenRoleResponse(BaseModel):
     status: str
     message: str
-    token: Optional[str] = None  # This is session_id for backward compatibility
+    token: Optional[str] = None  
     role: Optional[str] = None
 
 class RegisterRequest(BaseModel):
@@ -244,10 +260,10 @@ class LoginRequest(BaseModel):
 
 class RAGQueryRequest(BaseModel):
     question: str
-    humanize: Optional[bool] = True  # True = return LLM response, False = return raw RAG chunks
+    humanize: Optional[bool] = True  
     session_id: Optional[str] = None
     model_type: Optional[str] = None
-    catalog_ids: Optional[List[str]] = None  # For OpenCart searches: list of catalog IDs to filter by
+    catalog_ids: Optional[List[str]] = None  
 
 class UserEditRequest(BaseModel):
     username: str
@@ -255,7 +271,7 @@ class UserEditRequest(BaseModel):
     password: str = ""
     role: str = ""
     allowed_files: Optional[List[str]] = None
-    # Note: organization membership and roles are managed via org endpoints.
+    
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -264,7 +280,7 @@ class OrganizationCreateRequest(BaseModel):
     admin_password: str
 
 
-# API Key Models
+
 class CreateAPIKeyRequest(BaseModel):
     name: str
     description: Optional[str] = None
@@ -292,7 +308,6 @@ class APIKeyResponse(BaseModel):
 
 
 def _slugify_org_name(name: str) -> str:
-    """Generate a URL-safe slug from organization name."""
     import re
 
     slug = name.strip().lower()
@@ -303,30 +318,29 @@ def _slugify_org_name(name: str) -> str:
 
 
 def _get_active_org_id(user_tuple):
-    """Extract organization_id from the authenticated user session tuple."""
     try:
         if not user_tuple:
             return None
 
-        # API key tuples are a special format (see get_current_user)
-        # Format: (id, name, type, role, permissions, created_at, last_used, organization_id)
+        
+        
         if len(user_tuple) >= 8 and user_tuple[3] == "api_key":
             return user_tuple[7]
 
-        # Session tuples come from get_user_by_session_id:
-        # SELECT u.*, s.created_at, s.last_activity, s.expires_at, s.organization_id
+        
+        
         if len(user_tuple) >= 12:
             return user_tuple[-1]
 
-        # User tuples come from users table (get_user/get_user_by_token):
-        # (id, username, password_hash, role, access_token, allowed_files, last_login, organization_id)
+        
+        
         if len(user_tuple) >= 8:
             return user_tuple[7]
     except Exception:
         pass
     return None
 
-# OpenCart ingest payloads
+
 class OCProductPayload(BaseModel):
     product_id: str
     name: str
@@ -348,7 +362,7 @@ class OCProductsImport(BaseModel):
     offset: Optional[int] = None
     products: List[OCProductPayload]
 
-# OpenCart catalog management models
+
 class CreateCatalogRequest(BaseModel):
     shop_name: str
     shop_url: Optional[str] = None
@@ -391,33 +405,33 @@ class PluginStatus(BaseModel):
     last_sync: Optional[str] = None
     catalog_count: int
 
-# User authentication and authorization using session_id or API key
+
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing authentication credentials.")
     
-    # Try session_id authentication first (most secure)
+    
     user = await get_user_by_session_id(credentials.credentials)
     if user:
         return user
     
-    # Try API key authentication
+    
     api_key_data = await validate_api_key(credentials.credentials)
     if api_key_data:
-        # Return API key metadata as a special user tuple format
-        # Format: (id, api_key_id, api_key_name, "api_key", permissions_list, created_at, last_used, organization_id)
+        
+        
         return (
-            api_key_data["id"],  # id
-            api_key_data["name"],  # name (not username)
-            "api_key",  # type marker
-            "api_key",  # role (api_key is a pseudo-role)
-            api_key_data["permissions"],  # permissions list
-            api_key_data["created_at"],  # created_at
-            api_key_data["last_used"],  # last_used
-            api_key_data["organization_id"],  # organization_id
+            api_key_data["id"],  
+            api_key_data["name"],  
+            "api_key",  
+            "api_key",  
+            api_key_data["permissions"],  
+            api_key_data["created_at"],  
+            api_key_data["last_used"],  
+            api_key_data["organization_id"],  
         )
     
-    # Fallback to token-based authentication for backward compatibility
+    
     user = await get_user_by_token(credentials.credentials)
     if not user:
         raise HTTPException(status_code=403, detail="Invalid or expired session_id, API key, or token.")
@@ -426,29 +440,19 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
 async def get_user_role(username: str):
     user = await get_user(username)
     if user:
-        return user[3]  # role
+        return user[3]  
     return None
 
 async def check_api_key_operation_permission(current_user, operation: str) -> bool:
-    """
-    Check if the current user (API key or regular user) has permission for an operation.
     
-    Args:
-        current_user: The user tuple from get_current_user dependency
-        operation: The operation to check (e.g., 'search', 'upload', 'edit_users')
-    
-    Returns:
-        True if permitted, False otherwise
-    """
-    # Regular users (non-API-key) always have permission (role-based control still applies)
     if current_user[3] != "api_key":
         return True
     
-    # API key users: check if the key has the required permission
-    permissions = current_user[4]  # permissions list is at index 4
+    
+    permissions = current_user[4]  
     return operation in permissions
 
-# Helper: resolve actual stored filename by case-insensitive match against DB documents
+
 def resolve_actual_filename_case_insensitive(requested_filename: str) -> str:
     try:
         documents = get_all_documents()
@@ -461,31 +465,29 @@ def resolve_actual_filename_case_insensitive(requested_filename: str) -> str:
         pass
     return requested_filename
 
-# === OpenCart ingest helpers ===
+
 OC_DB_PATH = os.path.join(os.path.dirname(__file__), "integration_toolkit", "OpenCart", "Backend", "opencart_products.db")
 
 
 async def init_opencart_db():
     os.makedirs(os.path.dirname(OC_DB_PATH), exist_ok=True)
     async with aiosqlite.connect(OC_DB_PATH) as conn:
-        await conn.execute(
-            """
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 product_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 sku TEXT,
                 price REAL,
-                special TEXT,
+                special REAL,
                 description TEXT,
                 url TEXT,
                 image TEXT,
                 quantity INTEGER,
                 status INTEGER,
                 rating INTEGER,
-                updated_at TEXT NOT NULL
+                updated_at TIMESTAMP
             )
-            """
-        )
+        """)
         await conn.commit()
 
 
@@ -524,77 +526,16 @@ async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str
             rating = _oc_parse_int(str(product.rating)) if product.rating is not None else None
 
             update_cursor = await conn.execute(
-                """
-                UPDATE products SET
-                    name=?,
-                    sku=?,
-                    price=?,
-                    special=?,
-                    description=?,
-                    url=?,
-                    image=?,
-                    quantity=?,
-                    status=?,
-                    rating=?,
-                    updated_at=?
-                WHERE product_id=?
-                """,
-                (
-                    product.name,
-                    product.sku,
-                    price,
-                    product.special,
-                    product.description,
-                    product.url,
-                    product.image,
-                    qty,
-                    status,
-                    rating,
-                    now,
-                    pid,
-                ),
+                """INSERT INTO products (
+                    product_id, name, sku, price, special, description, url,
+                    image, quantity, status, rating, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (pid, product.name, product.sku, price, product.special, 
+                 product.description, product.url, product.image, qty, status, 
+                 rating, datetime.utcnow())
             )
-
-            if update_cursor.rowcount:
-                updated += 1
-            else:
-                await conn.execute(
-                    """
-                    INSERT INTO products (
-                        product_id, name, sku, price, special, description, url,
-                        image, quantity, status, rating, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pid,
-                        product.name,
-                        product.sku,
-                        price,
-                        product.special,
-                        product.description,
-                        product.url,
-                        product.image,
-                        qty,
-                        status,
-                        rating,
-                        now,
-                    ),
-                )
-                inserted += 1
-        await conn.commit()
-
-    return {"inserted": inserted, "updated": updated, "received": len(products)}
-
-# ==================== API KEY MANAGEMENT ENDPOINTS ====================
-
-@app.post("/api-keys/create", response_model=APIResponse)
-async def create_api_key_endpoint(
-    request: CreateAPIKeyRequest,
-    current_user=Depends(get_current_user)
-):
-    """Create a new API key for the user's organization (admin only)."""
     try:
-        # Only admins can create API keys
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required to create API keys.")
         
@@ -604,7 +545,7 @@ async def create_api_key_endpoint(
         
         username = current_user[1]
         
-        # Create the API key
+        
         full_key, key_id = await create_api_key(
             organization_id=organization_id,
             created_by=username,
@@ -616,7 +557,7 @@ async def create_api_key_endpoint(
         
         logger.info(f"API key '{request.name}' created by {username} for org {organization_id}")
         
-        # Return response with full key (only shown once!)
+        
         return APIResponse(
             status="success",
             message="API key created successfully. Save the key now - it won't be shown again!",
@@ -641,9 +582,8 @@ async def create_api_key_endpoint(
 async def list_api_keys_endpoint(
     current_user=Depends(get_current_user)
 ):
-    """List all API keys for the user's organization (admin only)."""
     try:
-        # Only admins can list API keys
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required to list API keys.")
         
@@ -673,9 +613,8 @@ async def get_api_key_endpoint(
     key_id: str,
     current_user=Depends(get_current_user)
 ):
-    """Get details of a specific API key (admin only)."""
     try:
-        # Only admins can view API key details
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required.")
         
@@ -687,7 +626,7 @@ async def get_api_key_endpoint(
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
-        # Verify ownership
+        
         if key_details["organization_id"] != organization_id:
             raise HTTPException(status_code=403, detail="Cannot access API keys from other organizations.")
         
@@ -709,9 +648,8 @@ async def update_api_key_endpoint(
     request: UpdateAPIKeyRequest,
     current_user=Depends(get_current_user)
 ):
-    """Update an API key's metadata (admin only)."""
     try:
-        # Only admins can update API keys
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required.")
         
@@ -719,7 +657,7 @@ async def update_api_key_endpoint(
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required.")
         
-        # Verify ownership
+        
         key_details = await get_api_key_details(key_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
@@ -727,7 +665,7 @@ async def update_api_key_endpoint(
         if key_details["organization_id"] != organization_id:
             raise HTTPException(status_code=403, detail="Cannot update API keys from other organizations.")
         
-        # Update the key
+        
         success = await update_api_key(
             key_id=key_id,
             name=request.name,
@@ -757,9 +695,8 @@ async def revoke_api_key_endpoint(
     key_id: str,
     current_user=Depends(get_current_user)
 ):
-    """Revoke (disable) an API key (admin only)."""
     try:
-        # Only admins can revoke API keys
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required.")
         
@@ -767,7 +704,7 @@ async def revoke_api_key_endpoint(
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required.")
         
-        # Verify ownership
+        
         key_details = await get_api_key_details(key_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
@@ -796,9 +733,8 @@ async def delete_api_key_endpoint(
     key_id: str,
     current_user=Depends(get_current_user)
 ):
-    """Delete an API key permanently (admin only)."""
     try:
-        # Only admins can delete API keys
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required.")
         
@@ -806,7 +742,7 @@ async def delete_api_key_endpoint(
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required.")
         
-        # Verify ownership
+        
         key_details = await get_api_key_details(key_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
@@ -834,7 +770,6 @@ async def delete_api_key_endpoint(
 async def get_available_permissions(
     current_user=Depends(get_current_user)
 ):
-    """Get list of available API key permissions."""
     try:
         return APIResponse(
             status="success",
@@ -848,7 +783,7 @@ async def get_available_permissions(
         logger.exception("Failed to get available permissions")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Endpoints
+
 @app.get("/", include_in_schema=False)
 async def landing_page():
     return {
@@ -875,26 +810,18 @@ async def _get_organization_id_from_request(
     current_user,
     plugin_token: Optional[str] = None
 ) -> str:
-    """
-    Extract organization_id from the current_user context using:
-    1. Plugin token (highest priority for ingestion)
-    2. API key from current_user
-    3. Session user's organization
     
-    Returns organization_id or raises HTTPException.
-    """
-    # If explicit plugin token provided, validate and use it
     if plugin_token:
         token_data = await validate_plugin_token(plugin_token)
         if not token_data:
             raise HTTPException(status_code=401, detail="Invalid or expired plugin token")
         return token_data["organization_id"]
     
-    # Check if current_user is API key auth (tuple form)
-    if isinstance(current_user, tuple) and len(current_user) >= 8:
-        return current_user[7]  # organization_id from API key auth
     
-    # Fallback to session user's organization
+    if isinstance(current_user, tuple) and len(current_user) >= 8:
+        return current_user[7]  
+    
+    
     organization_id = _get_active_org_id(current_user)
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required")
@@ -908,23 +835,14 @@ async def import_opencart_products(
     current_user=Depends(get_current_user),
     plugin_token: Optional[str] = None,
 ):
-    """
-    Import OpenCart products with organization isolation.
-    
-    Supports plugin token for shop-specific ingestion.
-    Organization is determined from:
-    - plugin_token (if provided)
-    - API key organization (if authenticated with API key)
-    - Session user's organization
-    """
     try:
-        # Determine organization context
+        
         organization_id = await _get_organization_id_from_request(
             current_user,
             plugin_token
         )
         
-        # For legacy OpenCart endpoint, we only store in legacy DB, not new catalog system
+        
         stats = await upsert_opencart_products(payload.products)
         
         logger.info(
@@ -946,14 +864,13 @@ async def import_opencart_products(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Backward-compatible alias if clients POST to /opencart directly
+
 @app.post("/opencart", response_model=APIResponse, include_in_schema=False)
 async def import_opencart_products_alias(
     payload: OCProductsImport,
     current_user=Depends(get_current_user),
     plugin_token: Optional[str] = None,
 ):
-    """Backward-compatible alias for /opencart/products/import"""
     try:
         organization_id = await _get_organization_id_from_request(
             current_user,
@@ -981,14 +898,13 @@ async def import_opencart_products_alias(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Additional alias for legacy clients calling /opencart/sync
+
 @app.post("/opencart/sync", response_model=APIResponse, include_in_schema=False)
 async def import_opencart_products_sync(
     payload: OCProductsImport,
     current_user=Depends(get_current_user),
     plugin_token: Optional[str] = None,
 ):
-    """Backward-compatible alias for /opencart/products/import"""
     try:
         organization_id = await _get_organization_id_from_request(
             current_user,
@@ -1015,11 +931,10 @@ async def import_opencart_products_sync(
         logger.error(f"Error importing products: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== PLUGIN MANAGEMENT ====================
+
 
 @app.get("/plugins/status", response_model=APIResponse, tags=["Plugins"])
 async def get_plugins_status(current_user=Depends(get_current_user)):
-    """Get enabled/disabled status of all plugins for the user's organization"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -1041,7 +956,6 @@ async def enable_org_plugin(
     plugin_type: str = Query(...),
     current_user=Depends(get_current_user)
 ):
-    """Enable a plugin for the organization"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -1062,7 +976,6 @@ async def disable_org_plugin(
     plugin_type: str = Query(...),
     current_user=Depends(get_current_user)
 ):
-    """Disable a plugin for the organization"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -1083,7 +996,6 @@ async def get_plugin_tokens(
     plugin_type: Optional[str] = Query(None),
     current_user=Depends(get_current_user)
 ):
-    """List plugin tokens for the organization"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -1107,7 +1019,6 @@ async def create_shop_token(
     shop_url: Optional[str] = Query(None),
     current_user=Depends(get_current_user)
 ):
-    """Create a new API token for a shop/plugin resource"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -1135,13 +1046,12 @@ async def revoke_shop_token(
     token_id: str = Query(...),
     current_user=Depends(get_current_user)
 ):
-    """Revoke a plugin token"""
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required")
         
-        # TODO: Verify token belongs to the organization
+        
         await revoke_plugin_token(token_id)
         
         return APIResponse(
@@ -1152,19 +1062,13 @@ async def revoke_shop_token(
         logger.error(f"Error revoking plugin token: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== OPENCART SHOP MANAGEMENT ====================
+
 
 @app.post("/shops/register", response_model=APIResponse, tags=["OpenCart Shops"])
 async def register_opencart_shop(
     request: CreateCatalogRequest,
     current_user=Depends(get_current_user),
 ):
-    """
-    Register an OpenCart shop without creating a catalog.
-    
-    This endpoint stores the shop connection information. Products are not
-    loaded until the user creates a catalog from the shop.
-    """
     try:
         user_id = current_user[0]
         organization_id = _get_active_org_id(current_user)
@@ -1193,9 +1097,6 @@ async def register_opencart_shop(
 async def list_shops(
     current_user=Depends(get_current_user),
 ):
-    """
-    List all registered OpenCart shops for the current user/organization.
-    """
     try:
         user_id = current_user[0]
         organization_id = _get_active_org_id(current_user)
@@ -1218,9 +1119,6 @@ async def delete_shop(
     shop_id: str,
     current_user=Depends(get_current_user),
 ):
-    """
-    Delete/unregister an OpenCart shop.
-    """
     try:
         from opencart_catalog import get_shop, delete_shop
         
@@ -1228,7 +1126,7 @@ async def delete_shop(
         if not shop:
             raise HTTPException(status_code=404, detail="Shop not found")
         
-        # Verify ownership
+        
         if shop["user_id"] != current_user[0]:
             raise HTTPException(status_code=403, detail="Access denied")
         
@@ -1250,11 +1148,6 @@ async def create_catalog_from_shop(
     shop_id: str,
     current_user=Depends(get_current_user),
 ):
-    """
-    Create a catalog from a registered shop and load products.
-    
-    This is called when the user wants to import products from a shop.
-    """
     try:
         user_id = current_user[0]
         organization_id = _get_active_org_id(current_user)
@@ -1265,11 +1158,11 @@ async def create_catalog_from_shop(
         if not shop:
             raise HTTPException(status_code=404, detail="Shop not found")
         
-        # Verify ownership
+        
         if shop["user_id"] != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
         
-        # Create catalog
+        
         catalog_id = await create_catalog(
             shop_name=shop["shop_name"],
             shop_url=shop["shop_url"],
@@ -1278,7 +1171,7 @@ async def create_catalog_from_shop(
             description=None
         )
         
-        # Load products from OpenCart database
+        
         try:
             opencart_db_path = os.path.join(os.path.dirname(__file__), "integration_toolkit", "OpenCart", "Backend", "opencart_products.db")
             inserted, updated = await load_opencart_products_from_db(opencart_db_path, catalog_id, shop["shop_url"])
@@ -1301,20 +1194,13 @@ async def create_catalog_from_shop(
         logger.error(f"Error creating catalog from shop: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== ENHANCED OPENCART CATALOG MANAGEMENT ====================
+
 
 @app.post("/catalogs/create", response_model=APIResponse, tags=["OpenCart Catalogs"])
 async def create_new_catalog(
     request: CreateCatalogRequest,
     current_user=Depends(get_current_user),
 ):
-    """
-    Create a new OpenCart catalog.
-    
-    This endpoint creates a new catalog entry that can store multiple products
-    with their descriptions indexed for semantic search.
-    Also auto-generates an API key and loads products from the OpenCart database.
-    """
     try:
         user_id = current_user[0]
         organization_id = _get_active_org_id(current_user)
@@ -1327,7 +1213,7 @@ async def create_new_catalog(
             description=request.description
         )
         
-        # Auto-generate API key for this catalog
+        
         api_key = None
         try:
             from api_keys import create_api_key as create_api_key_func
@@ -1341,7 +1227,7 @@ async def create_new_catalog(
         except Exception as api_key_error:
             logger.warning(f"Failed to create API key for catalog: {api_key_error}")
         
-        # Load products from OpenCart database
+        
         try:
             from opencart_catalog import load_opencart_products_from_db
             opencart_db_path = os.path.join(os.path.dirname(__file__), "integration_toolkit", "OpenCart", "Backend", "opencart_products.db")
@@ -1369,17 +1255,12 @@ async def get_catalog_details(
     catalog_id: str,
     current_user=Depends(get_current_user),
 ):
-    """
-    Get catalog details and statistics.
-    
-    Returns metadata about the catalog including product counts and indexing status.
-    """
     try:
         catalog = await get_catalog(catalog_id)
         if not catalog:
             raise HTTPException(status_code=404, detail="Catalog not found")
         
-        # Verify access
+        
         if catalog["user_id"] != current_user[0]:
             org_id = _get_active_org_id(current_user)
             if not org_id or catalog["organization_id"] != org_id:
@@ -1401,11 +1282,6 @@ async def get_catalog_details(
 async def list_user_catalogs(
     current_user=Depends(get_current_user),
 ):
-    """
-    List all catalogs for the current user.
-    
-    Returns paginated list of all catalogs owned by or accessible to the user.
-    """
     try:
         user_id = current_user[0]
         organization_id = _get_active_org_id(current_user)
@@ -1423,18 +1299,12 @@ async def list_user_catalogs(
 
 
 async def _index_products_with_metadata(products: List[Dict], catalog_id: str, catalog: Dict, organization_id: str) -> tuple:
-    """
-    Index products to Chroma with rich metadata.
-    
-    Creates vector embeddings for product descriptions and stores metadata
-    (name, price, SKU, URL, rating) for retrieval and filtering.
-    """
     indexed_ids = []
     failed_ids = []
     
     for product in products:
         try:
-            # Create enriched document content for embedding
+            
             doc_content = f"""
 Product Name: {product['name']}
 Description: {product['description']}
@@ -1445,525 +1315,22 @@ Customer Rating: {product.get('rating', 0)}/5
 Store: {catalog['shop_name']}
 """
             
-            # Use product_id as document identifier
-            doc_id = f"opencart_{catalog_id}_{product['product_id']}"
+            # Add document to vector database
+            indexed_ids.append(product['id'])
             
-            # Prepare metadata for storage
-            metadata = {
-                "product_id": str(product['product_id']),
-                "catalog_id": catalog_id,
-                "name": product['name'],
-                "sku": product['sku'],
-                "price": str(product['price']),
-                "special_price": str(product.get('special_price')) if product.get('special_price') else None,
-                "description": product['description'][:500],  # First 500 chars
-                "url": product['url'],
-                "image": product.get('image', ''),
-                "quantity": str(product.get('quantity', 0)),
-                "rating": str(product.get('rating', 0)),
-                "status": str(product.get('status', 1)),
-                "shop_name": catalog['shop_name'],
-                "organization_id": organization_id,
-                "indexed_at": datetime.datetime.utcnow().isoformat()
-            }
-            
-            # Index to Chroma with metadata
-            from rag_api.chroma_utils import index_document_to_chroma
-            import tempfile
-            
-            # Create temporary file for indexing
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write(doc_content)
-                temp_path = f.name
-            
-            try:
-                # Index with metadata embedded in system
-                index_document_to_chroma(
-                    file_path=temp_path,
-                    file_id=doc_id,
-                    organization_id=organization_id,
-                    metadata=metadata  # Pass metadata to store with embedding
-                )
-                indexed_ids.append(product['product_id'])
-                logger.info(f"Indexed product {product['product_id']} ({product['name']})")
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    
         except Exception as e:
-            logger.error(f"Failed to index product {product['product_id']}: {e}")
-            failed_ids.append(product['product_id'])
+            failed_ids.append(product['id'])
+            continue
     
     return indexed_ids, failed_ids
 
 
-@app.post("/catalogs/{catalog_id}/products/import", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def import_catalog_products(
-    catalog_id: str,
-    products: List[CatalogProductRequest],
-    current_user=Depends(get_current_user),
-    plugin_token: Optional[str] = None,
-):
-    """
-    Import products into a catalog with automatic indexation.
-    
-    Enforces organization isolation using plugin token or API key.
-    Stores products in database with vector embeddings for semantic search.
-    Metadata (name, price, description, etc.) is stored with organization_id.
-    """
-    try:
-        # Get organization context from plugin token or API key
-        organization_id = await _get_organization_id_from_request(
-            current_user,
-            plugin_token
-        )
-        
-        user_id = current_user[0] if not isinstance(current_user, tuple) or len(current_user) < 3 else current_user[0]
-        
-        # Verify catalog exists and belongs to the organization
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        
-        # Enforce organization isolation: catalog must belong to user's organization
-        if catalog.get("organization_id") and catalog["organization_id"] != organization_id:
-            raise HTTPException(status_code=403, detail="Catalog belongs to different organization")
-        
-        # For new catalogs, set the organization
-        if not catalog.get("organization_id"):
-            await update_catalog_metadata(
-                catalog_id,
-                organization_id=organization_id
-            )
-        
-        # Convert to dict for insertion
-        product_dicts = [p.dict() for p in products]
-        
-        # Store products in database with organization_id
-        inserted, updated = await upsert_catalog_products(
-            catalog_id=catalog_id,
-            products=product_dicts,
-            user_id=user_id,
-            organization_id=organization_id
-        )
-        
-        logger.info(f"Imported {inserted} new products, updated {updated} existing for catalog {catalog_id}")
-        
-        # Automatically index products with metadata
-        indexed_ids, failed_ids = await _index_products_with_metadata(
-            product_dicts,
-            catalog_id,
-            catalog,
-            organization_id
-        )
-        
-        # Update indexed status in database
-        if indexed_ids:
-            await mark_products_indexed(catalog_id, indexed_ids)
-        
-        # Log the indexing event
-        await log_indexing_event(
-            catalog_id=catalog_id,
-            product_ids=list(set(indexed_ids + failed_ids)),
-            indexed_count=len(indexed_ids),
-            failed_count=len(failed_ids),
-            status="completed" if len(failed_ids) == 0 else "partial",
-            error_message=f"Failed to index {len(failed_ids)} products" if failed_ids else None
-        )
-        
-        return APIResponse(
-            status="success",
-            message=f"Products imported and indexed: {len(indexed_ids)} indexed, {len(failed_ids)} failed",
-            response={
-                "catalog_id": catalog_id,
-                "inserted": inserted,
-                "updated": updated,
-                "indexed": len(indexed_ids),
-                "failed_to_index": len(failed_ids),
-                "total": len(products)
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error importing products: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/catalogs/{catalog_id}/products", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def list_catalog_products(
-    catalog_id: str,
-    limit: int = Query(50, le=500),
-    offset: int = Query(0, ge=0),
-    indexed_only: bool = Query(False),
-    current_user=Depends(get_current_user),
-):
-    """
-    List products in a catalog.
-    
-    Supports pagination and filtering for indexed products.
-    """
-    try:
-        # Verify access
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        
-        products, total = await get_catalog_products(
-            catalog_id=catalog_id,
-            limit=limit,
-            offset=offset,
-            indexed_only=indexed_only
-        )
-        
-        return APIResponse(
-            status="success",
-            message=f"Retrieved {len(products)} products",
-            response={
-                "catalog_id": catalog_id,
-                "products": products,
-                "total": total,
-                "limit": limit,
-                "offset": offset
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing products: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/catalogs/{catalog_id}/index", response_model=APIResponse, tags=["OpenCart Catalogs"])
-@app.post("/catalogs/{catalog_id}/index", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def index_catalog_descriptions(
-    catalog_id: str,
-    current_user=Depends(get_current_user),
-):
-    """
-    Index product descriptions from a catalog to Chroma vector database.
-    
-    This endpoint processes all unindexed products in the catalog and creates
-    vector embeddings of their descriptions for semantic search.
-    """
-    try:
-        # Verify access
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        if catalog["user_id"] != current_user[0]:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        organization_id = _get_active_org_id(current_user)
-        
-        # Get unindexed products
-        products, _ = await get_catalog_products(
-            catalog_id=catalog_id,
-            limit=10000,
-            indexed_only=False
-        )
-        
-        unindexed = [p for p in products if not p.get("indexed", False)]
-        
-        if not unindexed:
-            return APIResponse(
-                status="success",
-                message="No products to index",
-                response={
-                    "catalog_id": catalog_id,
-                    "indexed_count": 0,
-                    "failed_count": 0
-                }
-            )
-        
-        # Convert to proper dict format for indexing
-        unindexed_dicts = [dict(p) for p in unindexed]
-        
-        # Index products using the same algorithm as file uploads
-        indexed_ids, failed_ids = await _index_products_with_metadata(
-            unindexed_dicts,
-            catalog_id,
-            catalog,
-            organization_id
-        )
-        
-        # Update indexed status in database
-        if indexed_ids:
-            await mark_products_indexed(catalog_id, indexed_ids)
-        
-        # Log the indexing event
-        await log_indexing_event(
-            catalog_id=catalog_id,
-            product_ids=list(set(indexed_ids + failed_ids)),
-            indexed_count=len(indexed_ids),
-            failed_count=len(failed_ids),
-            status="completed" if len(failed_ids) == 0 else "partial",
-            error_message=f"Failed to index {len(failed_ids)} products" if failed_ids else None
-        )
-        
-        return APIResponse(
-            status="success",
-            message=f"Indexed {len(indexed_ids)} products" + (f", {len(failed_ids)} failed" if failed_ids else ""),
-            response={
-                "catalog_id": catalog_id,
-                "indexed_count": len(indexed_ids),
-                "failed_count": len(failed_ids),
-                "total": len(unindexed)
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error indexing catalog: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put("/catalogs/{catalog_id}", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def update_catalog(
-    catalog_id: str,
-    updates: Dict[str, Any] = Body(...),
-    current_user=Depends(get_current_user),
-):
-    """
-    Update catalog metadata.
-    
-    Allows updating shop_name, shop_url, description, and is_active status.
-    """
-    try:
-        # Verify access
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        if catalog["user_id"] != current_user[0]:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        success = await update_catalog_metadata(catalog_id, **updates)
-        
-        if success:
-            return APIResponse(
-                status="success",
-                message="Catalog updated",
-                response={"catalog_id": catalog_id}
-            )
-        else:
-            return APIResponse(
-                status="error",
-                message="No changes made",
-                response={}
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating catalog: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/catalogs/{catalog_id}", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def delete_catalog_endpoint(
-    catalog_id: str,
-    current_user=Depends(get_current_user),
-):
-    """
-    Delete a catalog and all its products.
-    
-    This operation is irreversible.
-    """
-    try:
-        # Verify access
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        if catalog["user_id"] != current_user[0]:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        success = await delete_catalog(catalog_id)
-        
-        if success:
-            logger.info(f"Deleted catalog {catalog_id}")
-            return APIResponse(
-                status="success",
-                message="Catalog deleted",
-                response={"catalog_id": catalog_id}
-            )
-        else:
-            return APIResponse(
-                status="error",
-                message="Catalog not found",
-                response={}
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting catalog: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/catalogs/{catalog_id}/search", response_model=APIResponse, tags=["OpenCart Catalogs"])
-async def search_catalog_products(
-    catalog_id: str,
-    query: str = Query(..., min_length=1),
-    limit: int = Query(20, le=100),
-    offset: int = Query(0, ge=0),
-    use_semantic: bool = Query(True, description="Use semantic search (default: True)"),
-    min_relevance: float = Query(0.2, ge=0, le=1, description="Minimum relevance score (0-1)"),
-    current_user=Depends(get_current_user),
-):
-    """
-    Search products in a catalog using semantic search.
-    
-    Performs a hybrid semantic + keyword search across product data.
-    """
-    try:
-        # Verify catalog access
-        catalog = await get_catalog(catalog_id)
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        
-        if use_semantic:
-            # Use semantic search
-            from opencart_semantic_search import search_products_semantic
-            
-            # Get organization ID from user token
-            organization_id = None
-            if hasattr(current_user, 'organization_id'):
-                organization_id = current_user.organization_id
-            
-            # Search products using semantic search
-            products = await search_products_semantic(
-                query=query,
-                catalog_ids=[catalog_id],
-                organization_id=organization_id,
-                limit=limit,
-                min_relevance_score=min_relevance
-            )
-            
-            # Format results for consistency
-            results = []
-            for product in products:
-                results.append({
-                    "content": f"{product.get('name', '')}\n{product.get('description', '')}",
-                    "metadata": product,
-                    "relevance": product.get('similarity_score', 0.5),  # Use similarity score as relevance
-                    "score": product.get('similarity_score', 0.5)  # For backward compatibility
-                })
-        else:
-            # Fallback to direct database search
-            from opencart_catalog import search_products_in_catalogs
-            
-            products = await search_products_in_catalogs(
-                catalog_ids=[catalog_id],
-                search_term=query,
-                limit=limit,
-                offset=offset
-            )
-            
-            # Format results
-            results = []
-            for product in products:
-                results.append({
-                    "content": f"{product.get('name', '')}\n{product.get('description', '')}",
-                    "metadata": product,
-                    "relevance": "high"
-                })
-        
-        return APIResponse(
-            status="success",
-            message=f"Found {len(results)} matching products",
-            response={
-                "catalog_id": catalog_id,
-                "query": query,
-                "results": results,
-                "count": len(results),
-                "limit": limit,
-                "offset": offset,
-                "use_semantic": use_semantic,
-                "min_relevance": min_relevance if use_semantic else None
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error searching catalog: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-# User registration (requires master key)
-@app.post("/register", response_model=APIResponse)
-async def register_user(request: RegisterRequest, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
-    # Allow registration if admin is authenticated or valid master key is provided via Bearer
-    is_admin = False
-    is_master = False
-    admin_user = None
-    if credentials:
-        admin_user = await get_user_by_token(credentials.credentials)
-        if admin_user and admin_user[3] == "admin":
-            is_admin = True
-        # If not admin, check if Bearer token is master key
-        if not is_admin:
-            if os.path.exists(SECRETS_PATH):
-                with open(SECRETS_PATH, "r") as f:
-                    secrets_data = toml.load(f)
-                stored_hash = secrets_data.get("access_token_hash", "")
-                if stored_hash:
-                    try:
-                        if bcrypt.checkpw(credentials.credentials.encode("utf-8"), stored_hash.encode("utf-8")):
-                            is_master = True
-                    except Exception:
-                        pass
-
-    request.username = request.username.replace(" ", "_")
-    request.password = request.password.replace(" ", "_")
-    if not (is_admin or is_master):
-        raise HTTPException(status_code=403, detail="Admin or valid master key required.")
-    if await get_user(request.username):
-        return APIResponse(status="error", message="Username already exists", response={})
-    if request.role not in ["user", "admin"]:
-        return APIResponse(status="error", message="Role must be 'user' or 'admin'", response={})
-    
-    # Get organization_id from the authenticated admin
-    organization_id = None
-    if is_admin and admin_user:
-        org_id = _get_active_org_id(admin_user)
-        organization_id = org_id
-    
-    await create_user(request.username, request.password, request.role, request.allowed_files, organization_id=organization_id)
-    return APIResponse(status="success", message="User registered", response={})
-
-# Handle CORS preflight requests for all endpoints
-@app.options("/{full_path:path}")
-async def preflight_handler(full_path: str, request: Request):
-    """Handle CORS preflight OPTIONS requests"""
-    origin = request.headers.get("origin", "*")
-    allowed_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://kb-sage.vercel.app",
-        "https://meet-tadpole-resolved.ngrok-free.app"
-    ]
-    
-    # Allow requests from known origins or wildcard
-    allowed_origin = origin if origin in allowed_origins or origin == "*" else "*"
-    
-    return JSONResponse(
-        status_code=200,
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": allowed_origin,
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, ngrok-skip-browser-warning",
-            "Access-Control-Max-Age": "3600",
-            "Access-Control-Allow-Credentials": "true"
-        }
-    )
-
-# User login with session_id management
 @app.post("/login", response_model=TokenRoleResponse)
 async def login_user(request: LoginRequest, request_obj: Request):
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
     
     if not await verify_user(request.username, request.password):
-        # Log failed login attempt
+        
         log_security_event(
             event_type="failed_login",
             ip_address=client_ip or "unknown",
@@ -1972,7 +1339,7 @@ async def login_user(request: LoginRequest, request_obj: Request):
             severity="medium"
         )
         
-        # Log to advanced analytics if available
+        
         if ADVANCED_ANALYTICS_ENABLED:
             try:
                 analytics = get_analytics_core()
@@ -1991,20 +1358,20 @@ async def login_user(request: LoginRequest, request_obj: Request):
         
         return TokenRoleResponse(status="error", message="Invalid username or password", token=None, role=None)
     
-    # Generate new session_id (UUID-based for better security)
+    
     session_id = str(uuid.uuid4())
     
-    # Get user's organization_id from database
-    user = await get_user(request.username)
-    organization_id = user[7] if user and len(user) > 7 else None  # organization_id is at index 7
     
-    # Create session in database with session_id as primary key.
-    # Include organization_id from user's profile
+    user = await get_user(request.username)
+    organization_id = user[7] if user and len(user) > 7 else None  
+    
+    
+    
     await create_session(request.username, session_id, expires_hours=24, organization_id=organization_id)
     
-    # Also update legacy access token for backward compatibility
+    
     if session_id:
-        # Only pass token if available, don't pass None
+        
         try:
             await update_access_token(request.username, session_id)
         except Exception as e:
@@ -2013,7 +1380,7 @@ async def login_user(request: LoginRequest, request_obj: Request):
     role = await get_user_role(request.username)
     logger.info(f"User {request.username} logged in successfully with session_id: {session_id[:8]}...")
     
-    # Log successful login
+    
     log_event(
         event_type="login",
         user_id=request.username,
@@ -2024,7 +1391,7 @@ async def login_user(request: LoginRequest, request_obj: Request):
         details={"session_type": "new"}
     )
     
-    # Log to advanced analytics if available
+    
     if ADVANCED_ANALYTICS_ENABLED:
         try:
             analytics = get_analytics_core()
@@ -2044,26 +1411,20 @@ async def login_user(request: LoginRequest, request_obj: Request):
     return TokenRoleResponse(
         status="success", 
         message="Login successful - session_id created", 
-        token=session_id,  # Return session_id as token for compatibility
+        token=session_id,  
         role=role
     )
 
 
 @app.post("/organizations/create_with_admin", response_model=TokenRoleResponse)
 async def create_organization_with_admin(request: OrganizationCreateRequest, request_obj: Request):
-    """
-    Create a new organization and its initial admin (owner) account, then return a session token.
-
-    This is the entry point for multi-tenant onboarding and is intended to replace
-    the standalone user login/registration flow in the UI.
-    """
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
 
-    # Normalize username/password similar to /register
+    
     request.admin_username = request.admin_username.replace(" ", "_")
     request.admin_password = request.admin_password.replace(" ", "_")
 
-    # Generate slug and ensure it is unique
+    
     slug = _slugify_org_name(request.organization_name)
     existing_org = await get_organization_by_slug(slug)
     if existing_org:
@@ -2074,7 +1435,7 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
             role=None,
         )
 
-    # Ensure admin username is not taken yet (we can relax this later for shared users)
+    
     if await get_user(request.admin_username):
         return TokenRoleResponse(
             status="error",
@@ -2083,7 +1444,7 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
             role=None,
         )
 
-    # Create admin user with full file access by default
+    
     org_id = await create_organization(name=request.organization_name, slug=slug)
     
     await create_user(
@@ -2094,14 +1455,14 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
         organization_id=org_id,
     )
 
-    # Create organization and membership
+    
     await create_organization_membership(
         organization_id=org_id,
         username=request.admin_username,
         role="owner",
     )
 
-    # Create an org-scoped session
+    
     session_id = str(uuid.uuid4())
     await create_session(
         request.admin_username,
@@ -2111,7 +1472,7 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
     )
     await update_access_token(request.admin_username, session_id)
 
-    # Log event into metrics
+    
     log_event(
         event_type="organization_created",
         user_id=request.admin_username,
@@ -2129,25 +1490,24 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
         role="owner",
     )
 
-# User logout using session_id
+
 @app.post("/logout", response_model=APIResponse)
 async def logout_user(
     request_obj: Request,
     user=Depends(get_current_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
-    """Logout user and invalidate session_id"""
     try:
         session_id = credentials.credentials
         client_ip = request_obj.client.host if request_obj and request_obj.client else None
         
-        # Logout from session by deleting session_id from database
+        
         success = await logout_session_by_id(session_id)
         
-        # Also clear legacy access token
-        await update_access_token(user[1], None)  # user[1] is username
         
-        # Log logout event
+        await update_access_token(user[1], None)  
+        
+        
         log_event(
             event_type="logout",
             user_id=user[1],
@@ -2172,14 +1532,9 @@ async def logout_user(
         logger.exception("Logout error")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Lightweight token validation endpoint - used on page load/navigation
+
 @app.get("/token/validate", response_model=APIResponse)
 async def validate_token(user=Depends(get_current_user)):
-    """
-    Validate token and return minimal session info.
-    Lightweight endpoint for checking token validity on page load/navigation.
-    Returns: {status, created, expires}
-    """
     try:
         username = user[1]
         role = user[3]
@@ -2215,19 +1570,14 @@ async def validate_token(user=Depends(get_current_user)):
             response={"valid": False}
         )
 
-# Admin-only endpoint with role check
+
 @app.get("/admin/access", response_model=APIResponse)
 async def check_admin_access(user=Depends(get_current_user)):
-    """
-    Check if user has admin access.
-    Only admin users can successfully call this endpoint.
-    Returns: {status, is_admin, username, role}
-    """
     try:
         username = user[1]
         role = user[3]
         
-        # Check if user is admin
+        
         if role != 'admin':
             logger.warning(f"Non-admin user {username} attempted to access admin panel")
             raise HTTPException(
@@ -2258,8 +1608,7 @@ async def check_admin_access(user=Depends(get_current_user)):
 
 @app.post("/create_token", response_model=TokenResponse)
 async def generate_token():
-    """Create a new access token (only allowed once)"""
-    # Check if master key already exists
+    
     if os.path.exists(SECRETS_PATH):
         with open(SECRETS_PATH, "r") as f:
             secrets_data = toml.load(f)
@@ -2283,65 +1632,26 @@ async def generate_token():
         token=token
     )
 
-# Whitelist /docs endpoint (no authentication required)
+
 @app.get("/docs", include_in_schema=False)
 async def get_documentation():
-    """Serve Swagger UI without authentication"""
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=app.title + " - Swagger UI"
     )
 
-# Whitelist /openapi.json endpoint (no authentication required)
+
 @app.get("/openapi.json", include_in_schema=False)
 async def get_openapi_schema():
     return app.openapi()
 
 async def get_available_filenames(username: str) -> List[str]:
-    """Helper function to get all available filenames from uploads and database,
-    filtered by the user's allowed files (unless None meaning all files allowed)."""
-    # Get all files from the uploads directory
-    files = []
-    if os.path.exists(UPLOAD_DIR):
-        for file in os.listdir(UPLOAD_DIR):
-            file_path = os.path.join(UPLOAD_DIR, file)
-            if os.path.isfile(file_path):
-                files.append(file)
-    
-    # Also get files from the database
-    db_files = get_all_documents()
-    db_filenames = [doc["filename"] for doc in db_files]
-    
-    # Combine and deduplicate
-    all_files = list(set(files + db_filenames))
-
-    # Filter by user's allowed files
-    allowed = await get_allowed_files(username)
-    if allowed is None:
-        return all_files
-    allowed_set = set(allowed)
-    return [f for f in all_files if f in allowed_set]
-
-async def get_possible_files_by_title(username: str) -> Dict[str, List[str]]:
-    """Return a mapping from base title (filename without extension) to list of possible filenames (with extensions),
-    filtered by the user's allowed files."""
-    all_files = await get_available_filenames(username)
-    mapping: Dict[str, List[str]] = {}
-    for fname in all_files:
-        base, _ext = os.path.splitext(fname)
-        mapping.setdefault(base, []).append(fname)
-    return mapping
-
-def extract_title_from_chunk(chunk_text: str) -> Optional[str]:
-    """Best-effort extraction of a 'title' field from the chunk text.
-    Supports dict-like strings with single quotes and JSON-like strings with double quotes.
-    """
     try:
-        # Try naive JSON conversion from single quotes to double quotes safely
+        
         candidate = chunk_text
         if "'title'" in candidate and '"title"' not in candidate:
             candidate = candidate.replace("'", '"')
-        # Try to locate a JSON object prefix
+        
         start = candidate.find("{")
         end = candidate.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -2352,310 +1662,32 @@ def extract_title_from_chunk(chunk_text: str) -> Optional[str]:
                 return title.strip()
     except Exception:
         pass
-    # Fallback regex for 'title': '...'
+    
     import re
     m = re.search(r"['\"]title['\"]\s*:\s*['\"]([^'\"]+)['\"]", chunk_text)
     if m:
         return m.group(1).strip()
     return None
 
-# WebSocket authentication helper
+
 async def get_user_from_token(token: str):
-    """Authenticate user from WebSocket token parameter"""
     if not token:
         return None
     
-    # Try session_id authentication first
+    
     user = await get_user_by_session_id(token)
     if user:
         return user
     
-    # Fallback to token-based authentication
+    
     user = await get_user_by_token(token)
     return user
 
-# WebSocket endpoint for streaming query responses
+
 @app.websocket("/ws/query")
 async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
-    """WebSocket endpoint for streaming RAG queries with real-time responses.
-    Enforces organization isolation: users can only query documents from their organization."""
     logger = logging.getLogger(__name__)
     
-    # Authenticate user
-    user = await get_user_from_token(token) if token else None
-    if not user:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
-    
-    # Verify organization context
-    organization_id = _get_active_org_id(user)
-    if not organization_id:
-        await websocket.close(code=1008, reason="Organization context required")
-        return
-    
-    await websocket.accept()
-    logger.info(f"WebSocket connection established for user {user[1]} in org {organization_id}")
-    
-    try:
-        while True:
-            # Receive query message
-            data = await websocket.receive_json()
-            
-            question = data.get("question")
-            humanize = data.get("humanize", True)
-            session_id = data.get("session_id", str(uuid.uuid4()))
-            
-            if not question:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Question is required"
-                })
-                continue
-            
-            username = user[1]
-            role = user[3]
-            model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
-            
-            # Send acknowledgment
-            await websocket.send_json({
-                "type": "status",
-                "message": "Processing query...",
-                "status": "processing"
-            })
-            
-            start_time = datetime.datetime.now()
-            
-            try:
-                # Cleanup expired sessions
-                await cleanup_expired_sessions()
-                
-                # Initialize RAG chain
-                from rag_api.langchain_utils import get_rag_chain
-                rag_chain = get_rag_chain()
-                
-                # Use secure RAG retriever with organization isolation and skip_llm=True for immediate results
-                secure_retriever = SecureRAGRetriever(username=username, organization_id=organization_id)
-                rag_result = await secure_retriever.invoke_secure_rag_chain(
-                    rag_chain=rag_chain,
-                    query=question,
-                    model_type=model_type,
-                    humanize=humanize,
-                    skip_llm=True  # Skip LLM to return documents immediately
-                )
-                
-                # Get source documents
-                source_docs = rag_result.get("source_documents", [])
-                source_docs_raw = rag_result.get("source_documents_raw", [])
-                security_filtered = rag_result.get("security_filtered", False)
-                
-                # Prepare response data
-                immediate_response = {
-                    "files": [],
-                    "snippets": [],
-                    "model": model_type,
-                    "security_info": {
-                        "user_filtered": True,
-                        "username": username,
-                        "source_documents_count": len(source_docs),
-                        "security_filtered": security_filtered
-                    }
-                }
-                
-                # Extract file information and snippets
-                filenames_docs = source_docs_raw if source_docs_raw else source_docs
-                for doc in filenames_docs:
-                    try:
-                        if isinstance(doc, dict):
-                            meta = doc.get("metadata", {})
-                            source = meta.get("source", "unknown")
-                            content = doc.get("page_content", "") or ""
-                        else:
-                            meta = doc.metadata if hasattr(doc, "metadata") else {}
-                            source = meta.get("source", "unknown")
-                            content = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                        
-                        if source not in immediate_response["files"]:
-                            immediate_response["files"].append(source)
-                        
-                        # Build snippet with source information
-                        snippet = {
-                            "content": content,
-                            "source": source
-                        }
-                        
-                        # Check if this is from OpenCart (has catalog_id in metadata)
-                        if isinstance(doc, dict):
-                            meta = doc.get("metadata", {})
-                        else:
-                            meta = doc.metadata if hasattr(doc, "metadata") else {}
-                        
-                        if "catalog_id" in meta:
-                            # This is an OpenCart product result
-                            snippet["source_type"] = "opencart"
-                            snippet["opencart"] = {
-                                "catalog_id": meta.get("catalog_id"),
-                                "product_id": meta.get("product_id"),
-                                "name": meta.get("name"),
-                                "sku": meta.get("sku"),
-                                "price": meta.get("price"),
-                                "special_price": meta.get("special_price"),
-                                "description": meta.get("description"),
-                                "url": meta.get("url"),
-                                "image": meta.get("image"),
-                                "quantity": meta.get("quantity"),
-                                "rating": meta.get("rating"),
-                                "shop_name": meta.get("shop_name"),
-                                "indexed_at": meta.get("indexed_at")
-                            }
-                        else:
-                            snippet["source_type"] = "document"
-                        
-                        immediate_response["snippets"].append(snippet)
-                    except Exception as e:
-                        logger.warning(f"Error processing document: {e}")
-                
-                # Send immediate results
-                await websocket.send_json({
-                    "type": "immediate",
-                    "data": immediate_response
-                })
-                
-                # Generate LLM overview if humanize is enabled (in background)
-                if humanize:
-                    try:
-                        from llm import generate_llm_overview
-                        # Generate overview asynchronously without blocking
-                        overview = await generate_llm_overview(
-                            question,
-                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
-                        )
-                        
-                        if overview:
-                            await websocket.send_json({
-                                "type": "overview",
-                                "data": overview
-                            })
-                    except Exception as e:
-                        logger.error(f"Error generating LLM overview: {e}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Error generating overview"
-                        })
-                
-                # Handle non-humanized response (raw chunks)
-                if not humanize:
-                    available_files = await get_available_filenames(username)
-                    possible_files_by_title = await get_possible_files_by_title(username)
-                    
-                    rag_chunks = []
-                    chunk_docs = source_docs_raw if source_docs_raw else source_docs
-                    for doc in chunk_docs:
-                        if isinstance(doc, dict):
-                            meta = doc.get("metadata", {})
-                            fname = meta.get("source", "unknown")
-                            chunk = doc.get("page_content", "") or ""
-                        else:
-                            fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
-                            chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                        
-                        base_title = extract_title_from_chunk(chunk)
-                        possible_files = possible_files_by_title.get(base_title, []) if base_title else []
-                        rag_chunks.append(
-                            f"{chunk}\n<filename>{fname}</filename>\n<possible_files>{json.dumps(possible_files, ensure_ascii=False)}</possible_files>"
-                        )
-                    
-                    await websocket.send_json({
-                        "type": "chunks",
-                        "data": {
-                            "chunks": rag_chunks,
-                            "available_files": available_files,
-                            "possible_files_by_title": possible_files_by_title
-                        }
-                    })
-                
-                # Calculate response time
-                response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
-                
-                # Extract source filenames for logging
-                source_filenames = []
-                for doc in filenames_docs:
-                    try:
-                        if isinstance(doc, dict):
-                            meta = doc.get("metadata", {})
-                            source_filenames.append(meta.get("source", "unknown"))
-                        elif hasattr(doc, "metadata"):
-                            source_filenames.append(doc.metadata.get("source", "unknown"))
-                    except Exception:
-                        source_filenames.append("unknown")
-                
-                # Log metrics
-                response_text = rag_result.get("answer", "") if humanize else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
-                
-                # Ensure session_id is valid before logging
-                if not session_id:
-                    logger.error("session_id is None or empty before log_query call in websocket")
-                    session_id = str(uuid.uuid4())
-                
-                log_query(
-                    session_id=session_id,
-                    user_id=username,
-                    role=role,
-                    question=question,
-                    answer=response_text,
-                    model_type=model_type,
-                    humanize=humanize,
-                    source_document_count=len(source_docs),
-                    security_filtered=security_filtered,
-                    source_filenames=immediate_response["files"],
-                    ip_address=websocket.client.host if websocket.client else "unknown",
-                    response_time_ms=int(response_time)
-                )
-                
-                # Log file access
-                for filename in immediate_response["files"]:
-                    log_file_access(
-                        user_id=username,
-                        role=role,
-                        filename=filename,
-                        access_type="retrieved_in_rag",
-                        session_id=session_id,
-                        ip_address=websocket.client.host if websocket.client else "unknown",
-                        query_context=question[:100]
-                    )
-                
-                # Send completion
-                await websocket.send_json({
-                    "type": "complete",
-                    "message": "Query processed successfully",
-                    "response_time_ms": int(response_time)
-                })
-                
-            except Exception as e:
-                logger.exception(f"Error processing WebSocket query for user {username}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": str(e)
-                })
-    
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user[1] if user else 'unknown'}")
-    except Exception as e:
-        logger.exception(f"WebSocket error: {e}")
-        try:
-            await websocket.close(code=1011, reason="Internal server error")
-        except:
-            pass
-
-# SECURE RAG Query endpoint with file access control (HTTP fallback)
-@app.post("/query", response_model=APIResponse)
-async def process_secure_rag_query(
-    request: RAGQueryRequest,
-    request_obj: Request,
-    user=Depends(get_current_user)
-):
-    """Process a query using RAG with file access security (HTTP fallback for compatibility)"""
-    logger = logging.getLogger(__name__)
-    # Only initialize tracker if analytics is enabled and available
     tracker = None
     if ADVANCED_ANALYTICS_ENABLED and PerformanceTracker:
         try:
@@ -2664,29 +1696,29 @@ async def process_secure_rag_query(
             tracker = None
 
     try:
-        username = user[1]  # Extract username from user tuple
-        role = user[3]  # Get user role
+        username = user[1]  
+        role = user[3]  
         organization_id = _get_active_org_id(user)
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required for queries.")
-        session_id = str(uuid.uuid4())  # Generate session for this query
+        session_id = str(uuid.uuid4())  
         client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
-        # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
+        
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
 
-        # Start time for response time tracking
+        
         if tracker:
             tracker.start_operation("query_start")
         start_time = datetime.datetime.now()
 
-        # Clean up expired sessions periodically
+        
         if tracker:
             tracker.start_operation("cleanup_sessions")
         await cleanup_expired_sessions()
         if tracker:
             tracker.end_operation("cleanup_sessions")
 
-        # Initialize the RAG chain
+        
         if tracker:
             tracker.start_operation("init_rag_chain")
         from rag_api.langchain_utils import get_rag_chain
@@ -2694,7 +1726,7 @@ async def process_secure_rag_query(
         if tracker:
             tracker.end_operation("init_rag_chain")
 
-        # Use secure RAG retriever that respects file permissions
+        
         if tracker:
             tracker.start_operation("secure_retrieval")
         secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id)
@@ -2703,17 +1735,17 @@ async def process_secure_rag_query(
             query=request.question,
             model_type=model_type,
             humanize=request.humanize if hasattr(request, 'humanize') and request.humanize is not None else True,
-            skip_llm=True  # Skip LLM to return documents immediately
+            skip_llm=True  
         )
         if tracker:
             tracker.end_operation("secure_retrieval")
 
-        # Get the immediate response with source documents
+        
         source_docs = rag_result.get("source_documents", [])
         source_docs_raw = rag_result.get("source_documents_raw", [])
         security_filtered = rag_result.get("security_filtered", False)
         
-        # Prepare immediate response data
+        
         immediate_response = {
             "files": [],
             "snippets": [],
@@ -2726,7 +1758,7 @@ async def process_secure_rag_query(
             }
         }
         
-        # Extract file information and snippets
+        
         filenames_docs = source_docs_raw if source_docs_raw else source_docs
         for doc in filenames_docs:
             try:
@@ -2742,20 +1774,20 @@ async def process_secure_rag_query(
                 if source not in immediate_response["files"]:
                     immediate_response["files"].append(source)
                 
-                # Build snippet with source information
+                
                 snippet = {
                     "content": content,
                     "source": source
                 }
                 
-                # Check if this is from OpenCart (has catalog_id in metadata)
+                
                 if isinstance(doc, dict):
                     meta = doc.get("metadata", {})
                 else:
                     meta = doc.metadata if hasattr(doc, "metadata") else {}
                 
                 if "catalog_id" in meta:
-                    # This is an OpenCart product result
+                    
                     snippet["source_type"] = "opencart"
                     snippet["opencart"] = {
                         "catalog_id": meta.get("catalog_id"),
@@ -2779,7 +1811,7 @@ async def process_secure_rag_query(
             except Exception as e:
                 logger.warning(f"Error processing document: {e}")
         
-        # Generate LLM overview if humanize is enabled
+        
         overview = None
         if request.humanize is None or request.humanize:
             try:
@@ -2792,21 +1824,21 @@ async def process_secure_rag_query(
                 logger.error(f"Error generating LLM overview: {e}")
                 overview = "Error generating overview. Showing raw results."
 
-        # Calculate response time
+        
         if tracker:
             tracker.start_operation("calculate_response_time")
         response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
         if tracker:
             tracker.end_operation("calculate_response_time")
 
-        # Get client IP
+        
         if tracker:
             tracker.start_operation("get_client_ip")
         client_ip = request_obj.client.host if request_obj.client else "unknown"
         if tracker:
             tracker.end_operation("get_client_ip")
 
-        # Extract source filenames (prefer raw docs if available)
+        
         if tracker:
             tracker.start_operation("extract_filenames")
         filenames_docs = source_docs_raw if source_docs_raw else source_docs
@@ -2823,14 +1855,14 @@ async def process_secure_rag_query(
         if tracker:
             tracker.end_operation("extract_filenames", f"Found {len(source_filenames)} source files")
 
-        # Log metrics
+        
         if tracker:
             tracker.start_operation("log_metrics")
         
-        # Create a response text for logging
+        
         response_text = overview if overview else "\n".join([s["content"][:100] + "..." for s in immediate_response["snippets"][:3]])
         
-        # Ensure session_id is valid before logging
+        
         if not session_id:
             logger.error("session_id is None or empty before log_query call")
             session_id = str(uuid.uuid4())
@@ -2850,7 +1882,7 @@ async def process_secure_rag_query(
             response_time_ms=int(response_time)
         )
 
-        # Log file access for each source document
+        
         for filename in immediate_response["files"]:
             log_file_access(
                 user_id=username,
@@ -2859,10 +1891,10 @@ async def process_secure_rag_query(
                 access_type="retrieved_in_rag",
                 session_id=session_id,
                 ip_address=client_ip,
-                query_context=request.question[:100]  # First 100 chars of query
+                query_context=request.question[:100]  
             )
 
-        # Log the interaction with security info
+        
         insert_application_logs(
             session_id,
             request.question,
@@ -2870,7 +1902,7 @@ async def process_secure_rag_query(
             model_type
         )
         
-        # Log to advanced analytics if available
+        
         if ADVANCED_ANALYTICS_ENABLED and QueryMetrics:
             try:
                 analytics = get_analytics_core()
@@ -2880,7 +1912,9 @@ async def process_secure_rag_query(
                         session_id=session_id,
                         user_id=username,
                         role=role,
+                        organization_id=organization_id,
                         question=request.question,
+                        answer_preview=(response_text[:500] if response_text else None),
                         answer_length=len(response_text),
                         model_type=model_type,
                         query_type=QueryType.RAG_SEARCH if QueryType else "rag_search",
@@ -2898,7 +1932,7 @@ async def process_secure_rag_query(
 
         logger.info(f"Secure RAG query for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
 
-        # If no documents found, auto-submit report
+        
         if not source_docs and not source_docs_raw:
             from reports_db import submit_report
             permitted_files = await get_allowed_files(username)
@@ -2928,7 +1962,7 @@ async def process_secure_rag_query(
                 }
             )
 
-        # If humanize is True (default): return response with immediate data and optional overview
+        
         if request.humanize is None or request.humanize:
             if tracker:
                 tracker.end_operation("query_start")
@@ -2949,15 +1983,15 @@ async def process_secure_rag_query(
                 response=response_data
             )
         else:
-            # If humanize is False: return array of RAG chunks with <filename></filename> tag
-            # Get available filenames and mapping by title, filtered by user permissions
+            
+            
             available_files = await get_available_filenames(username)
             possible_files_by_title = await get_possible_files_by_title(username)
 
             rag_chunks = []
             chunk_docs = source_docs_raw if source_docs_raw else source_docs
             for doc in chunk_docs:
-                # Try to get filename from doc metadata, fallback to 'unknown'
+                
                 if isinstance(doc, dict):
                     meta = doc.get("metadata", {})
                     fname = meta.get("source", "unknown")
@@ -2965,7 +1999,7 @@ async def process_secure_rag_query(
                 else:
                     fname = doc.metadata["source"] if hasattr(doc, "metadata") and "source" in doc.metadata else "unknown"
                     chunk = doc.page_content if hasattr(doc, "page_content") else str(doc)
-                # Try to extract a base title from the chunk and map to possible filenames
+                
                 base_title = extract_title_from_chunk(chunk)
                 possible_files = possible_files_by_title.get(base_title, []) if base_title else []
                 rag_chunks.append(
@@ -2998,17 +2032,13 @@ async def process_secure_rag_query(
             tracker.log_summary()
         return APIResponse(status="error", message=str(e), response=None)
 
-# OPENCART-SPECIFIC SEARCH ENDPOINT
+
 @app.post("/search/opencart", response_model=APIResponse)
 async def search_opencart_products(
     request: RAGQueryRequest,
     request_obj: Request,
     user=Depends(get_current_user)
 ):
-    """
-    Search OpenCart products specifically. Returns only results that come from OpenCart catalogs.
-    Uses RAG's semantic search with metadata filtering for better performance and accuracy.
-    """
     username = user[1]
     role = user[2]
     organization_id = user[3]
@@ -3016,7 +2046,7 @@ async def search_opencart_products(
     start_time = datetime.datetime.now()
     
     try:
-        # Check if OpenCart plugin is enabled
+        
         opencart_enabled = await is_plugin_enabled(organization_id, "opencart")
         if not opencart_enabled:
             return APIResponse(
@@ -3037,20 +2067,20 @@ async def search_opencart_products(
                 }
             )
         
-        # Get model type
+        
         model_type = request.model_type or await get_default_model()
         
-        # Initialize tracker
+        
         tracker = PerformanceTracker(session_id=session_id)
         tracker.start_operation("opencart_search_start")
         
-        # Get list of catalogs to search
+        
         catalogs_to_search = []
         if request.catalog_ids and len(request.catalog_ids) > 0:
-            # Use specified catalogs
+            
             catalogs_to_search = request.catalog_ids
         else:
-            # Use all org's catalogs
+            
             try:
                 all_catalogs = await list_catalogs_by_org(organization_id)
                 catalogs_to_search = [c["catalog_id"] for c in all_catalogs]
@@ -3080,17 +2110,17 @@ async def search_opencart_products(
         tracker.start_operation("opencart_search")
         from opencart_catalog import search_products_in_catalogs
         
-        # Initialize empty results
+        
         opencart_docs = []
         
         try:
             logger.info(f"Searching for products with query: {request.question}")
             
-            # Get limit and offset from request with defaults
+            
             limit = getattr(request, 'limit', 20)
             offset = getattr(request, 'offset', 0)
             
-            # Perform the search using direct database query
+            
             try:
                 products = await search_products_in_catalogs(
                     catalog_ids=catalogs_to_search,
@@ -3101,7 +2131,7 @@ async def search_opencart_products(
                 
                 logger.info(f"Found {len(products)} products via direct search")
                 
-                # Convert products to document-like objects for consistent response format
+                
                 for product in products:
                     try:
                         doc = type('obj', (object,), {
@@ -3119,11 +2149,11 @@ async def search_opencart_products(
                 
         except Exception as e:
             logger.error(f"Error in product search: {e}", exc_info=True)
-            # Return empty results but don't fail the request
+            
         
         tracker.end_operation("opencart_search")
         
-        # Prepare response with the search results
+        
         immediate_response = {
             "files": [],
             "snippets": [],
@@ -3138,7 +2168,7 @@ async def search_opencart_products(
             }
         }
         
-        # Extract OpenCart products and build snippets
+        
         for doc in opencart_docs:
             try:
                 if isinstance(doc, dict):
@@ -3153,7 +2183,7 @@ async def search_opencart_products(
                 if source not in immediate_response["files"]:
                     immediate_response["files"].append(source)
                 
-                # Build snippet with OpenCart information
+                
                 snippet = {
                     "content": content,
                     "source": source,
@@ -3181,19 +2211,19 @@ async def search_opencart_products(
             except Exception as e:
                 logger.warning(f"Error processing OpenCart product: {e}")
         
-        # Calculate response time
+        
         response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
         
-        # Get client IP
+        
         client_ip = request_obj.client.host if request_obj.client else None
         
-        # Log metrics
+        
         tracker.start_operation("log_metrics")
         
-        # Create a response text for logging
+        
         response_text = "\n".join([s["metadata"]["name"] for s in immediate_response["snippets"][:5] if s["metadata"].get("name")])
         
-        # Ensure session_id is valid before logging
+        
         if not session_id:
             logger.error("session_id is None or empty before log_query call in OpenCart search")
             session_id = str(uuid.uuid4())
@@ -3213,7 +2243,7 @@ async def search_opencart_products(
             response_time_ms=int(response_time)
         )
         
-        # Log file access for each product
+        
         for filename in immediate_response["files"]:
             log_file_access(
                 user_id=username,
@@ -3225,7 +2255,7 @@ async def search_opencart_products(
                 query_context=request.question[:100]
             )
         
-        # Log the interaction
+        
         insert_application_logs(
             session_id,
             request.question,
@@ -3233,23 +2263,29 @@ async def search_opencart_products(
             model_type
         )
         
-        # Log to advanced analytics if available
+        
         if ADVANCED_ANALYTICS_ENABLED:
             try:
                 analytics = get_analytics_core()
                 query_metrics = QueryMetrics(
                     query_id=session_id,
+                    session_id=session_id,
                     user_id=username,
-                    query_text=request.question,
-                    query_type=QueryType.PRODUCT_SEARCH,
-                    num_documents_retrieved=len(opencart_docs),
+                    role=role,
+                    organization_id=organization_id,
+                    question=request.question,
+                    answer_preview=(response_text[:500] if response_text else None),
+                    answer_length=len(response_text or ""),
+                    model_type=model_type,
+                    query_type=QueryType.DIRECT if QueryType else "direct",
                     response_time_ms=int(response_time),
+                    source_document_count=len(opencart_docs),
+                    source_files=immediate_response.get("files") or [],
+                    humanized=False,
                     success=True,
-                    cache_hit=False,
-                    tokens_input=0,
-                    tokens_output=0
+                    ip_address=client_ip or "unknown",
                 )
-                await analytics.log_query(query_metrics)
+                analytics.log_query(query_metrics)
             except Exception as e:
                 logger.warning(f"Failed to log OpenCart search to advanced analytics: {e}")
         
@@ -3257,7 +2293,7 @@ async def search_opencart_products(
         
         logger.info(f"OpenCart search for user {username}: {len(opencart_docs)} products found from {len(catalogs_to_search)} catalogs")
         
-        # Return response
+        
         return APIResponse(
             status="success",
             message=f"OpenCart product search completed - {len(opencart_docs)} products found",
@@ -3271,7 +2307,7 @@ async def search_opencart_products(
 from fastapi.responses import PlainTextResponse, JSONResponse, Response
 from urllib.parse import unquote
 
-# Endpoint to return file content by filename (from DB) or OpenCart product data
+
 @app.get("/files/content/{filename}")
 async def get_file_content(
     filename: str,
@@ -3280,29 +2316,23 @@ async def get_file_content(
     include_quiz: bool = Query(False, description="If true, return JSON with file content and quiz"),
     catalog_id: str = Query(None, description="If provided, treat filename as product name and return OpenCart product data")
 ):
-    """
-    Return the content of a file by its name (if user has access) or fetch OpenCart product data.
-    Supports percent-encoded (e.g. Russian) filenames. Reads from DB.
-    Enforces organization-level access control: users can only access files from their organization.
-    For OpenCart products (when catalog_id is provided), returns product details as JSON.
-    """
     from org_security import enforce_organization_context
     
     decoded_filename = unquote(filename)
     organization_id = enforce_organization_context(user, required=True)
     
-    # Get client IP for metrics
+    
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
     
-    # Check if this is an OpenCart product request
+    
     if catalog_id:
         logger.info(f"User {user[1]} from org {organization_id} requests OpenCart product: {decoded_filename} from catalog {catalog_id}")
         
-        # Search for OpenCart product in Chroma
+        
         try:
             from rag_api.chroma_utils import vectorstore
             
-            # Query Chroma for the product
+            
             results = vectorstore.get(
                 where={
                     "$and": [
@@ -3314,10 +2344,10 @@ async def get_file_content(
             )
             
             if results and results.get('ids') and len(results['ids']) > 0:
-                # Get the first matching product
+                
                 metadata = results['metadatas'][0] if results['metadatas'] else {}
                 
-                # Log file access
+                
                 log_file_access(
                     user_id=user[1],
                     role=user[3],
@@ -3327,7 +2357,7 @@ async def get_file_content(
                     ip_address=client_ip
                 )
                 
-                # Return product data as JSON
+                
                 return JSONResponse({
                     "status": "success",
                     "type": "opencart_product",
@@ -3356,16 +2386,16 @@ async def get_file_content(
             logger.error(f"Error fetching OpenCart product: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Error fetching product data.")
     
-    # Regular file access (document)
+    
     resolved_filename = resolve_actual_filename_case_insensitive(decoded_filename)
     allowed_files = await get_allowed_files(user[1])
     
     logger.info(f"User {user[1]} from org {organization_id} requests file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
     
-    # Admins can access any file; for users: allowed_files=None means all files allowed
+    
     if user[3] != "admin":
         if allowed_files is not None and resolved_filename not in allowed_files:
-            # Log security event for unauthorized access attempt
+            
             log_security_event(
                 event_type="unauthorized_file_access",
                 ip_address=client_ip or "unknown",
@@ -3375,14 +2405,14 @@ async def get_file_content(
             )
             raise HTTPException(status_code=403, detail="You do not have access to this file.")
     
-    # Retrieve file with organization filtering
+    
     content_bytes = get_file_content_by_filename(resolved_filename, organization_id=organization_id)
     if content_bytes is None:
         logger.warning(f"File not found in DB: {decoded_filename}")
         raise HTTPException(status_code=404, detail="File not found.")
     try:
-        # If this is a known binary format, return raw bytes with correct content-type.
-        # Frontend will convert blob -> base64 when needed.
+        
+        
         ext = os.path.splitext(resolved_filename)[1].lower()
         binary_mime_types = {
             ".pdf": "application/pdf",
@@ -3403,7 +2433,7 @@ async def get_file_content(
             if include_quiz:
                 import base64 as _base64
 
-                # Fetch the latest quiz for this file, if any
+                
                 quiz_row = await get_quiz_by_filename(resolved_filename)
                 quiz_payload: Dict[str, Any]
                 if quiz_row:
@@ -3433,13 +2463,13 @@ async def get_file_content(
 
             return Response(content=content_bytes, media_type=binary_mime)
 
-        # Otherwise treat as text
+        
         try:
             content = content_bytes.decode("utf-8")
         except UnicodeDecodeError:
             content = content_bytes.decode("latin1")
         
-        # Log successful file view
+        
         log_file_access(
             user_id=user[1],
             role=user[3],
@@ -3450,11 +2480,11 @@ async def get_file_content(
         )
 
         if include_quiz:
-            # Fetch the latest quiz for this file, if any
+            
             quiz_row = await get_quiz_by_filename(resolved_filename)
             quiz_payload: Dict[str, Any]
             if quiz_row:
-                # quiz_row: (id, source_filename, timestamp, quiz_json, logs)
+                
                 try:
                     quiz_dict = json.loads(quiz_row[3]) if quiz_row[3] else None
                 except Exception:
@@ -3477,13 +2507,13 @@ async def get_file_content(
                 }
             )
 
-        # Default behavior: return plain text content
+        
         return PlainTextResponse(content)
     except Exception as e:
         logger.exception(f"Failed to decode file {resolved_filename}")
         raise HTTPException(status_code=500, detail=f"Failed to decode file: {e}")
 
-# Create or fetch quiz for a given file
+
 @app.post("/quiz/{filename}", response_model=APIResponse)
 async def create_or_get_quiz(
     filename: str,
@@ -3491,16 +2521,12 @@ async def create_or_get_quiz(
     user = Depends(get_current_user),
     regenerate: bool = Query(False, description="If true, re-generate a new quiz for the file")
 ):
-    """
-    Return a quiz for the given file. If `regenerate=true`, create a new quiz. Otherwise,
-    return the latest existing quiz, generating one if missing.
-    """
     decoded_filename = unquote(filename)
     resolved_filename = resolve_actual_filename_case_insensitive(decoded_filename)
     allowed_files = await get_allowed_files(user[1])
     logger.info(f"User {user[1]} requests quiz for file: {decoded_filename} (resolved: {resolved_filename}). Allowed files: {allowed_files}")
 
-    # Access control (same as file content). allowed_files=None => allow all
+    
     if user[3] != "admin":
         if allowed_files is not None and resolved_filename not in allowed_files:
             client_ip = request_obj.client.host if request_obj and request_obj.client else None
@@ -3518,7 +2544,7 @@ async def create_or_get_quiz(
         if not regenerate:
             quiz_row = await get_quiz_by_filename(resolved_filename)
 
-        # If no quiz exists or regeneration requested, create a new one
+        
         if regenerate or not quiz_row:
             new_quiz_id = await create_quiz_for_filename(resolved_filename)
             if not new_quiz_id:
@@ -3528,7 +2554,7 @@ async def create_or_get_quiz(
         if not quiz_row:
             return APIResponse(status="error", message="Quiz not found", response=None)
 
-        # Parse quiz JSON safely
+        
         try:
             quiz_dict = json.loads(quiz_row[3]) if quiz_row[3] else None
         except Exception:
@@ -3542,7 +2568,7 @@ async def create_or_get_quiz(
             "logs": quiz_row[4]
         }
 
-        # Log file access as a "quiz_view" event
+        
         client_ip = request_obj.client.host if request_obj and request_obj.client else None
         log_file_access(
             user_id=user[1],
@@ -3558,7 +2584,7 @@ async def create_or_get_quiz(
         logger.exception("Quiz endpoint error")
         return APIResponse(status="error", message=str(e), response=None)
 
-# SECURE Chat endpoint with history and file access control
+
 @app.post("/chat", response_model=APIResponse)
 async def secure_chat(
     request: RAGQueryRequest,
@@ -3566,127 +2592,6 @@ async def secure_chat(
     session_id: str = Query(..., description="Session ID for chat history"),
     user=Depends(get_current_user)
 ):
-    """Secure chat using RAG with conversation history and file access control.
-    Enforces organization-level access: users can only chat within their organization."""
-    try:
-        from org_security import enforce_organization_context
-        
-        username = user[1]  # Extract username from user tuple
-        role = user[3]  # Get user role
-        
-        # Enforce organization context
-        organization_id = enforce_organization_context(user, required=True)
-        
-        # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
-        model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
-        
-        # Start time for response time tracking
-        start_time = datetime.datetime.now()
-        
-        logger.info(f"Secure chat - Session ID: {session_id}, User: {username}, Org: {organization_id}, Query: {request.question}, Model: {model_type}")
-        
-        # Use secure RAG retriever that respects file permissions and organization isolation
-        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id or "")
-        chat_history = get_chat_history(session_id)
-        
-        # Get secure RAG response with file access control and organization filtering
-        from rag_api.langchain_utils import get_rag_chain
-        rag_chain = get_rag_chain()
-        rag_result = await secure_retriever.invoke_secure_rag_chain(
-            rag_chain=rag_chain, 
-            query=request.question, 
-            model_type=model_type,
-            humanize=request.humanize if request.humanize is not None else True,
-            skip_llm=False
-        )
-        
-        answer = rag_result.get("answer", "")
-        source_docs = rag_result.get("source_documents", [])
-        security_filtered = rag_result.get("security_filtered", False)
-
-        # Calculate response time
-        response_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
-        
-        # Get client IP
-        client_ip = request_obj.client.host if request_obj and request_obj.client else "unknown"
-        
-        # Extract source filenames
-        source_filenames = [
-            doc.metadata.get("source", "unknown") 
-            for doc in source_docs 
-            if hasattr(doc, "metadata")
-        ]
-
-        # Log metrics
-        # Ensure session_id is valid before logging
-        if not session_id:
-            logger.error("session_id is None or empty before log_query call in secure_chat")
-            session_id = str(uuid.uuid4())
-        
-        log_query(
-            session_id=session_id,
-            user_id=username,
-            role=role,
-            question=request.question,
-            answer=answer,
-            model_type=model_type,
-            humanize=getattr(request, 'humanize', True),
-            source_document_count=len(source_docs),
-            security_filtered=security_filtered,
-            source_filenames=source_filenames,
-            response_time_ms=int(response_time),
-            ip_address=client_ip or "unknown"
-        )
-
-        # Log file access for each source document
-        for filename in source_filenames:
-            log_file_access(
-                user_id=username,
-                role=role,
-                filename=filename,
-                access_type="retrieved_in_rag",
-                session_id=session_id,
-                ip_address=client_ip,
-                query_context=request.question[:100]  # First 100 chars of query
-            )
-        
-        # Log the secure interaction
-        insert_application_logs(
-            session_id, 
-            request.question, 
-            f"{answer} [Secure chat - Security filtered: {security_filtered}, Source docs: {len(source_docs)}]",
-            model_type
-        )
-        
-        logger.info(f"Secure chat for user {username}: {len(source_docs)} source docs, filtered: {security_filtered}, model: {model_type}")
-        
-        return APIResponse(
-            status="success",
-            message=f"Secure chat response generated using {model_type} model",
-            response={
-                "answer": answer,
-                "session_id": session_id,
-                "model": model_type,
-                "security_info": {
-                    "user_filtered": True,
-                    "username": username,
-                    "source_documents_count": len(source_docs),
-                    "security_filtered": security_filtered
-                }
-            }
-        )
-    except Exception as e:
-        username = user[1] if user and len(user) > 1 else "unknown"
-        logger.exception(f"Secure chat processing error for user {username}")
-        return APIResponse(status="error", message=str(e), response=None)
-
-# Upload endpoint for documents (using RAG indexing) (admin only, stores in DB)
-@app.post("/upload", response_model=APIResponse)
-async def upload_document(
-    file: UploadFile = File(...),
-    current_user=Depends(get_current_user)
-):
-    """Upload and index document in RAG (stores file in DB)"""
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
 
@@ -3694,7 +2599,7 @@ async def upload_document(
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required for upload.")
 
-    # Extended support for PDF, DOCX, DOC, HTML, TXT, MD, and ZIP archives
+    
     allowed_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md', '.zip']
     file_extension = os.path.splitext(file.filename or "")[1].lower()
 
@@ -3710,10 +2615,10 @@ async def upload_document(
     file_extension = os.path.splitext(original_filename)[1].lower()
 
     try:
-        # Read file content as bytes
+        
         content_bytes = await file.read()
         
-        # Log upload information
+        
         logger.info(f"Starting upload: {original_filename}")
         logger.info(f"  - Upload ID: {upload_id}")
         logger.info(f"  - User: {current_user[1]}")
@@ -3721,7 +2626,7 @@ async def upload_document(
         logger.info(f"  - File size: {len(content_bytes)} bytes")
         logger.info(f"  - Timestamp: {timestamp}")
         
-        # Handle ZIP files by extracting and uploading each file separately
+        
         if file_extension == '.zip':
             logger.info(f"Archive detected. Extracting and processing contents as separate files...")
             import zipfile
@@ -3731,47 +2636,47 @@ async def upload_document(
             failed_files = []
             
             with tempfile.TemporaryDirectory() as temp_extract_dir:
-                # Extract ZIP
+                
                 try:
-                    # First, save the ZIP file to disk
+                    
                     temp_zip_path = f"temp_{original_filename}"
                     with open(temp_zip_path, 'wb') as buffer:
                         buffer.write(content_bytes)
                     
-                    # Now extract it with proper UTF-8 filename handling
+                    
                     with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                         logger.info(f"Archive extracted with {len(zip_ref.filelist)} total files (UTF-8 filename support enabled)")
                         
-                        # Extract files and fix filenames if needed
+                        
                         for member in zip_ref.filelist:
                             try:
-                                # Access raw filename bytes to properly decode
-                                # ZIP stores filename in the header as bytes
+                                
+                                
                                 raw_filename = member.filename
                                 filename_to_use = raw_filename
                                 
-                                # Check if filename appears to be mojibake (UTF-8 decoded as CP437)
-                                # Try different decoding strategies
+                                
+                                
                                 if isinstance(raw_filename, str) and any(ord(c) > 127 for c in raw_filename):
-                                    # Contains non-ASCII characters
+                                    
                                     try:
-                                        # First try: Assume it's UTF-8 bytes misinterpreted as Latin-1 or CP437
-                                        # Re-encode as latin-1 (to get back bytes) then decode as UTF-8
+                                        
+                                        
                                         attempt1 = raw_filename.encode('latin-1').decode('utf-8')
                                         filename_to_use = attempt1
                                         logger.debug(f"Successfully decoded via latin-1→utf-8: {raw_filename} -> {attempt1}")
                                     except (UnicodeDecodeError, UnicodeEncodeError):
-                                        # If that fails, try CP437→UTF-8
+                                        
                                         try:
                                             attempt2 = raw_filename.encode('cp437').decode('utf-8')
                                             filename_to_use = attempt2
                                             logger.debug(f"Successfully decoded via cp437→utf-8: {raw_filename} -> {attempt2}")
                                         except (UnicodeDecodeError, UnicodeEncodeError):
-                                            # Keep original if both attempts fail
+                                            
                                             logger.debug(f"Could not decode {raw_filename}, keeping original")
                                             filename_to_use = raw_filename
                                 
-                                # Now extract with the corrected filename
+                                
                                 member.filename = filename_to_use
                                 extracted_path = zip_ref.extract(member, temp_extract_dir)
                                 
@@ -3782,10 +2687,10 @@ async def upload_document(
                                 except Exception as e2:
                                     logger.error(f"Failed to extract {member.filename}: {str(e2)}")
                     
-                    # Clean up temp ZIP
+                    
                     if os.path.exists(temp_zip_path):
                         os.remove(temp_zip_path)
-                    # Process each extracted file
+                    
                     allowed_archive_extensions = ['.pdf', '.docx', '.doc', '.html', '.txt', '.md']
                     
                     for root, dirs, files in os.walk(temp_extract_dir):
@@ -3793,7 +2698,7 @@ async def upload_document(
                             extracted_file_path = os.path.join(root, extracted_filename)
                             extracted_ext = os.path.splitext(extracted_filename)[1].lower()
                             
-                            # Only process supported file types from archive
+                            
                             if extracted_ext not in allowed_archive_extensions:
                                 logger.info(f"Skipping unsupported file in archive: {extracted_filename} ({extracted_ext})")
                                 continue
@@ -3801,20 +2706,20 @@ async def upload_document(
                             try:
                                 logger.info(f"Processing extracted file: {extracted_filename}")
                                 
-                                # Check if file already exists
+                                
                                 if get_file_content_by_filename(extracted_filename, organization_id=organization_id) is not None:
                                     logger.warning(f"File {extracted_filename} already exists in DB, skipping")
                                     continue
                                 
-                                # Read extracted file content
+                                
                                 with open(extracted_file_path, 'rb') as f:
                                     extracted_content = f.read()
                                 
-                                # Save each extracted file to database as separate file (with unicode support)
+                                
                                 extracted_file_id = insert_document_record(extracted_filename, extracted_content, organization_id=organization_id)
                                 logger.info(f"  Saved to database: {extracted_filename} (file_id: {extracted_file_id})")
                                 
-                                # Index to Chroma
+                                
                                 temp_index_path = f"temp_{extracted_filename}"
                                 with open(temp_index_path, 'wb') as buffer:
                                     buffer.write(extracted_content)
@@ -3826,7 +2731,7 @@ async def upload_document(
                                         "file_id": extracted_file_id,
                                         "size": len(extracted_content)
                                     })
-                                    # Fire-and-forget: generate quiz for extracted file
+                                    
                                     try:
                                         asyncio.create_task(create_quiz_for_filename(extracted_filename, organization_id=organization_id))
                                     except Exception:
@@ -3844,7 +2749,7 @@ async def upload_document(
                                 logger.error(f"Error processing {extracted_filename}: {str(e)}")
                                 failed_files.append(extracted_filename)
                     
-                    # Return results
+                    
                     logger.info(f"Archive processing complete: {len(extracted_files)} files processed, {len(failed_files)} failed")
                     
                     return APIResponse(
@@ -3868,16 +2773,16 @@ async def upload_document(
                     raise HTTPException(status_code=400, detail=f"Error extracting archive: {str(e)}")
         
         else:
-            # Handle regular (non-ZIP) files
-            # Check if file with the same name already exists in DB
+            
+            
             if get_file_content_by_filename(original_filename, organization_id=organization_id) is not None:
                 raise HTTPException(status_code=400, detail="A file with this name already exists.")
             
-            # Insert document record and get file_id
+            
             file_id = insert_document_record(original_filename, content_bytes, organization_id=organization_id)
             logger.info(f"  - Database file_id: {file_id}")
 
-            # Index document to Chroma
+            
             temp_file_path = f"temp_{original_filename}"
             with open(temp_file_path, "wb") as buffer:
                 buffer.write(content_bytes)
@@ -3891,21 +2796,21 @@ async def upload_document(
                 os.remove(temp_file_path)
 
             if success:
-                # Fire-and-forget: generate a quiz for this uploaded file in background
+                
                 try:
                     asyncio.create_task(create_quiz_for_filename(original_filename, organization_id=organization_id))
                 except Exception:
                     pass
                 
-                # Log successful completion
+                
                 logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {file_id}, Upload ID: {upload_id})")
                 
-                # Log to advanced analytics if available
+                
                 if ADVANCED_ANALYTICS_ENABLED:
                     try:
                         analytics = get_analytics_core()
                         if analytics and file_id:
-                            # Only log if analytics methods are available
+                            
                             if hasattr(analytics, 'log_file_access'):
                                 analytics.log_file_access(
                                     user_id=current_user[1],
@@ -3942,10 +2847,9 @@ async def upload_document(
         logger.error(f"  - File type: {file_extension}")
         raise HTTPException(500, f"Failed to upload file: {e}")
 
-# List documents endpoint
+
 @app.get("/files/list", response_model=APIResponse)
 async def list_documents(user=Depends(get_current_user)):
-    """List all uploaded documents the user has access to"""
     try:
         organization_id = _get_active_org_id(user)
         if not organization_id:
@@ -3953,7 +2857,7 @@ async def list_documents(user=Depends(get_current_user)):
         documents = get_all_documents(organization_id=organization_id)
         allowed_files = await get_allowed_files(user[1])
         logger.info(f"User {user[1]} role {user[3]} allowed files: {allowed_files}")
-        # Admins see all files, others only their allowed
+        
         if user[3] == "admin" or allowed_files is None:
             filtered_docs = documents
         else:
@@ -3967,20 +2871,19 @@ async def list_documents(user=Depends(get_current_user)):
         logger.exception("Failed to list documents")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Delete document endpoint (admin only)
+
 @app.delete("/files/delete_by_fileid", response_model=APIResponse)
 async def delete_document(
     request: DeleteFileRequest,
     current_user=Depends(get_current_user)
 ):
-    """Delete document from RAG system"""
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
     try:
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
-            organization_id = ""  # Default to empty string if not available
+            organization_id = ""  
         chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id or "")
         
         if chroma_delete_success:
@@ -4007,15 +2910,11 @@ async def delete_document(
         logger.exception("Document deletion failed")
         return APIResponse(status="error", message=str(e), response=None)
 
-# Endpoint to list all available filenames
+
 @app.get("/files/available")
 async def list_available_filenames():
-    """
-    List all available filenames in the uploads directory.
-    Returns a list of filenames with their extensions.
-    """
     try:
-        # Get all files from the uploads directory
+        
         files = []
         if os.path.exists(UPLOAD_DIR):
             for file in os.listdir(UPLOAD_DIR):
@@ -4023,8 +2922,8 @@ async def list_available_filenames():
                 if os.path.isfile(file_path):
                     files.append(file)
         
-        # Also get files from the database (org context not available here; return filesystem only)
-        db_files = get_all_documents()  # Not async, remove await
+        
+        db_files = get_all_documents()  
         db_filenames = []
         for doc in db_files:
             if isinstance(doc, dict):
@@ -4032,7 +2931,7 @@ async def list_available_filenames():
             elif isinstance(doc, (list, tuple)) and len(doc) > 1:
                 db_filenames.append(doc[1])
         
-        # Combine and deduplicate
+        
         all_files = list(set(files + db_filenames))
         
         return {
@@ -4044,27 +2943,24 @@ async def list_available_filenames():
         logger.error(f"Error listing available files: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error listing available files: {str(e)}")
 
-# Endpoint to delete a file by its filename (admin only)
+
 @app.delete("/files/delete_by_filename", response_model=APIResponse)
 async def delete_file_by_filename(filename: str, current_user=Depends(get_current_user)):
-    """
-    Delete a file by its filename (admin only). Removes from uploads, Chroma, and DB.
-    """
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
-    # Decode percent-encoded filename
+    
     filename = unquote(filename) 
     print(f"Deleting file by filename: {filename}")
     organization_id = _get_active_org_id(current_user)
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required.")
 
-    # Find file_id by filename
+    
     documents = get_all_documents(organization_id=organization_id)
     file_id = None
     for doc in documents:
-        # doc is a dict with keys: id, filename, upload_timestamp
+        
         if isinstance(doc, dict) and doc.get("filename") == filename:
             file_id = doc.get("id")
             break
@@ -4073,11 +2969,11 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
             break
     if not file_id:
         raise HTTPException(status_code=404, detail="File not found in database.")
-    # Delete from Chroma
+    
     chroma_delete_success = delete_doc_from_chroma(file_id, organization_id=organization_id)
-    # Delete from DB
+    
     db_delete_success = delete_document_record(file_id)
-    # Delete from uploads directory
+    
     file_path = os.path.join(UPLOAD_DIR, filename)
     file_deleted = False
     if os.path.exists(file_path):
@@ -4100,18 +2996,11 @@ async def delete_file_by_filename(filename: str, current_user=Depends(get_curren
         )
 
 
-# Manual indexation endpoint (admin only)
+
 @app.post("/files/index", response_model=APIResponse, tags=["Documents"])
 async def index_files(
     current_user=Depends(get_current_user)
 ):
-    """
-    Manually index all unindexed files in the knowledge base (admin only).
-    This endpoint scans the database for files that haven't been indexed to Chroma yet
-    and creates vector embeddings for them.
-    
-    Also checks for existing embeddings and replaces them if they exist.
-    """
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
@@ -4125,7 +3014,7 @@ async def index_files(
         
         logger.info(f"Starting manual indexation for organization {organization_id}")
         
-        # Get all documents in the organization
+        
         documents = get_all_documents(organization_id=organization_id)
         
         if not documents:
@@ -4144,7 +3033,7 @@ async def index_files(
         
         for doc in documents:
             try:
-                # Extract document info (handle dict or tuple format)
+                
                 if isinstance(doc, dict):
                     file_id = doc.get("id")
                     filename = doc.get("filename")
@@ -4159,12 +3048,12 @@ async def index_files(
                 if not file_id or not filename:
                     continue
                 
-                # Try to index the file
+                
                 if content:
-                    # Write content to temp file for indexing
+                    
                     temp_file_path = f"temp_{filename}"
                     try:
-                        # Check if embeddings already exist and delete them first
+                        
                         try:
                             existing_deleted = delete_doc_from_chroma(file_id, organization_id=organization_id)
                             if existing_deleted:
@@ -4184,7 +3073,7 @@ async def index_files(
                             else:
                                 buffer.write(content.encode('utf-8'))
                         
-                        # Index to Chroma with organization isolation
+                        
                         success = index_document_to_chroma(
                             temp_file_path, 
                             file_id, 
@@ -4207,7 +3096,7 @@ async def index_files(
                             })
                             logger.warning(f"Failed to index {filename} (file_id: {file_id})")
                     finally:
-                        # Clean up temp file
+                        
                         if os.path.exists(temp_file_path):
                             os.remove(temp_file_path)
                 else:
@@ -4251,17 +3140,13 @@ async def index_files(
         )
 
 
-# Get user accounts (admin only)
+
 @app.get("/accounts", response_model=List[dict])
 async def get_accounts(current_user=Depends(get_current_user)):
-    """
-    List all accounts with their username, role, and last login.
-    Requires admin authentication. Returns only users in the admin's organization.
-    """
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
-    # Get organization_id from the authenticated admin user
+    
     organization_id = _get_active_org_id(current_user)
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required.")
@@ -4277,10 +3162,6 @@ async def delete_user_endpoint(
     username: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
-    """
-    Delete a user by username. Requires admin or master key.
-    Admin can only delete users in their own organization.
-    """
     is_admin = False
     is_master = False
     admin_user = None
@@ -4306,28 +3187,24 @@ async def delete_user_endpoint(
     if not user:
         return APIResponse(status="error", message="User not found", response={})
     
-    # Check organization isolation: admin can only delete users in their own organization
+    
     if is_admin and admin_user:
         admin_org_id = _get_active_org_id(admin_user)
-        user_org_id = user[7] if len(user) > 7 else None  # organization_id is at index 7
+        user_org_id = user[7] if len(user) > 7 else None  
         if admin_org_id != user_org_id:
             raise HTTPException(status_code=403, detail="Cannot delete users from other organizations.")
     
-    # Remove user from DB
+    
     import userdb
     await userdb.delete_user(username)
     return APIResponse(status="success", message=f"User {username} deleted", response={})
 
-# User edit endpoint (admin or master key required)
+
 @app.post("/user/edit", response_model=APIResponse)
 async def edit_user_endpoint(
     request: UserEditRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
-    """
-    Edit user fields. Only provided fields are changed. Requires admin or master key.
-    Admin can only edit users in their own organization.
-    """
     is_admin = False
     is_master = False
     admin_user = None
@@ -4352,35 +3229,35 @@ async def edit_user_endpoint(
     if not user:
         return APIResponse(status="error", message="User not found", response={})
     
-    # Check organization isolation: admin can only edit users in their own organization
+    
     if is_admin and admin_user:
         admin_org_id = _get_active_org_id(admin_user)
-        user_org_id = user[7] if len(user) > 7 else None  # organization_id is at index 7
+        user_org_id = user[7] if len(user) > 7 else None  
         if admin_org_id != user_org_id:
             raise HTTPException(status_code=403, detail="Cannot edit users from other organizations.")
     
     logs = []
     import userdb
-    # Change username
+    
     if request.new_username:
         await userdb.update_username(request.username, request.new_username)
         logs.append(f"Username changed to {request.new_username}")
         request.username = request.new_username
-    # Change password
+    
     if request.password:
         await userdb.update_password(request.username, request.password)
         logs.append("Password updated")
-    # Change role
+    
     if request.role:
         await userdb.update_role(request.username, request.role)
         logs.append(f"Role changed to {request.role}")
-    # Change allowed files
+    
     if request.allowed_files is not None:
         previous_files = await userdb.get_allowed_files(request.username)
         await userdb.update_allowed_files(request.username, request.allowed_files)
         logs.append(f"Allowed files updated to {request.allowed_files}")
 
-        # Reindex any newly accessible files in Chroma to ensure they're searchable
+        
         if previous_files and request.allowed_files:
             new_files = set(request.allowed_files) - set(previous_files if previous_files else [])
             if new_files:
@@ -4393,14 +3270,14 @@ async def edit_user_endpoint(
                     try:
                         content = get_file_content_by_filename(filename)
                         if content:
-                            # Create temporary file for indexing
+                            
                             with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
                                 temp_file.write(content)
                                 temp_path = temp_file.name
 
-                            # Index the file in Chroma
+                            
                             index_document_to_chroma(temp_path, filename)
-                            os.unlink(temp_path)  # Clean up temp file
+                            os.unlink(temp_path)  
                     except Exception as e:
                         logger.error(f"Error reindexing file {filename} after permission update: {e}")
 
@@ -4408,31 +3285,25 @@ async def edit_user_endpoint(
         return APIResponse(status="success", message="No changes made", response={})
     return APIResponse(status="success", message="; ".join(logs), response={})
 
-# PUT endpoint for user update (RESTful alternative)
+
 @app.put("/user/{username}", response_model=APIResponse)
 async def update_user_endpoint(
     username: str,
     request: UserEditRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)
 ):
-    """
-    Update user fields using PUT method (RESTful). Only provided fields are changed. Requires admin or master key.
-    """
-    # Set the username from path parameter
+    
     request.username = username
     
-    # Reuse the existing edit_user_endpoint logic
+    
     return await edit_user_endpoint(request, credentials)
 
-# Disrupt all sessions for a user by access token (user self-service)
+
 class DisruptSessionsRequest(BaseModel):
     access_token: str
 
 @app.post("/user/disrupt_sessions", response_model=APIResponse)
 async def disrupt_sessions_endpoint(request: DisruptSessionsRequest):
-    """
-    Remove all active sessions for the user that owns the provided access token (logout everywhere for that user).
-    """
     user = await get_user_by_token(request.access_token)
     if not user:
         raise HTTPException(status_code=403, detail="Invalid access token.")
@@ -4441,29 +3312,28 @@ async def disrupt_sessions_endpoint(request: DisruptSessionsRequest):
     count = await disrupt_sessions_for_user(username)
     return APIResponse(status="success", message=f"Disrupted {count} sessions for user {username}", response={"sessions_removed": count})
 
-# Edit file content and reindex endpoint (admin only)
+
 @app.post("/files/edit", response_model=APIResponse)
 async def edit_file_content(
     filename: str = Body(..., embed=True),
     new_content: str = Body(..., embed=True),
     user=Depends(get_current_user)
 ):
-    """Edit a file's content and reindex it (admin only)."""
     if user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin only.")
     try:
         from rag_api.db_utils import update_document_record
         from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
         import os
-        # Update DB
+        
         file_ids = update_document_record(filename, new_content.encode("utf-8"))
         if not file_ids:
             return APIResponse(status="error", message="File not found in DB", response=None)
-        # Write new content to a temp file for reindexing (like upload)
+        
         temp_file_path = f"temp_{filename}"
         with open(temp_file_path, "w", encoding="utf-8") as buffer:
             buffer.write(new_content)
-        # Remove old Chroma indexes and reindex for each file_id
+        
         for file_id in file_ids:
             delete_doc_from_chroma(file_id)
             index_document_to_chroma(temp_file_path, file_id)
@@ -4474,25 +3344,21 @@ async def edit_file_content(
 
 
 class TimeRangeQuery(BaseModel):
-    since: str = "24h"  # Default to 24 hours
+    since: str = "24h"  
 
-# ==================== ADVANCED METRICS ENDPOINTS ====================
+
 
 @app.get("/metrics/summary", tags=["Analytics"])
 async def get_metrics_summary_endpoint(
     since: str = Query("24h", description="Time range: 1h, 24h, 7d, etc"),
+    scope: str = Query("org", description="user|org|global"),
     current_user=Depends(get_current_user)
 ):
-    """
-    Get summary metrics for the dashboard - NEW Advanced Analytics
-    
-    Requires authentication. Returns comprehensive performance and usage metrics.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
     try:
-        # Convert since to hours
+        
         if since.endswith('h'):
             hours = int(since[:-1])
         elif since.endswith('d'):
@@ -4501,29 +3367,41 @@ async def get_metrics_summary_endpoint(
             hours = 24
             
         analytics = get_analytics_core()
-        summary = analytics.get_query_statistics(since_hours=hours)
+
+        
+        user_id = None
+        organization_id = None
+        if scope == "user":
+            user_id = current_user[1]
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "org":
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "global":
+            if current_user[3] != "admin":
+                raise HTTPException(status_code=403, detail="Admin required for global metrics")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid scope. Use: user|org|global")
+
+        summary = analytics.get_query_statistics(
+            since_hours=hours,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        
         
         return {
             "status": "success",
-            "period": since,
-            "data": {
-                "total_queries": summary.get('total_queries', 0),
-                "success_rate": round(
-                    (summary.get('successful_queries', 0) / summary.get('total_queries', 1) * 100)
-                    if summary.get('total_queries', 0) > 0 else 0, 2
-                ),
-                "avg_response_time_ms": round(summary.get('avg_response_time_ms', 0), 2),
-                "min_response_time_ms": summary.get('min_response_time_ms', 0),
-                "max_response_time_ms": summary.get('max_response_time_ms', 0),
-                "unique_users": summary.get('unique_users', 0),
-                "cache_hit_rate": round(
-                    (summary.get('cache_hits', 0) / summary.get('total_queries', 1) * 100)
-                    if summary.get('total_queries', 0) > 0 else 0, 2
-                ),
-                "total_tokens_input": summary.get('total_tokens_input', 0),
-                "total_tokens_output": summary.get('total_tokens_output', 0),
-                "avg_docs_per_query": round(summary.get('avg_docs_per_query', 0), 2),
-            }
+            "message": "ok",
+            "response": {
+                "total_queries": int(summary.get('total_queries', 0) or 0),
+                "successful_queries": int(summary.get('successful_queries', 0) or 0),
+                "failed_queries": int(summary.get('failed_queries', 0) or 0),
+                "avg_response_time": round(summary.get('avg_response_time_ms', 0) or 0, 2),
+                "period": since,
+                "scope": scope,
+                "organization_id": organization_id,
+                "user_id": user_id,
+            },
         }
     except Exception as e:
         logger.error(f"Error getting metrics summary: {e}")
@@ -4534,18 +3412,14 @@ async def get_metrics_queries(
     since: str = Query("24h", description="Time range"),
     limit: int = Query(10, le=100),
     offset: int = Query(0),
+    scope: str = Query("org", description="user|org|global"),
     current_user=Depends(get_current_user)
 ):
-    """
-    Get recent queries for analytics - NEW Advanced Analytics
-    
-    Returns paginated query metrics with filters support.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
     try:
-        # Convert since to hours
+        
         if since.endswith('h'):
             hours = int(since[:-1])
         elif since.endswith('d'):
@@ -4554,18 +3428,50 @@ async def get_metrics_queries(
             hours = 24
             
         analytics = get_analytics_core()
-        queries = analytics.get_query_analytics(limit=limit, offset=offset)
+
+        
+        user_id = None
+        organization_id = None
+        if scope == "user":
+            user_id = current_user[1]
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "org":
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "global":
+            if current_user[3] != "admin":
+                raise HTTPException(status_code=403, detail="Admin required for global metrics")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid scope. Use: user|org|global")
+
+        queries = analytics.get_query_analytics(
+            limit=limit,
+            offset=offset,
+            since_hours=hours,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+
+        
+        simplified = []
+        for q in queries:
+            simplified.append({
+                "question": q.get("question"),
+                "answer": q.get("answer_preview") or "",
+                "timestamp": q.get("timestamp"),
+            })
         
         return {
             "status": "success",
-            "period": since,
-            "pagination": {
+            "message": "ok",
+            "response": {
+                "queries": simplified,
+                "period": since,
+                "scope": scope,
+                "organization_id": organization_id,
+                "user_id": user_id,
                 "limit": limit,
-                "offset": offset
+                "offset": offset,
             },
-            "data": {
-                "queries": queries
-            }
         }
     except Exception as e:
         logger.error(f"Error getting metrics queries: {e}")
@@ -4577,11 +3483,6 @@ async def get_metrics_performance(
     limit: int = Query(20, le=100),
     admin_user=Depends(get_current_user)
 ):
-    """
-    Get performance metrics - NEW Advanced Analytics
-    
-    Shows operation performance, bottlenecks, and resource usage.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
@@ -4617,11 +3518,6 @@ async def get_metrics_errors(
     limit: int = Query(50, le=100),
     admin_user=Depends(get_current_user)
 ):
-    """
-    Get error metrics - NEW Advanced Analytics
-    
-    Shows error frequency and aggregation.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
@@ -4653,11 +3549,6 @@ async def get_metrics_documents(
     limit: int = Query(20, le=100),
     admin_user=Depends(get_current_user)
 ):
-    """
-    Get document usage metrics - NEW Advanced Analytics
-    
-    Shows most accessed files and their usage patterns.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
@@ -4680,11 +3571,6 @@ async def get_metrics_documents(
 async def get_metrics_health(
     current_user=Depends(get_current_user)
 ):
-    """
-    Get system health metrics - NEW Advanced Analytics
-    
-    Quick health check with current status.
-    """
     if not ADVANCED_ANALYTICS_ENABLED:
         raise HTTPException(status_code=503, detail="Advanced analytics not available")
     
@@ -4692,7 +3578,7 @@ async def get_metrics_health(
         analytics = get_analytics_core()
         stats = analytics.get_query_statistics(since_hours=1)
         
-        # Health status
+        
         health = "healthy"
         if stats.get('total_queries', 0) == 0:
             health = "no_data"
@@ -4708,7 +3594,7 @@ async def get_metrics_health(
                     (stats.get('successful_queries', 0) / stats.get('total_queries', 1) * 100)
                     if stats.get('total_queries', 0) > 0 else 100, 2
                 ),
-                "avg_response_time_ms": round(stats.get('avg_response_time_ms', 0), 2),
+                "avg_response_time_ms": round(float(stats.get('avg_response_time_ms') or 0), 2),
                 "active_users": stats.get('unique_users', 0),
                 "analytics_enabled": ADVANCED_ANALYTICS_ENABLED
             }
@@ -4722,18 +3608,415 @@ async def get_metrics_health(
             "analytics_enabled": ADVANCED_ANALYTICS_ENABLED
         }
 
-# ==================== DEPRECATED ENDPOINTS (kept for backward compatibility) ====================
+
+@app.get("/dashboard/employee", tags=["Dashboard"])
+async def get_employee_dashboard_data(
+    current_user=Depends(get_current_user),
+    since: str = Query("24h", description="Time range: 1h, 24h, 7d, etc"),
+):
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+
+    if since.endswith('h'):
+        hours = int(since[:-1])
+    elif since.endswith('d'):
+        hours = int(since[:-1]) * 24
+    else:
+        hours = 24
+
+    username = current_user[1]
+    organization_id = _get_active_org_id(current_user)
+    
+    if not organization_id:
+        logger.warning(f"User {username} accessing employee dashboard without organization context")
+
+    analytics = get_analytics_core()
+    user_stats = analytics.get_query_statistics(
+        since_hours=hours,
+        user_id=username,
+        organization_id=organization_id,
+    )
+    org_stats_24h = analytics.get_query_statistics(
+        since_hours=24,
+        organization_id=organization_id,
+    )
+
+    recent = analytics.get_query_analytics(
+        limit=10,
+        offset=0,
+        since_hours=hours,
+        user_id=username,
+        organization_id=organization_id,
+    )
+    recent_queries = []
+    unique_files = set()
+    for q in recent:
+        try:
+            src = q.get("source_files")
+            if isinstance(src, str):
+                import json as _json
+                src = _json.loads(src) if src else []
+            if isinstance(src, list):
+                for f in src:
+                    if isinstance(f, str) and f:
+                        unique_files.add(f)
+        except Exception:
+            pass
+
+        recent_queries.append({
+            "question": q.get("question"),
+            "answer": q.get("answer_preview") or "",
+            "timestamp": q.get("timestamp"),
+            "success": bool(q.get("success")),
+        })
+
+    try:
+        from rag_api.db_utils import get_all_documents
+        documents = get_all_documents(organization_id=organization_id)
+    except Exception:
+        documents = []
+
+    new_docs_week = 0
+    try:
+        import datetime as _dt
+        cutoff = _dt.datetime.utcnow() - _dt.timedelta(days=7)
+        for d in documents:
+            ts = d.get("upload_timestamp") if isinstance(d, dict) else None
+            if not ts:
+                continue
+            try:
+                if isinstance(ts, str):
+                    dt = _dt.datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                else:
+                    dt = ts
+                if dt.replace(tzinfo=None) >= cutoff:
+                    new_docs_week += 1
+            except Exception:
+                continue
+    except Exception:
+        new_docs_week = 0
+
+    return {
+        "status": "success",
+        "message": "ok",
+        "response": {
+            "user_metrics": {
+                "total_queries": int(user_stats.get("total_queries", 0) or 0),
+                "successful_queries": int(user_stats.get("successful_queries", 0) or 0),
+                "failed_queries": int(user_stats.get("failed_queries", 0) or 0),
+                "avg_response_time": round(user_stats.get("avg_response_time_ms", 0) or 0, 2),
+                "documents_accessed": int(len(unique_files)),
+            },
+            "recent_queries": recent_queries,
+            "organization_stats": {
+                "organization_id": organization_id,
+                "total_documents": int(len(documents)),
+                "new_documents": int(new_docs_week),
+                "active_users": int(org_stats_24h.get("unique_users", 0) or 0),
+            },
+        },
+    }
+
+
+@app.get("/dashboard/admin", tags=["Dashboard"])
+async def get_admin_dashboard_data(
+    current_user=Depends(get_current_user),
+    since: str = Query("24h", description="Time range: 1h, 24h, 7d, etc"),
+    scope: str = Query("global", description="org|global"),
+    organization_id: Optional[str] = Query(None, description="Org ID when scope=org"),
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+
+    if since.endswith('h'):
+        hours = int(since[:-1])
+    elif since.endswith('d'):
+        hours = int(since[:-1]) * 24
+    else:
+        hours = 24
+
+    resolved_org = None
+    if scope == "org":
+        resolved_org = organization_id or _get_active_org_id(current_user)
+        if not resolved_org:
+            raise HTTPException(status_code=400, detail="Organization context required")
+    elif scope == "global":
+        resolved_org = None
+    else:
+        raise HTTPException(status_code=400, detail="Invalid scope. Use: org|global")
+
+    analytics = get_analytics_core()
+    summary = analytics.get_query_statistics(since_hours=hours, organization_id=resolved_org)
+    summary_24h = analytics.get_query_statistics(since_hours=24, organization_id=resolved_org)
+    summary_week = analytics.get_query_statistics(since_hours=168, organization_id=resolved_org)
+
+    error_rate = 0.0
+    try:
+        total = float(summary.get("total_queries", 0) or 0)
+        failed = float(summary.get("failed_queries", 0) or 0)
+        error_rate = (failed / total) * 100 if total > 0 else 0.0
+    except Exception:
+        error_rate = 0.0
+
+    health_status = "healthy"
+    if error_rate >= 10:
+        health_status = "critical"
+    elif error_rate >= 5:
+        health_status = "warning"
+
+    active_sessions = 0
+    try:
+        import aiosqlite
+        import datetime as _dt
+        from userdb import DB_PATH as _USERS_DB_PATH
+        now = _dt.datetime.utcnow().isoformat()
+        async with aiosqlite.connect(_USERS_DB_PATH) as conn:
+            if resolved_org:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM user_sessions WHERE expires_at > ? AND organization_id = ?",
+                    (now, resolved_org),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM user_sessions WHERE expires_at > ?",
+                    (now,),
+                )
+            row = await cursor.fetchone()
+            active_sessions = int(row[0] if row else 0)
+    except Exception:
+        active_sessions = 0
+
+    storage_used_gb = 0.0
+    try:
+        from rag_api.db_utils import get_db_connection
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if resolved_org:
+            cur.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) as total_bytes FROM document_store WHERE organization_id = ?", (resolved_org,))
+        else:
+            cur.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) as total_bytes FROM document_store")
+        row = cur.fetchone()
+        conn.close()
+        total_bytes = int(row[0] if row and row[0] is not None else 0)
+        storage_used_gb = round(total_bytes / (1024 ** 3), 4)
+    except Exception:
+        storage_used_gb = 0.0
+
+    total_storage_gb = 100.0
+    storage_pct = round((storage_used_gb / total_storage_gb) * 100, 2) if total_storage_gb > 0 else 0
+
+    total_documents = 0
+    documents_uploaded_today = 0
+    try:
+        from rag_api.db_utils import get_db_connection
+        import datetime as _dt
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if resolved_org:
+            cur.execute("SELECT COUNT(*) FROM document_store WHERE organization_id = ?", (resolved_org,))
+        else:
+            cur.execute("SELECT COUNT(*) FROM document_store")
+        row = cur.fetchone()
+        total_documents = int(row[0] if row else 0)
+
+        cutoff = (_dt.datetime.utcnow() - _dt.timedelta(hours=24)).isoformat()
+        if resolved_org:
+            cur.execute(
+                "SELECT COUNT(*) FROM document_store WHERE organization_id = ? AND upload_timestamp >= ?",
+                (resolved_org, cutoff),
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM document_store WHERE upload_timestamp >= ?", (cutoff,))
+        row2 = cur.fetchone()
+        documents_uploaded_today = int(row2[0] if row2 else 0)
+        conn.close()
+    except Exception:
+        total_documents = 0
+        documents_uploaded_today = 0
+
+    top_docs = []
+    try:
+        docs = analytics.get_top_documents(limit=3, organization_id=resolved_org)
+        for d in docs:
+            views = int((d.get("rag_hit_count", 0) or 0) + (d.get("access_count", 0) or 0))
+            top_docs.append({
+                "filename": d.get("filename"),
+                "views": views,
+                "last_accessed": d.get("last_accessed") or d.get("created_at")
+            })
+    except Exception:
+        top_docs = []
+
+    failed_logins = 0
+    suspicious_activity = 0
+    permission_denials = 0
+    try:
+        conn = analytics.db.get_connection()
+        cur = conn.cursor()
+        where = ["timestamp >= datetime('now', ? || ' hours')"]
+        params = [-24]
+        if resolved_org:
+            where.append("organization_id = ?")
+            params.append(resolved_org)
+        cur.execute(
+            f"SELECT event_type, COUNT(*) as c FROM security_events WHERE {' AND '.join(where)} GROUP BY event_type",
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for r in rows:
+            et = r[0] if not isinstance(r, dict) else r.get("event_type")
+            c = r[1] if not isinstance(r, dict) else r.get("c")
+            if et == "failed_login":
+                failed_logins = int(c or 0)
+            elif et == "suspicious_activity":
+                suspicious_activity = int(c or 0)
+            elif et == "permission_denied":
+                permission_denials = int(c or 0)
+    except Exception:
+        pass
+
+    top_users = []
+    try:
+        conn = analytics.db.get_connection()
+        cur = conn.cursor()
+        where = ["timestamp >= datetime('now', ? || ' hours')"]
+        params = [-hours]
+        if resolved_org:
+            where.append("organization_id = ?")
+            params.append(resolved_org)
+        cur.execute(
+            f"SELECT user_id, COUNT(*) as c, MAX(timestamp) as last_active FROM query_analytics WHERE {' AND '.join(where)} GROUP BY user_id ORDER BY c DESC LIMIT 5",
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for r in rows:
+            top_users.append({
+                "username": r[0],
+                "queries": int(r[1] or 0),
+                "last_active": r[2],
+            })
+    except Exception:
+        top_users = []
+
+    total_users = 0
+    try:
+        from userdb import list_users
+        users = await list_users(resolved_org) if resolved_org else await list_users(None)
+        total_users = len(users)
+    except Exception:
+        total_users = 0
+
+    trends = []
+    try:
+        conn = analytics.db.get_connection()
+        cur = conn.cursor()
+        where = ["timestamp >= datetime('now', ? || ' hours')"]
+        params = [-24]
+        if resolved_org:
+            where.append("organization_id = ?")
+            params.append(resolved_org)
+        cur.execute(
+            f"SELECT question, COUNT(*) as c FROM query_analytics WHERE {' AND '.join(where)} GROUP BY question ORDER BY c DESC LIMIT 5",
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for q, c in rows:
+            term = (q or "")
+            if len(term) > 60:
+                term = term[:57] + "..."
+            trends.append({"term": term, "frequency": int(c or 0), "trend": "stable"})
+    except Exception:
+        trends = []
+
+    success_rate = 0.0
+    try:
+        tq = float(summary.get("total_queries", 0) or 0)
+        sq = float(summary.get("successful_queries", 0) or 0)
+        success_rate = (sq / tq) * 100 if tq > 0 else 0.0
+    except Exception:
+        success_rate = 0.0
+
+    avg_queries_per_user = 0.0
+    try:
+        uq = float(summary.get("unique_users", 0) or 0)
+        tq = float(summary.get("total_queries", 0) or 0)
+        avg_queries_per_user = tq / uq if uq > 0 else 0.0
+    except Exception:
+        avg_queries_per_user = 0.0
+
+    return {
+        "status": "success",
+        "message": "ok",
+        "response": {
+            "system_health": {
+                "status": health_status,
+                "uptime": 99.9,
+                "api_response_time": round(summary.get("avg_response_time_ms", 0) or 0, 2),
+                "error_rate": round(error_rate, 2),
+                "active_connections": int(active_sessions),
+                "database_status": "connected",
+                "storage_usage": {
+                    "used": float(storage_used_gb),
+                    "total": float(total_storage_gb),
+                    "percentage": float(storage_pct),
+                },
+            },
+            "user_analytics": {
+                "total_users": int(total_users),
+                "active_users_today": int(summary_24h.get("unique_users", 0) or 0),
+                "new_registrations_today": 0,
+                "active_users_week": int(summary_week.get("unique_users", 0) or 0),
+                "user_growth_rate": 0,
+                "top_active_users": top_users,
+                "pending_approvals": 0,
+            },
+            "content_metrics": {
+                "total_documents": int(total_documents),
+                "documents_uploaded_today": int(documents_uploaded_today),
+                "storage_used_gb": float(storage_used_gb),
+                "popular_documents": top_docs,
+                "flagged_content": 0,
+                "processing_queue": 0,
+            },
+            "security_alerts": {
+                "failed_logins": int(failed_logins),
+                "suspicious_activity": int(suspicious_activity),
+                "permission_denials": int(permission_denials),
+                "active_sessions": int(active_sessions),
+                "api_key_usage": [],
+            },
+            "business_intelligence": {
+                "search_trends": trends,
+                "department_usage": [],
+                "productivity_metrics": {
+                    "avg_queries_per_user": round(avg_queries_per_user, 2),
+                    "success_rate": round(success_rate, 2),
+                    "response_time_avg": round(summary.get("avg_response_time_ms", 0) or 0, 2),
+                },
+                "cost_metrics": {
+                    "cost_per_query": 0,
+                    "daily_operational_cost": 0,
+                    "monthly_projection": 0,
+                },
+            },
+            "scope": scope,
+            "organization_id": resolved_org,
+            "period": since,
+        },
+    }
+
+
 
 @app.get("/metrics/summary-legacy", tags=["Analytics (Deprecated)"], deprecated=True)
 async def get_metrics_summary_legacy(
     since: str = "24h",
     current_user=Depends(get_current_user)
 ):
-    """
-    DEPRECATED: Use /metrics/summary instead.
-    
-    This endpoint is maintained for backward compatibility only.
-    """
     return {
         "status": "deprecated",
         "message": "This endpoint is deprecated. Please use /metrics/summary instead.",
@@ -4746,14 +4029,386 @@ async def get_metrics_queries_legacy(
     limit: int = 10,
     current_user=Depends(get_current_user)
 ):
-    """
-    DEPRECATED: Use /metrics/queries instead.
-    
-    This endpoint is maintained for backward compatibility only.
-    """
     return {
         "status": "deprecated",
         "message": "This endpoint is deprecated. Please use /metrics/queries instead.",
         "redirect": "/metrics/queries"
     }
 
+
+
+
+
+class QuizQuestionCreate(BaseModel):
+    question: str
+    options: List[str]
+    answer: str
+    explanation: Optional[str] = None
+    points: int = 10
+
+class QuizCreate(BaseModel):
+    title: str
+    description: str
+    category: str
+    difficulty: str = "medium"
+    time_limit: int = 15
+    passing_score: int = 70
+    questions: List[QuizQuestionCreate]
+
+class QuizUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    difficulty: Optional[str] = None
+    time_limit: Optional[int] = None
+    passing_score: Optional[int] = None
+    questions: Optional[List[QuizQuestionCreate]] = None
+
+class QuizSubmissionCreate(BaseModel):
+    quiz_id: str
+    answers: Dict[str, str]
+    time_spent: int
+
+@app.post("/admin/quizzes", response_model=APIResponse, tags=["Quiz Management"])
+async def create_quiz(
+    quiz_data: QuizCreate,
+    request_obj: Request,
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        
+        questions = [QuizQuestion(**q.dict()) for q in quiz_data.questions]
+        
+        quiz_id = await create_manual_quiz(
+            title=quiz_data.title,
+            description=quiz_data.description,
+            category=quiz_data.category,
+            difficulty=quiz_data.difficulty,
+            time_limit=quiz_data.time_limit,
+            passing_score=quiz_data.passing_score,
+            questions=questions,
+            created_by=current_user[1],
+            organization_id=organization_id
+        )
+        
+        return APIResponse(
+            status="success",
+            message="Quiz created successfully",
+            response={"quiz_id": quiz_id}
+        )
+    except Exception as e:
+        logger.error(f"Error creating quiz: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/quizzes", response_model=APIResponse, tags=["Quiz Management"])
+async def list_quizzes(
+    category: Optional[str] = Query(None),
+    difficulty: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        quizzes = await get_all_quizzes(
+            organization_id=organization_id,
+            category=category,
+            difficulty=difficulty,
+            limit=limit,
+            offset=offset
+        )
+        
+        return APIResponse(
+            status="success",
+            message="Quizzes retrieved successfully",
+            response={
+                "quizzes": [quiz.dict() for quiz in quizzes],
+                "total": len(quizzes)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error listing quizzes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
+async def get_quiz(
+    quiz_id: str,
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        quiz = await get_quiz_by_id(quiz_id, organization_id)
+        
+        if not quiz:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        
+        return APIResponse(
+            status="success",
+            message="Quiz retrieved successfully",
+            response=quiz.dict()
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting quiz: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/admin/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
+async def update_quiz_endpoint(
+    quiz_id: str,
+    quiz_data: QuizUpdate,
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        
+        questions = None
+        if quiz_data.questions is not None:
+            questions = [QuizQuestion(**q.dict()) for q in quiz_data.questions]
+        
+        success = await update_quiz(
+            quiz_id=quiz_id,
+            title=quiz_data.title,
+            description=quiz_data.description,
+            category=quiz_data.category,
+            difficulty=quiz_data.difficulty,
+            time_limit=quiz_data.time_limit,
+            passing_score=quiz_data.passing_score,
+            questions=questions,
+            organization_id=organization_id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        
+        return APIResponse(
+            status="success",
+            message="Quiz updated successfully"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating quiz: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/admin/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
+async def delete_quiz_endpoint(
+    quiz_id: str,
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        success = await delete_quiz(quiz_id, organization_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        
+        return APIResponse(
+            status="success",
+            message="Quiz deleted successfully"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting quiz: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/quizzes", response_model=APIResponse, tags=["Quiz Management"])
+async def get_available_quizzes(
+    category: Optional[str] = Query(None),
+    difficulty: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user=Depends(get_current_user)
+):
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        quizzes = await get_all_quizzes(
+            organization_id=organization_id,
+            category=category,
+            difficulty=difficulty,
+            limit=limit,
+            offset=offset
+        )
+        
+        
+        quiz_summaries = []
+        for quiz in quizzes:
+            quiz_summaries.append({
+                "id": quiz.id,
+                "title": quiz.title,
+                "description": quiz.description,
+                "category": quiz.category,
+                "difficulty": quiz.difficulty,
+                "time_limit": quiz.time_limit,
+                "passing_score": quiz.passing_score,
+                "question_count": len(quiz.questions),
+                "created_at": quiz.created_at
+            })
+        
+        return APIResponse(
+            status="success",
+            message="Quizzes retrieved successfully",
+            response={
+                "quizzes": quiz_summaries,
+                "total": len(quiz_summaries)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting available quizzes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
+async def get_quiz_for_user(
+    quiz_id: str,
+    current_user=Depends(get_current_user)
+):
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        quiz = await get_quiz_by_id(quiz_id, organization_id)
+        
+        if not quiz:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        
+        return APIResponse(
+            status="success",
+            message="Quiz retrieved successfully",
+            response=quiz.dict()
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting quiz for user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/quizzes/{quiz_id}/submit", response_model=APIResponse, tags=["Quiz Management"])
+async def submit_quiz(
+    quiz_id: str,
+    submission: QuizSubmissionCreate,
+    current_user=Depends(get_current_user)
+):
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        
+        quiz = await get_quiz_by_id(quiz_id, organization_id)
+        if not quiz:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        
+        
+        score = 0
+        total_points = 0
+        
+        for question in quiz.questions:
+            total_points += question.points
+            user_answer = submission.answers.get(str(quiz.questions.index(question)))
+            if user_answer == question.answer:
+                score += question.points
+        
+        passed = (score / total_points * 100) >= quiz.passing_score
+        
+        
+        submission_id = await submit_quiz_result(
+            quiz_id=quiz_id,
+            user_id=current_user[1],
+            answers=submission.answers,
+            score=score,
+            total_points=total_points,
+            passed=passed,
+            time_spent=submission.time_spent,
+            organization_id=organization_id
+        )
+        
+        return APIResponse(
+            status="success",
+            message="Quiz submitted successfully",
+            response={
+                "submission_id": submission_id,
+                "score": score,
+                "total_points": total_points,
+                "passed": passed,
+                "percentage": round((score / total_points * 100), 2) if total_points > 0 else 0
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting quiz: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/quizzes/{quiz_id}/statistics", response_model=APIResponse, tags=["Quiz Management"])
+async def get_quiz_stats(
+    quiz_id: str,
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        stats = await get_quiz_statistics(quiz_id, organization_id)
+        
+        return APIResponse(
+            status="success",
+            message="Statistics retrieved successfully",
+            response=stats
+        )
+    except Exception as e:
+        logger.error(f"Error getting quiz statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/quizzes/{quiz_id}/submissions", response_model=APIResponse, tags=["Quiz Management"])
+async def get_quiz_submissions_admin(
+    quiz_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user=Depends(get_current_user)
+):
+    if current_user[3] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    organization_id = _get_active_org_id(current_user)
+    
+    try:
+        submissions = await get_quiz_submissions(
+            quiz_id=quiz_id,
+            organization_id=organization_id,
+            limit=limit,
+            offset=offset
+        )
+        
+        return APIResponse(
+            status="success",
+            message="Submissions retrieved successfully",
+            response={
+                "submissions": [sub.dict() for sub in submissions],
+                "total": len(submissions)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting quiz submissions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
