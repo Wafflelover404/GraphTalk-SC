@@ -38,7 +38,7 @@ try:
 except LookupError:
     nltk.download('punkt', quiet=True)
     nltk.download('stopwords', quiet=True)
-from document_loaders import EnhancedPDFLoader, EnhancedDocxLoader, ZIPLoader, UnstructuredHTMLLoader
+from .document_loaders import EnhancedPDFLoader, EnhancedDocxLoader, ZIPLoader, UnstructuredHTMLLoader
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from difflib import SequenceMatcher
@@ -426,16 +426,67 @@ def index_document_to_chroma(file_path: str, file_id: int, organization_id: str 
 
 def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
     try:
-        where_clause = {"file_id": file_id}
+        # Build where clause with proper Chroma syntax
         if organization_id:
-            where_clause["organization_id"] = organization_id
-        docs = vectorstore.get(where=where_clause)
-        print(f"Found {len(docs['ids'])} document chunks for file_id {file_id}")
-        vectorstore._collection.delete(where=where_clause)
-        print(f"Deleted all documents with file_id {file_id}")
-        return True
+            where_clause = {
+                "$and": [
+                    {"file_id": file_id},
+                    {"organization_id": organization_id}
+                ]
+            }
+        else:
+            where_clause = {"file_id": file_id}
+        
+        # Check if vectorstore is initialized
+        global vectorstore
+        if vectorstore is None:
+            print("Error: Vectorstore not initialized")
+            return False
+        
+        # Check if collection exists
+        try:
+            collection = vectorstore._collection
+            print(f"Collection name: {collection.name}")
+        except Exception as e:
+            print(f"Error accessing collection: {e}")
+            return False
+            
+        # Get documents to see what exists
+        try:
+            docs = vectorstore.get(where=where_clause)
+            print(f"Found {len(docs['ids'])} document chunks for file_id {file_id}")
+            print(f"Document IDs: {docs['ids'][:5] if docs['ids'] else 'None'}")  # Show first 5 IDs
+        except Exception as e:
+            print(f"Error getting documents from Chroma: {e}")
+            return False
+        
+        if len(docs['ids']) == 0:
+            print(f"No documents found with file_id {file_id}")
+            return True  # Consider this successful since nothing to delete
+        
+        # Try to delete using the collection directly
+        try:
+            result = collection.delete(where=where_clause)
+            print(f"Chroma delete operation result: {result}")
+            print(f"Deleted all documents with file_id {file_id}")
+            return True
+        except Exception as e:
+            print(f"Error in collection.delete(): {e}")
+            
+            # Fallback: try using vectorstore.delete
+            try:
+                result = vectorstore.delete(where=where_clause)
+                print(f"Vectorstore delete operation result: {result}")
+                print(f"Deleted all documents with file_id {file_id} using vectorstore.delete")
+                return True
+            except Exception as e2:
+                print(f"Error in vectorstore.delete(): {e2}")
+                return False
+                
     except Exception as e:
         print(f"Error deleting document with file_id {file_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def reindex_documents(documents_dir: str, file_paths: List[str] = None) -> Dict[str, Any]:
@@ -518,8 +569,12 @@ def reindex_documents(documents_dir: str, file_paths: List[str] = None) -> Dict[
                 stats['errors'].append(error_msg)
                 logger.error(error_msg, exc_info=True)
         
-        # Persist the vectorstore
-        vectorstore.persist()
+        # Persist the vectorstore (if persist method exists)
+        try:
+            vectorstore.persist()
+        except AttributeError:
+            # Chroma no longer has persist() method in newer versions
+            logger.info("Vectorstore persistence handled automatically")
         
     except Exception as e:
         error_msg = f"Fatal error during reindexing: {str(e)}"
