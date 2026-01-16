@@ -2198,7 +2198,7 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                     rag_chain=rag_chain,
                     query=question,
                     model_type=model_type,
-                    humanized=humanize,
+                    humanize=humanize,
                     skip_llm=True  # Skip LLM to return documents immediately
                 )
                 
