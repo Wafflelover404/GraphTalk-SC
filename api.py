@@ -2018,20 +2018,62 @@ async def search_opencart_products(
             logger.error("session_id is None or empty before log_query call in OpenCart search")
             session_id = str(uuid.uuid4())
         
-        log_query(
-            session_id=session_id,
-            user_id=username,
-            role=role,
-            question=request.question,
-            answer=response_text if response_text else "No OpenCart products found",
-            model_type=model_type,
-            humanize=False,
-            source_document_count=len(opencart_docs),
-            security_filtered=False,
-            source_filenames=immediate_response["files"],
-            ip_address=client_ip,
-            response_time_ms=int(response_time)
-        )
+        # Log metrics using the new analytics system if available, otherwise fall back to old system
+        if ADVANCED_ANALYTICS_ENABLED:
+            try:
+                analytics = get_analytics_core()
+                query_metrics = QueryMetrics(
+                    query_id=session_id,
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=request.question,
+                    answer_preview=response_text[:200] if response_text else "No OpenCart products found",
+                    answer_length=len(response_text) if response_text else 0,
+                    model_type=model_type,
+                    query_type=QueryType.RAG_SEARCH,
+                    humanized=False,
+                    source_document_count=len(opencart_docs),
+                    security_filtered=False,
+                    source_files=immediate_response["files"],
+                    ip_address=client_ip,
+                    response_time_ms=int(response_time),
+                    success=True
+                )
+                analytics.log_query(query_metrics)
+            except Exception as e:
+                logger.warning(f"Failed to log OpenCart search to advanced analytics: {e}")
+                # Fall back to old system
+                log_query(
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=request.question,
+                    answer=response_text if response_text else "No OpenCart products found",
+                    model_type=model_type,
+                    humanized=False,
+                    source_document_count=len(opencart_docs),
+                    security_filtered=False,
+                    source_files=immediate_response["files"],
+                    ip_address=client_ip,
+                    response_time_ms=int(response_time)
+                )
+        else:
+            # Use old logging system
+            log_query(
+                session_id=session_id,
+                user_id=username,
+                role=role,
+                question=request.question,
+                answer=response_text if response_text else "No OpenCart products found",
+                model_type=model_type,
+                humanized=False,
+                source_document_count=len(opencart_docs),
+                security_filtered=False,
+                source_files=immediate_response["files"],
+                ip_address=client_ip,
+                response_time_ms=int(response_time)
+            )
         
         
         for filename in immediate_response["files"]:
@@ -2156,7 +2198,7 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                     rag_chain=rag_chain,
                     query=question,
                     model_type=model_type,
-                    humanize=humanize,
+                    humanized=humanize,
                     skip_llm=True  # Skip LLM to return documents immediately
                 )
                 
@@ -2282,20 +2324,62 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                     logger.error("session_id is None or empty before log_query call in websocket")
                     session_id = str(uuid.uuid4())
                 
-                log_query(
-                    session_id=session_id,
-                    user_id=username,
-                    role=role,
-                    question=question,
-                    answer=response_text,
-                    model_type=model_type,
-                    humanize=humanize,
-                    source_document_count=len(source_docs),
-                    security_filtered=security_filtered,
-                    source_filenames=immediate_response["files"],
-                    ip_address=websocket.client.host if websocket.client else None,
-                    response_time_ms=int(response_time)
-                )
+                # Log metrics using the new analytics system if available, otherwise fall back to old system
+                if ADVANCED_ANALYTICS_ENABLED:
+                    try:
+                        analytics = get_analytics_core()
+                        query_metrics = QueryMetrics(
+                            query_id=session_id,
+                            session_id=session_id,
+                            user_id=username,
+                            role=role,
+                            question=question,
+                            answer_preview=response_text[:200] if response_text else None,
+                            answer_length=len(response_text) if response_text else 0,
+                            model_type=model_type,
+                            query_type=QueryType.WEBSOCKET,
+                            humanized=humanize,
+                            source_document_count=len(source_docs),
+                            security_filtered=security_filtered,
+                            source_files=immediate_response["files"],
+                            ip_address=websocket.client.host if websocket.client else None,
+                            response_time_ms=int(response_time),
+                            success=True
+                        )
+                        analytics.log_query(query_metrics)
+                    except Exception as e:
+                        logger.warning(f"Failed to log websocket query to advanced analytics: {e}")
+                        # Fall back to old system
+                        log_query(
+                            session_id=session_id,
+                            user_id=username,
+                            role=role,
+                            question=question,
+                            answer=response_text,
+                            model_type=model_type,
+                            humanized=humanize,
+                            source_document_count=len(source_docs),
+                            security_filtered=security_filtered,
+                            source_files=immediate_response["files"],
+                            ip_address=websocket.client.host if websocket.client else None,
+                            response_time_ms=int(response_time)
+                        )
+                else:
+                    # Use old logging system
+                    log_query(
+                        session_id=session_id,
+                        user_id=username,
+                        role=role,
+                        question=question,
+                        answer=response_text,
+                        model_type=model_type,
+                        humanized=humanize,
+                        source_document_count=len(source_docs),
+                        security_filtered=security_filtered,
+                        source_files=immediate_response["files"],
+                        ip_address=websocket.client.host if websocket.client else None,
+                        response_time_ms=int(response_time)
+                    )
                 
                 # Log file access
                 for filename in immediate_response["files"]:
@@ -2467,20 +2551,62 @@ async def process_secure_rag_query(
             logger.error("session_id is None or empty before log_query call")
             session_id = str(uuid.uuid4())
         
-        log_query(
-            session_id=session_id,
-            user_id=username,
-            role=role,
-            question=request.question,
-            answer=response_text,
-            model_type=model_type,
-            humanize=request.humanize if request.humanize is not None else True,
-            source_document_count=len(source_docs),
-            security_filtered=security_filtered,
-            source_filenames=immediate_response["files"],
-            ip_address=client_ip,
-            response_time_ms=int(response_time)
-        )
+        # Log metrics using the new analytics system if available, otherwise fall back to old system
+        if ADVANCED_ANALYTICS_ENABLED:
+            try:
+                analytics = get_analytics_core()
+                query_metrics = QueryMetrics(
+                    query_id=session_id,
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=request.question,
+                    answer_preview=response_text[:200] if response_text else None,
+                    answer_length=len(response_text) if response_text else 0,
+                    model_type=model_type,
+                    query_type=QueryType.RAG_SEARCH,
+                    humanized=request.humanize if request.humanize is not None else True,
+                    source_document_count=len(source_docs),
+                    security_filtered=security_filtered,
+                    source_files=immediate_response["files"],
+                    ip_address=client_ip,
+                    response_time_ms=int(response_time),
+                    success=True
+                )
+                analytics.log_query(query_metrics)
+            except Exception as e:
+                logger.warning(f"Failed to log query to advanced analytics: {e}")
+                # Fall back to old system
+                log_query(
+                    session_id=session_id,
+                    user_id=username,
+                    role=role,
+                    question=request.question,
+                    answer=response_text,
+                    model_type=model_type,
+                    humanized=request.humanize if request.humanize is not None else True,
+                    source_document_count=len(source_docs),
+                    security_filtered=security_filtered,
+                    source_files=immediate_response["files"],
+                    ip_address=client_ip,
+                    response_time_ms=int(response_time)
+                )
+        else:
+            # Use old logging system
+            log_query(
+                session_id=session_id,
+                user_id=username,
+                role=role,
+                question=request.question,
+                answer=response_text,
+                model_type=model_type,
+                humanized=request.humanize if request.humanize is not None else True,
+                source_document_count=len(source_docs),
+                security_filtered=security_filtered,
+                source_files=immediate_response["files"],
+                ip_address=client_ip,
+                response_time_ms=int(response_time)
+            )
 
         # Log file access for each source document
         for filename in immediate_response["files"]:
@@ -3190,6 +3316,19 @@ async def upload_file(
             organization_id=organization_id
         )
         
+        # Automatically index the uploaded document
+        try:
+            from auto_indexer import AutoIndexer
+            indexer = AutoIndexer()
+            file_hash = indexer.get_file_hash(file_path)
+            if indexer.index_document(file_path, file_hash):
+                logger.info(f"✓ Document automatically indexed: {original_filename}")
+            else:
+                logger.warning(f"⚠️ Failed to auto-index document: {original_filename}")
+        except Exception as e:
+            logger.error(f"⚠️ Auto-indexing error for {original_filename}: {e}")
+            # Don't fail the upload if indexing fails
+        
         logger.info(f"✓ Upload completed successfully: {original_filename} (ID: {document_id}, Upload ID: {upload_id})")
         
         return APIResponse(
@@ -3246,13 +3385,20 @@ async def delete_document(
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
     try:
+        logger.info(f"Attempting to delete document with file_id: {request.file_id}")
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
             organization_id = ""  
+        
+        logger.info(f"Deleting from Chroma with organization_id: {organization_id}")
         chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id or "")
+        logger.info(f"Chroma deletion result: {chroma_delete_success}")
         
         if chroma_delete_success:
+            logger.info(f"Deleting from database with file_id: {request.file_id}")
             db_delete_success = delete_document_record(request.file_id)
+            logger.info(f"Database deletion result: {db_delete_success}")
+            
             if db_delete_success:
                 return APIResponse(
                     status="success",
@@ -3272,7 +3418,7 @@ async def delete_document(
                 response=None
             )
     except Exception as e:
-        logger.exception("Document deletion failed")
+        logger.exception(f"Document deletion failed for file_id {request.file_id}: {e}")
         return APIResponse(status="error", message=str(e), response=None)
 
 
@@ -4279,6 +4425,72 @@ async def get_metrics_health(
             "detail": str(e),
             "analytics_enabled": ADVANCED_ANALYTICS_ENABLED
         }
+
+
+@app.get("/metrics/volume", tags=["Analytics"])
+async def get_query_volume(
+    days: int = Query(7, description="Number of days to retrieve", ge=1, le=365),
+    scope: str = Query("org", description="Scope: user|org|global"),
+    current_user=Depends(get_current_user)
+):
+    """Get daily query volume data for charts"""
+    if not ADVANCED_ANALYTICS_ENABLED:
+        raise HTTPException(status_code=503, detail="Advanced analytics not available")
+    
+    try:
+        analytics = get_analytics_core()
+        
+        # Determine scope
+        user_id = None
+        organization_id = None
+        if scope == "user":
+            user_id = current_user[1]
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "org":
+            organization_id = _get_active_org_id(current_user)
+        elif scope == "global":
+            if current_user[3] != "admin":
+                raise HTTPException(status_code=403, detail="Admin required for global metrics")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid scope. Use: user|org|global")
+        
+        # Ensure daily data is updated
+        analytics.ensure_daily_data_updated(days_back=days, organization_id=organization_id)
+        
+        # Get daily volume data
+        volume_data = analytics.get_daily_query_volume(days, organization_id)
+        
+        # Format data for chart consumption
+        formatted_data = []
+        for day in volume_data:
+            formatted_data.append({
+                "date": datetime.datetime.strptime(day['date'], '%Y-%m-%d').strftime('%a'),
+                "fullDate": day['date'],
+                "queries": day['total_queries'],
+                "success": day['successful_queries'],
+                "failed": day['failed_queries'],
+                "uniqueUsers": day['unique_users'],
+                "avgResponseTime": round(day['avg_response_time_ms'], 2) if day['avg_response_time_ms'] else 0
+            })
+        
+        return {
+            "status": "success",
+            "message": "ok",
+            "response": {
+                "data": formatted_data,
+                "period": f"{days} days",
+                "scope": scope,
+                "organization_id": organization_id,
+                "user_id": user_id,
+                "total_queries": sum(day['total_queries'] for day in volume_data),
+                "total_successful": sum(day['successful_queries'] for day in volume_data),
+                "total_failed": sum(day['failed_queries'] for day in volume_data),
+                "avg_daily_queries": round(sum(day['total_queries'] for day in volume_data) / len(volume_data), 2) if volume_data else 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting query volume: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/dashboard/employee", tags=["Dashboard"])

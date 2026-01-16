@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+import datetime as dt
 from typing import Optional, Dict, List, Any, Tuple
 from enum import Enum
 from dataclasses import dataclass, field, asdict
@@ -282,6 +283,28 @@ class AnalyticsDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_se_timestamp ON security_events(timestamp)')
         
         _ensure_column('security_events', 'organization_id', 'TEXT')
+        
+        # Daily query volume aggregation table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_query_volume (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL UNIQUE,
+                organization_id TEXT,
+                total_queries INTEGER DEFAULT 0,
+                successful_queries INTEGER DEFAULT 0,
+                failed_queries INTEGER DEFAULT 0,
+                unique_users INTEGER DEFAULT 0,
+                avg_response_time_ms REAL DEFAULT 0.0,
+                total_tokens_input INTEGER DEFAULT 0,
+                total_tokens_output INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create indexes for daily_query_volume
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dqv_date ON daily_query_volume(date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dqv_organization_id ON daily_query_volume(organization_id)')
         
         # Endpoint access logs
         cursor.execute('''
@@ -1017,6 +1040,153 @@ class AnalyticsCore:
         results = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return results
+    
+    # ========== DAILY QUERY VOLUME MANAGEMENT ==========
+    
+    def update_daily_query_volume(self, target_date: Optional[str] = None, organization_id: Optional[str] = None) -> bool:
+        """Update daily query volume aggregation for a specific date"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            # Use current date if not specified
+            if target_date is None:
+                target_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # Aggregate query data for the target date
+            where_clauses = ["DATE(timestamp) = ?"]
+            params = [target_date]
+            
+            if organization_id:
+                where_clauses.append("organization_id = ?")
+                params.append(organization_id)
+            
+            cursor.execute(f'''
+                SELECT
+                    COUNT(*) as total_queries,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_queries,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed_queries,
+                    COUNT(DISTINCT user_id) as unique_users,
+                    AVG(response_time_ms) as avg_response_time_ms,
+                    SUM(token_input) as total_tokens_input,
+                    SUM(token_output) as total_tokens_output
+                FROM query_analytics
+                WHERE {' AND '.join(where_clauses)}
+            ''', params)
+            
+            result = cursor.fetchone()
+            
+            if result and result[0] > 0:  # Only update if there are queries
+                cursor.execute('''
+                    INSERT OR REPLACE INTO daily_query_volume
+                    (date, organization_id, total_queries, successful_queries, failed_queries,
+                     unique_users, avg_response_time_ms, total_tokens_input, total_tokens_output, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    target_date,
+                    organization_id,
+                    result[0],  # total_queries
+                    result[1],  # successful_queries
+                    result[2],  # failed_queries
+                    result[3],  # unique_users
+                    result[4] or 0.0,  # avg_response_time_ms
+                    result[5] or 0,  # total_tokens_input
+                    result[6] or 0   # total_tokens_output
+                ))
+                
+                conn.commit()
+                self.logger.info(f"Updated daily query volume for {target_date}, org: {organization_id or 'global'}")
+                return True
+            else:
+                self.logger.info(f"No queries found for {target_date}, org: {organization_id or 'global'}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error updating daily query volume: {e}")
+            return False
+        finally:
+            if 'conn' in locals():
+                conn.close()
+    
+    def get_daily_query_volume(
+        self,
+        days: int = 7,
+        organization_id: Optional[str] = None
+    ) -> List[Dict]:
+        """Get daily query volume for the last N days"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            where_clauses = ["date >= date('now', ? || ' days')"]
+            params = [-days]
+            
+            if organization_id:
+                where_clauses.append("organization_id = ?")
+                params.append(organization_id)
+            else:
+                where_clauses.append("organization_id IS NULL")
+            
+            cursor.execute(f'''
+                SELECT
+                    date,
+                    total_queries,
+                    successful_queries,
+                    failed_queries,
+                    unique_users,
+                    avg_response_time_ms,
+                    total_tokens_input,
+                    total_tokens_output
+                FROM daily_query_volume
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY date ASC
+            ''', params)
+            
+            results = [dict(row) for row in cursor.fetchall()]
+            
+            # Fill missing days with zero data
+            if results:
+                # Calculate the start date based on the requested period
+                end_date = datetime.now().date()
+                start_date = (end_date - timedelta(days=days-1))  # days-1 to include today
+                
+                complete_results = []
+                current_date = start_date
+                
+                while current_date <= end_date:
+                    date_str = current_date.strftime('%Y-%m-%d')
+                    day_data = next((r for r in results if r['date'] == date_str), {
+                        'date': date_str,
+                        'total_queries': 0,
+                        'successful_queries': 0,
+                        'failed_queries': 0,
+                        'unique_users': 0,
+                        'avg_response_time_ms': 0.0,
+                        'total_tokens_input': 0,
+                        'total_tokens_output': 0
+                    })
+                    complete_results.append(day_data)
+                    current_date += timedelta(days=1)
+                
+                return complete_results
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error getting daily query volume: {e}")
+            return []
+        finally:
+            if 'conn' in locals():
+                conn.close()
+    
+    def ensure_daily_data_updated(self, days_back: int = 7, organization_id: Optional[str] = None) -> None:
+        """Ensure daily data is updated for the last N days"""
+        try:
+            for i in range(days_back):
+                target_date = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+                self.update_daily_query_volume(target_date, organization_id)
+        except Exception as e:
+            self.logger.error(f"Error ensuring daily data updated: {e}")
 
 
 # ==================== SINGLETON INSTANCE ====================
@@ -1028,4 +1198,6 @@ def get_analytics_core() -> AnalyticsCore:
     global _analytics_instance
     if _analytics_instance is None:
         _analytics_instance = AnalyticsCore()
+        # Initialize daily data for the last 7 days
+        _analytics_instance.ensure_daily_data_updated(7)
     return _analytics_instance
