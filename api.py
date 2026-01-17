@@ -2163,6 +2163,7 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
             question = data.get("question")
             humanize = data.get("humanize", True)
             session_id = data.get("session_id", str(uuid.uuid4()))
+            ai_agent_mode = data.get("ai_agent_mode", False)
             
             if not question:
                 await websocket.send_json({
@@ -2176,10 +2177,12 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
             model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
             
             # Send acknowledgment
+            status_message = "AI-agent search processing..." if ai_agent_mode else "Processing query..."
             await websocket.send_json({
                 "type": "status",
-                "message": "Processing query...",
-                "status": "processing"
+                "message": status_message,
+                "status": "processing",
+                "ai_agent_mode": ai_agent_mode
             })
             
             start_time = datetime.datetime.now()
@@ -2208,10 +2211,13 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                 security_filtered = rag_result.get("security_filtered", False)
                 
                 # Prepare response data
+                search_strategy = "enhanced" if ai_agent_mode else "standard"
                 immediate_response = {
                     "files": [],
                     "snippets": [],
                     "model": model_type,
+                    "search_strategy": search_strategy,
+                    "ai_agent_mode": ai_agent_mode,
                     "security_info": {
                         "user_filtered": True,
                         "username": username,
@@ -2235,10 +2241,20 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                         if source not in immediate_response["files"]:
                             immediate_response["files"].append(source)
                         
-                        immediate_response["snippets"].append({
+                        # Create snippet with AI-agent metadata if enabled
+                        snippet_data = {
                             "content": content,
                             "source": source
-                        })
+                        }
+                        
+                        if ai_agent_mode:
+                            snippet_data.update({
+                                "ai_ranked": True,
+                                "relevance": "high",  # Could be calculated based on score
+                                "enhanced_context": True
+                            })
+                        
+                        immediate_response["snippets"].append(snippet_data)
                     except Exception as e:
                         logger.warning(f"Error processing document: {e}")
                 
@@ -2259,9 +2275,15 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                         )
                         
                         if overview:
+                            # Add AI-agent prefix if in AI-agent mode
+                            if ai_agent_mode:
+                                overview = f"🤖 **AI-Agent Analysis**: {overview}"
+                            
                             await websocket.send_json({
                                 "type": "overview",
-                                "data": overview
+                                "data": overview,
+                                "ai_agent_mode": ai_agent_mode,
+                                "enhanced": ai_agent_mode
                             })
                     except Exception as e:
                         logger.error(f"Error generating LLM overview: {e}")
