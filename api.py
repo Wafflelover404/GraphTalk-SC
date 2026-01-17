@@ -547,8 +547,15 @@ async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str
                  product.description, product.url, product.image, qty, status, 
                  rating, datetime.utcnow())
             )
+    return {"inserted": inserted, "updated": updated}
+
+
+@app.post("/api-keys/create", response_model=APIResponse)
+async def create_api_key_endpoint(
+    request: CreateAPIKeyRequest,
+    current_user=Depends(get_current_user)
+):
     try:
-        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required to create API keys.")
         
@@ -576,7 +583,7 @@ async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str
             message="API key created successfully. Save the key now - it won't be shown again!",
             response={
                 "key_id": key_id,
-                "full_key": full_key,
+                "key": full_key,
                 "name": request.name,
                 "permissions": request.permissions,
                 "created_by": username,
