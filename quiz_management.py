@@ -3,16 +3,18 @@ import os
 import uuid
 import json
 import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel
 from fastapi import HTTPException
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'quiz.db')
 
 class QuizQuestion(BaseModel):
+    id: str
+    type: str
     question: str
-    options: List[str]
-    answer: str
+    options: Optional[List[str]] = None
+    correct_answer: Union[str, int]
     explanation: Optional[str] = None
     points: int = 10
 

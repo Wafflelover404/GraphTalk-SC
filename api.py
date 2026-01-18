@@ -547,15 +547,8 @@ async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str
                  product.description, product.url, product.image, qty, status, 
                  rating, datetime.utcnow())
             )
-    return {"inserted": inserted, "updated": updated}
-
-
-@app.post("/api-keys/create", response_model=APIResponse)
-async def create_api_key_endpoint(
-    request: CreateAPIKeyRequest,
-    current_user=Depends(get_current_user)
-):
     try:
+        
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required to create API keys.")
         
@@ -583,7 +576,7 @@ async def create_api_key_endpoint(
             message="API key created successfully. Save the key now - it won't be shown again!",
             response={
                 "key_id": key_id,
-                "key": full_key,
+                "full_key": full_key,
                 "name": request.name,
                 "permissions": request.permissions,
                 "created_by": username,
@@ -4999,7 +4992,25 @@ async def create_quiz(
     
     try:
         logger.info(f"Creating quiz: {quiz_data.title}")
-        questions = [QuizQuestion(**q.dict()) for q in quiz_data.questions]
+        logger.info(f"Quiz data received: {quiz_data}")
+        logger.info(f"Questions received: {quiz_data.questions}")
+        
+        # Validate questions before processing
+        if not quiz_data.questions or len(quiz_data.questions) == 0:
+            logger.error("No questions provided in quiz data")
+            raise HTTPException(status_code=422, detail="Quiz must have at least one question")
+        
+        questions = []
+        for i, q in enumerate(quiz_data.questions):
+            logger.info(f"Processing question {i}: {q}")
+            try:
+                quiz_question = QuizQuestion(**q.dict())
+                questions.append(quiz_question)
+                logger.info(f"Question {i} validated successfully")
+            except Exception as q_error:
+                logger.error(f"Error validating question {i}: {q_error}")
+                logger.error(f"Question data: {q.dict()}")
+                raise HTTPException(status_code=422, detail=f"Invalid question {i+1}: {str(q_error)}")
         
         quiz_id = await create_manual_quiz(
             title=quiz_data.title,
@@ -5178,9 +5189,9 @@ async def get_available_quizzes(
         
         logger.info(f"Found {len(quizzes)} quizzes")
         
-        quiz_summaries = []
+        quiz_data = []
         for quiz in quizzes:
-            quiz_summaries.append({
+            quiz_data.append({
                 "id": quiz.id,
                 "title": quiz.title,
                 "description": quiz.description,
@@ -5189,17 +5200,18 @@ async def get_available_quizzes(
                 "time_limit": quiz.time_limit,
                 "passing_score": quiz.passing_score,
                 "question_count": len(quiz.questions),
+                "questions": [q.__dict__ for q in quiz.questions],
                 "created_at": quiz.created_at
             })
         
-        logger.info(f"Returning {len(quiz_summaries)} quiz summaries")
+        logger.info(f"Returning {len(quiz_data)} quiz data")
         
         return APIResponse(
             status="success",
             message="Quizzes retrieved successfully",
             response={
-                "quizzes": quiz_summaries,
-                "total": len(quiz_summaries)
+                "quizzes": quiz_data,
+                "total": len(quiz_data)
             }
         )
     except Exception as e:
