@@ -2274,17 +2274,20 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                             {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
                         )
                         
-                        if overview:
-                            # Add AI-agent prefix if in AI-agent mode
-                            if ai_agent_mode:
-                                overview = f"🤖 **AI-Agent Analysis**: {overview}"
-                            
-                            await websocket.send_json({
-                                "type": "overview",
-                                "data": overview,
-                                "ai_agent_mode": ai_agent_mode,
-                                "enhanced": ai_agent_mode
-                            })
+                        # Always send an overview message, even if LLM generation fails
+                        if not overview:
+                            overview = "I was unable to generate a detailed overview due to technical difficulties. However, I found relevant sources that may help answer your question."
+                        
+                        # Add AI-agent prefix if in AI-agent mode
+                        if ai_agent_mode:
+                            overview = f"🤖 **AI-Agent Analysis**: {overview}"
+                        
+                        await websocket.send_json({
+                            "type": "overview",
+                            "data": overview,
+                            "ai_agent_mode": ai_agent_mode,
+                            "enhanced": ai_agent_mode
+                        })
                     except Exception as e:
                         logger.error(f"Error generating LLM overview: {e}")
                         await websocket.send_json({

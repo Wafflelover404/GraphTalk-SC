@@ -174,8 +174,8 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
             else:
                 print(f"❌ Gemini API error: {e}")
     
-    print("⚠️ No LLM overview generated. Returning RAG results only.")
-    return None
+    print("⚠️ All LLM services unavailable. Providing fallback response.")
+    return "I apologize, but I'm currently unable to generate a detailed AI overview due to technical difficulties with the language models. The search results above contain relevant information from your knowledge base that should help answer your question. Please try again later for a comprehensive analysis."
 
 async def llm_call(message, data, get_overview=True):
     """
