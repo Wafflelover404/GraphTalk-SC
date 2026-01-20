@@ -33,13 +33,15 @@ def create_document_store():
 					content BLOB,
 					upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 					organization_id TEXT)''')
-	# Backfill column if missing
+	# Backfill columns if missing
 	try:
 		cursor = conn.execute("PRAGMA table_info(document_store)")
 		cols = {row[1] for row in cursor.fetchall()}
 		if "organization_id" not in cols:
 			conn.execute("ALTER TABLE document_store ADD COLUMN organization_id TEXT")
-			conn.commit()
+		if "file_size" not in cols:
+			conn.execute("ALTER TABLE document_store ADD COLUMN file_size INTEGER")
+		conn.commit()
 	except Exception:
 		pass
 	conn.close()
@@ -72,9 +74,10 @@ def insert_document_record(filename, content_bytes=None, organization_id=None):
 		filename = filename.decode('utf-8', errors='replace')
 	if content_bytes is None:
 		content_bytes = b""
+	file_size = len(content_bytes)
 	cursor.execute(
-		'INSERT INTO document_store (filename, content, organization_id) VALUES (?, ?, ?)',
-		(filename, content_bytes, organization_id)
+		'INSERT INTO document_store (filename, content, organization_id, file_size) VALUES (?, ?, ?, ?)',
+		(filename, content_bytes, organization_id, file_size)
 	)
 	file_id = cursor.lastrowid
 	conn.commit()
@@ -97,22 +100,41 @@ def get_file_content_by_filename(filename, organization_id=None):
 	return None
 
 def delete_document_record(file_id):
-	conn = get_db_connection()
-	conn.execute('DELETE FROM document_store WHERE id = ?', (file_id,))
-	conn.commit()
-	conn.close()
-	return True
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if document exists first
+        cursor.execute('SELECT id FROM document_store WHERE id = ?', (file_id,))
+        exists = cursor.fetchone()
+        
+        if not exists:
+            print(f"No document found with file_id {file_id} in database")
+            conn.close()
+            return True  # Consider successful if nothing to delete
+        
+        # Delete the document
+        cursor.execute('DELETE FROM document_store WHERE id = ?', (file_id,))
+        conn.commit()
+        conn.close()
+        print(f"Successfully deleted document with file_id {file_id} from database")
+        return True
+    except Exception as e:
+        print(f"Error deleting document record with file_id {file_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def get_all_documents(organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
 	if organization_id:
 		cursor.execute(
-			'SELECT id, filename, upload_timestamp, organization_id FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
+			'SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
 			(organization_id,)
 		)
 	else:
-		cursor.execute('SELECT id, filename, upload_timestamp, organization_id FROM document_store ORDER BY upload_timestamp DESC')
+		cursor.execute('SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store ORDER BY upload_timestamp DESC')
 	documents = cursor.fetchall()
 	conn.close()
 	return [dict(doc) for doc in documents]
@@ -123,6 +145,9 @@ def update_document_record(filename, new_content_bytes, organization_id=None):
 	# Ensure filename is properly encoded as UTF-8
 	if isinstance(filename, bytes):
 		filename = filename.decode('utf-8', errors='replace')
+	if new_content_bytes is None:
+		new_content_bytes = b""
+	file_size = len(new_content_bytes)
 	if organization_id:
 		cursor.execute('SELECT id FROM document_store WHERE filename = ? AND organization_id = ?', (filename, organization_id))
 	else:
@@ -133,9 +158,9 @@ def update_document_record(filename, new_content_bytes, organization_id=None):
 		return []
 	file_ids = [row['id'] for row in rows]
 	if organization_id:
-		cursor.execute('UPDATE document_store SET content = ? WHERE filename = ? AND organization_id = ?', (new_content_bytes, filename, organization_id))
+		cursor.execute('UPDATE document_store SET content = ?, file_size = ? WHERE filename = ? AND organization_id = ?', (new_content_bytes, file_size, filename, organization_id))
 	else:
-		cursor.execute('UPDATE document_store SET content = ? WHERE filename = ?', (new_content_bytes, filename))
+		cursor.execute('UPDATE document_store SET content = ?, file_size = ? WHERE filename = ?', (new_content_bytes, file_size, filename))
 	conn.commit()
 	conn.close()
 	return file_ids

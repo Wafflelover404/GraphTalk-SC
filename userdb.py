@@ -80,6 +80,25 @@ async def init_db():
                 await conn.execute("ALTER TABLE users ADD COLUMN organization_id TEXT")
         except Exception:
             pass
+
+        # Create invites table for one-time use invite codes
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT UNIQUE NOT NULL,
+                email TEXT,
+                role TEXT NOT NULL CHECK(role IN ('user', 'admin')),
+                allowed_files TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                is_used BOOLEAN DEFAULT FALSE,
+                used_at TEXT,
+                used_by TEXT,
+                message TEXT,
+                organization_id TEXT
+            )
+        ''')
         
         await conn.commit()
 
@@ -99,7 +118,7 @@ async def create_user(username: str, password: str, role: str, allowed_files: Op
     password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
     # Ensure allowed_files is a list and not None
     if allowed_files is None:
-        allowed_files = []
+        allowed_files = ['all']  # Default to 'all' for new users
     # Convert list to comma-separated string
     allowed_files_str = ','.join(allowed_files)
     
@@ -372,3 +391,113 @@ async def get_active_sessions_count(username: str) -> int:
         ''', (username, now.isoformat())) as cursor:
             result = await cursor.fetchone()
             return result[0] if result else 0
+
+# Invite management functions
+async def create_invite(token: str, email: str = None, role: str = "user", allowed_files: List[str] = None, 
+                      expires_in_days: int = 7, created_by: str = "admin", message: str = None, 
+                      organization_id: str = None):
+    """Create a new invite token"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(days=expires_in_days)
+    
+    allowed_files_str = ','.join(allowed_files) if allowed_files else ""
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('''
+            INSERT INTO invites (token, email, role, allowed_files, expires_at, created_at, created_by, message, organization_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (token, email, role, allowed_files_str, expires_at.isoformat(), now.isoformat(), created_by, message, organization_id))
+        await conn.commit()
+
+async def get_invite_info(token: str):
+    """Get invite information by token"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute('SELECT * FROM invites WHERE token = ?', (token,)) as cursor:
+            invite = await cursor.fetchone()
+            
+        if not invite:
+            return None
+            
+        # Parse the invite data
+        invite_data = {
+            'id': invite[0],
+            'token': invite[1],
+            'email': invite[2],
+            'role': invite[3],
+            'allowed_files': invite[4].split(',') if invite[4] else [],
+            'expires_at': invite[5],
+            'created_at': invite[6],
+            'created_by': invite[7],
+            'is_used': bool(invite[8]),
+            'used_at': invite[9],
+            'used_by': invite[10],
+            'message': invite[11],
+            'organization_id': invite[12]
+        }
+        
+        # Check if invite is expired
+        expires_at = datetime.datetime.fromisoformat(invite_data['expires_at'])
+        if expires_at < now:
+            invite_data['valid'] = False
+            invite_data['reason'] = 'expired'
+        elif invite_data['is_used']:
+            invite_data['valid'] = False
+            invite_data['reason'] = 'used'
+        else:
+            invite_data['valid'] = True
+            
+        return invite_data
+
+async def mark_invite_used(token: str, used_by: str):
+    """Mark an invite as used"""
+    import datetime
+    now = datetime.datetime.utcnow()
+    
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('''
+            UPDATE invites 
+            SET is_used = TRUE, used_at = ?, used_by = ? 
+            WHERE token = ? AND is_used = FALSE
+        ''', (now.isoformat(), used_by, token))
+        await conn.commit()
+        return cursor.rowcount > 0
+
+async def list_invites(organization_id: str = None):
+    """List all invites, optionally filtered by organization"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        if organization_id:
+            async with conn.execute('SELECT * FROM invites WHERE organization_id = ? ORDER BY created_at DESC', (organization_id,)) as cursor:
+                invites = await cursor.fetchall()
+        else:
+            async with conn.execute('SELECT * FROM invites ORDER BY created_at DESC') as cursor:
+                invites = await cursor.fetchall()
+        
+        return [
+            {
+                'id': invite[0],
+                'token': invite[1],
+                'email': invite[2],
+                'role': invite[3],
+                'allowed_files': invite[4].split(',') if invite[4] else [],
+                'expires_at': invite[5],
+                'created_at': invite[6],
+                'created_by': invite[7],
+                'is_used': bool(invite[8]),
+                'used_at': invite[9],
+                'used_by': invite[10],
+                'message': invite[11],
+                'organization_id': invite[12]
+            }
+            for invite in invites
+        ]
+
+async def revoke_invite(token: str):
+    """Delete an invite token"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('DELETE FROM invites WHERE token = ?', (token,))
+        await conn.commit()
+        return cursor.rowcount > 0
