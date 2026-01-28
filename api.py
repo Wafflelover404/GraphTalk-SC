@@ -57,6 +57,18 @@ from orgdb import (
     get_organization_by_slug,
     get_organization_by_id,
     create_organization_membership,
+    approve_organization,
+    get_pending_organizations,
+)
+from messages_db import (
+    init_messages_db,
+    create_message_thread,
+    add_message_to_thread,
+    get_threads_for_organization,
+    get_all_threads,
+    get_messages_for_thread,
+    mark_message_as_read,
+    get_unread_message_count,
 )
 from rag_security import SecureRAGRetriever, get_filtered_rag_context
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -130,7 +142,7 @@ from opencart_catalog import (
 try:
     from analytics_core import get_analytics_core, QueryMetrics, QueryType, SecurityEventType, SecurityEvent
     from advanced_analytics_api import router as advanced_analytics_router
-    from performance_analytics import PerformanceTracker
+    from performance_analytics import PerformanceTracker as AnalyticsPerformanceTracker
     from user_behavior_analytics import UserBehaviorAnalyzer
     from security_analytics import SecurityAnalyzer
     from analytics_middleware import AdvancedAnalyticsMiddleware
@@ -147,7 +159,7 @@ except ImportError as e:
     SecurityEventType = None  
     SecurityEvent = None  
     advanced_analytics_router = None  
-    PerformanceTracker = None  
+    AnalyticsPerformanceTracker = None  
     UserBehaviorAnalyzer = None  
     SecurityAnalyzer = None  
 
@@ -182,7 +194,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -291,6 +303,21 @@ class OrganizationCreateRequest(BaseModel):
     organization_name: str
     admin_username: str
     admin_password: str
+
+class MessageThreadRequest(BaseModel):
+    organization_id: str
+    subject: str
+    sender_name: str
+    sender_email: str
+    message: str
+    message_type: str = "inquiry"
+
+class MessageRequest(BaseModel):
+    thread_id: str
+    sender_name: str
+    sender_email: Optional[str] = None
+    message: str
+    message_type: str = "response"
 
 
 
@@ -435,7 +462,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         
         return (
             api_key_data["id"],  
-            api_key_data["name"],  
+            api_key_data["created_by"],  # Use actual username for file permissions
             "api_key",  
             "api_key",  
             api_key_data["permissions"],  
@@ -547,6 +574,15 @@ async def upsert_opencart_products(products: List[OCProductPayload]) -> Dict[str
                  product.description, product.url, product.image, qty, status, 
                  rating, datetime.utcnow())
             )
+@app.post("/api-keys/create", response_model=APIResponse)
+async def create_api_key_endpoint(
+    request: CreateAPIKeyRequest,
+    current_user=Depends(get_current_user)
+):
+    # Check API key permissions for manage_api_keys
+    if not await check_api_key_operation_permission(current_user, "manage_api_keys"):
+        raise HTTPException(status_code=403, detail="API key requires 'manage_api_keys' permission")
+    
     try:
         
         if current_user[3] not in ["admin"]:
@@ -1381,9 +1417,31 @@ async def login_user(request: LoginRequest, request_obj: Request):
     
     
     user = await get_user(request.username)
-    organization_id = user[7] if user and len(user) > 7 else None  
+    organization_id = user[7] if user and len(user) > 7 else None
     
-    
+    # Check organization status if user belongs to an organization
+    if organization_id:
+        # Direct SQL query to ensure we get all columns including status
+        async with aiosqlite.connect("organizations.db") as conn:
+            cursor = await conn.execute("SELECT * FROM organizations WHERE id = ?", (organization_id,))
+            org = await cursor.fetchone()
+        
+        # Reject login if organization is not approved (status is at index 5)
+        if org and len(org) > 5 and org[5] != "active":
+            log_security_event(
+                event_type="failed_login",
+                ip_address=client_ip or "unknown",
+                user_id=request.username,
+                details={"reason": "Organization not approved", "org_status": org[5]},
+                severity="medium"
+            )
+            
+            return TokenRoleResponse(
+                status="error", 
+                message="Your organization is pending approval. Please contact your administrator.", 
+                token=None, 
+                role=None
+            )
     
     await create_session(request.username, session_id, expires_hours=24, organization_id=organization_id)
     
@@ -1463,9 +1521,9 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
         )
 
     
-    org_id = await create_organization(name=request.organization_name, slug=slug)
+    org_id = await create_organization(org_name=request.organization_name, org_slug=slug, admin_user_id=request.admin_username, status="pending")
     
-    await create_user(
+    user_id = await create_user(
         username=request.admin_username,
         password=request.admin_password,
         role="admin",
@@ -1503,10 +1561,263 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
 
     return TokenRoleResponse(
         status="success",
-        message="Organization and admin created - session_id issued",
+        message="Organization and admin created - session_id issued. Organization is pending approval.",
         token=session_id,
         role="owner",
     )
+
+
+@app.post("/organizations/approve/{org_id}", response_model=APIResponse)
+async def approve_organization_endpoint(
+    org_id: str,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Approve an organization (admin only)"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to approve organizations"
+            )
+        
+        success = await approve_organization(org_id)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message=f"Organization {org_id} approved successfully"
+            )
+        else:
+            return APIResponse(
+                status="error",
+                message="Organization not found or already approved"
+            )
+    except Exception as e:
+        logger.error(f"Error approving organization {org_id}: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to approve organization"
+        )
+
+
+@app.get("/organizations/pending", response_model=APIResponse)
+async def get_pending_organizations_endpoint(
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get all pending organizations (admin only)"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to view pending organizations"
+            )
+        
+        pending_orgs = await get_pending_organizations()
+        
+        return APIResponse(
+            status="success",
+            response={"pending_organizations": pending_orgs}
+        )
+    except Exception as e:
+        logger.error(f"Error fetching pending organizations: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to fetch pending organizations"
+        )
+
+
+# Messaging endpoints
+@app.post("/messages/threads", response_model=APIResponse)
+async def create_message_thread_endpoint(
+    request: MessageThreadRequest,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Create a new message thread"""
+    try:
+        # Verify user belongs to the organization
+        if user[7] != request.organization_id and user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="You can only create messages for your own organization"
+            )
+        
+        thread_id = await create_message_thread(
+            organization_id=request.organization_id,
+            subject=request.subject,
+            sender_name=request.sender_name,
+            sender_email=request.sender_email,
+            message=request.message,
+            message_type=request.message_type
+        )
+        
+        return APIResponse(
+            status="success",
+            response={"thread_id": thread_id}
+        )
+    except Exception as e:
+        logger.error(f"Error creating message thread: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to create message thread"
+        )
+
+
+@app.post("/messages/threads/{thread_id}/messages", response_model=APIResponse)
+async def add_message_to_thread_endpoint(
+    thread_id: str,
+    request: MessageRequest,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Add a message to an existing thread"""
+    try:
+        # Verify user has access to this thread
+        threads = await get_threads_for_organization(user[7])
+        thread_exists = any(thread[0] == thread_id for thread in threads)
+        
+        if not thread_exists and user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="You don't have access to this message thread"
+            )
+        
+        message_id = await add_message_to_thread(
+            thread_id=thread_id,
+            sender_type="admin" if user[3] in ["admin", "owner"] else "user",
+            sender_name=request.sender_name,
+            sender_email=request.sender_email,
+            message=request.message,
+            message_type=request.message_type
+        )
+        
+        return APIResponse(
+            status="success",
+            response={"message_id": message_id}
+        )
+    except Exception as e:
+        logger.error(f"Error adding message to thread: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to add message"
+        )
+
+
+@app.get("/messages/threads", response_model=APIResponse)
+async def get_message_threads_endpoint(
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get message threads"""
+    try:
+        if user[3] in ["admin", "owner"]:
+            # Admin can see all threads
+            threads = await get_all_threads()
+        else:
+            # Users can only see their organization's threads
+            threads = await get_threads_for_organization(user[7])
+        
+        return APIResponse(
+            status="success",
+            response={"threads": threads}
+        )
+    except Exception as e:
+        logger.error(f"Error fetching message threads: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to fetch message threads"
+        )
+
+
+@app.get("/messages/threads/{thread_id}/messages", response_model=APIResponse)
+async def get_thread_messages_endpoint(
+    thread_id: str,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get all messages for a thread"""
+    try:
+        # Verify user has access to this thread
+        threads = await get_threads_for_organization(user[7])
+        thread_exists = any(thread[0] == thread_id for thread in threads)
+        
+        if not thread_exists and user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="You don't have access to this message thread"
+            )
+        
+        messages = await get_messages_for_thread(thread_id)
+        
+        return APIResponse(
+            status="success",
+            response={"messages": messages}
+        )
+    except Exception as e:
+        logger.error(f"Error fetching thread messages: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to fetch messages"
+        )
+
+
+@app.post("/messages/{message_id}/read", response_model=APIResponse)
+async def mark_message_as_read_endpoint(
+    message_id: str,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Mark a message as read"""
+    try:
+        success = await mark_message_as_read(message_id)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message="Message marked as read"
+            )
+        else:
+            return APIResponse(
+                status="error",
+                message="Message not found"
+            )
+    except Exception as e:
+        logger.error(f"Error marking message as read: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to mark message as read"
+        )
+
+
+@app.get("/messages/unread-count", response_model=APIResponse)
+async def get_unread_count_endpoint(
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get count of unread messages"""
+    try:
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required"
+            )
+        
+        count = await get_unread_message_count()
+        
+        return APIResponse(
+            status="success",
+            response={"unread_count": count}
+        )
+    except Exception as e:
+        logger.error(f"Error fetching unread count: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to fetch unread count"
+        )
 
 
 @app.post("/logout", response_model=APIResponse)
@@ -1783,27 +2094,54 @@ async def get_openapi_schema():
     return app.openapi()
 
 async def get_available_filenames(username: str) -> List[str]:
+    """Get list of filenames user is allowed to access"""
+    from userdb import get_user_allowed_filenames
+    
+    allowed_files = await get_user_allowed_filenames(username)
+    
+    # If None, user is admin and can access all files
+    if allowed_files is None:
+        return []  # Return empty list for admin (means all files accessible)
+    
+    return allowed_files
+
+
+async def get_possible_files_by_title(username: str) -> Dict[str, str]:
+    """Get mapping of file titles to filenames for user"""
+    # For now, return empty mapping - this could be enhanced later
+    # to extract titles from document metadata
+    return {}
+
+
+def extract_title_from_chunk(chunk_text: str) -> Optional[str]:
+    """Extract title from chunk content"""
     try:
-        
-        candidate = chunk_text
-        if "'title'" in candidate and '"title"' not in candidate:
-            candidate = candidate.replace("'", '"')
-        
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            obj_str = candidate[start:end+1]
-            data = json.loads(obj_str)
-            title = data.get("title")
-            if isinstance(title, str) and title.strip():
-                return title.strip()
+        # Try to parse as JSON first
+        if chunk_text.strip().startswith('{'):
+            candidate = chunk_text
+            if "'title'" in candidate and '"title"' not in candidate:
+                candidate = candidate.replace("'", '"')
+            
+            start = candidate.find("{")
+            end = candidate.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                obj_str = candidate[start:end+1]
+                data = json.loads(obj_str)
+                title = data.get("title")
+                if isinstance(title, str) and title.strip():
+                    return title.strip()
     except Exception:
         pass
     
-    import re
-    m = re.search(r"['\"]title['\"]\s*:\s*['\"]([^'\"]+)['\"]", chunk_text)
-    if m:
-        return m.group(1).strip()
+    # Try regex extraction
+    try:
+        import re
+        m = re.search(r"['\"]title['\"]\s*:\s*['\"]([^'\"]+)['\"]", chunk_text)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    
     return None
 
 
@@ -2449,6 +2787,11 @@ async def process_secure_rag_query(
     user=Depends(get_current_user)
 ):
     """Process a query using RAG with file access security (HTTP fallback for compatibility)"""
+    
+    # Check API key permissions for search
+    if not await check_api_key_operation_permission(user, "search"):
+        raise HTTPException(status_code=403, detail="API key requires 'search' permission")
+    
     logger = logging.getLogger(__name__)
     tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
 
@@ -2762,6 +3105,10 @@ async def get_file_content(
     include_quiz: bool = Query(False, description="If true, return JSON with file content and quiz"),
     catalog_id: str = Query(None, description="If provided, treat filename as product name and return OpenCart product data")
 ):
+    # Check API key permissions for download
+    if not await check_api_key_operation_permission(user, "download"):
+        raise HTTPException(status_code=403, detail="API key requires 'download' permission")
+    
     from org_security import enforce_organization_context
     
     decoded_filename = unquote(filename)
@@ -3299,6 +3646,10 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user=Depends(get_current_user)
 ):
+    # Check API key permissions for upload
+    if not await check_api_key_operation_permission(current_user, "upload"):
+        raise HTTPException(status_code=403, detail="API key requires 'upload' permission")
+    
     organization_id = _get_active_org_id(current_user)
     if not organization_id:
         raise HTTPException(status_code=400, detail="Organization context required for upload.")
@@ -3379,6 +3730,10 @@ async def upload_file(
 
 @app.get("/files/list", response_model=APIResponse)
 async def list_documents(user=Depends(get_current_user)):
+    # Check API key permissions for download (viewing files)
+    if not await check_api_key_operation_permission(user, "download"):
+        raise HTTPException(status_code=403, detail="API key requires 'download' permission")
+    
     try:
         organization_id = _get_active_org_id(user)
         if not organization_id:
@@ -3406,10 +3761,14 @@ async def delete_document(
     request: DeleteFileRequest,
     current_user=Depends(get_current_user)
 ):
-    if current_user[3] != "admin":
-        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    # Check API key permissions for delete_documents
+    if not await check_api_key_operation_permission(current_user, "delete_documents"):
+        raise HTTPException(status_code=403, detail="API key requires 'delete_documents' permission")
     
     try:
+        if current_user[3] != "admin":
+            raise HTTPException(status_code=403, detail="Admin privileges required.")
+        
         logger.info(f"Attempting to delete document with file_id: {request.file_id}")
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
@@ -3482,6 +3841,10 @@ async def list_available_filenames():
 
 @app.delete("/files/delete_by_filename", response_model=APIResponse)
 async def delete_file_by_filename(filename: str, current_user=Depends(get_current_user)):
+    # Check API key permissions for delete_documents
+    if not await check_api_key_operation_permission(current_user, "delete_documents"):
+        raise HTTPException(status_code=403, detail="API key requires 'delete_documents' permission")
+    
     if current_user[3] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
