@@ -20,7 +20,7 @@ app = FastAPI(title="OpenCart Product Ingest API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

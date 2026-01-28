@@ -1,0 +1,58 @@
+# Production Docker Compose Override
+version: '3.8'
+
+services:
+  graphtalk:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+        VERSION: ${VERSION:-latest}
+        VCS_REF: ${VCS_REF:-unknown}
+    image: graphtalk:prod
+    container_name: graphtalk-api-prod
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=WARNING
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 2G
+          cpus: '1'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graphtalk"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

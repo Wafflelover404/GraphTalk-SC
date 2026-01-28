@@ -181,7 +181,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -4606,7 +4606,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -9023,7 +9023,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -13440,7 +13440,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://api.wikiai.by", "https://esell.by"],
+    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
