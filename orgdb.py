@@ -38,31 +38,73 @@ async def init_org_db():
         await conn.commit()
 
 
-async def create_organization(name: str, slug: str) -> str:
-    """Create a new organization and return its id."""
-    org_id = str(uuid.uuid4())
-    now = datetime.datetime.utcnow().isoformat()
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute(
-            """
-            INSERT INTO organizations (id, name, slug, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (org_id, name, slug, now, now),
-        )
-        await conn.commit()
-    return org_id
+async def create_organization(
+    org_name: str,
+    org_slug: str,
+    admin_user_id: str,
+    description: str = None,
+    status: str = "pending"
+):
+    """Create a new organization with pending status"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            # Generate a UUID for the organization ID
+            org_id = str(uuid.uuid4())
+            cursor = await db.execute(
+                """
+                INSERT INTO organizations 
+                (id, name, slug, description, admin_user_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (org_id, org_name, org_slug, description, admin_user_id, status)
+            )
+            await db.commit()
+            return org_id
+        except aiosqlite.IntegrityError:
+            return None
 
 
 async def get_organization_by_slug(slug: str) -> Optional[Tuple]:
     """Return organization row for a given slug or None."""
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute(
-            "SELECT id, name, slug, created_at, updated_at FROM organizations WHERE slug = ?",
+            "SELECT id, name, slug, status, created_at, updated_at FROM organizations WHERE slug = ?",
             (slug,),
         ) as cursor:
             row = await cursor.fetchone()
             return row if row else None
+
+
+async def get_organization_by_id(org_id: str) -> Optional[Tuple]:
+    """Return organization row for a given ID or None."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT * FROM organizations WHERE id = ?",
+            (org_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row if row else None
+
+
+async def approve_organization(org_id: str) -> bool:
+    """Approve an organization by setting its status to 'active'"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE organizations SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (org_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_pending_organizations() -> List[Tuple]:
+    """Get all organizations with pending status"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT id, name, slug, status, created_at, updated_at FROM organizations WHERE status = 'pending' ORDER BY created_at"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return rows
 
 
 async def create_organization_membership(
