@@ -123,11 +123,12 @@ async def create_user(username: str, password: str, role: str, allowed_files: Op
     allowed_files_str = ','.join(allowed_files)
     
     async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute('''
+        cursor = await conn.execute('''
             INSERT INTO users (username, password_hash, role, allowed_files, last_login, organization_id) 
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (username, password_hash, role, allowed_files_str, None, organization_id))
         await conn.commit()
+        return cursor.lastrowid
 
 async def get_user(username: str):
     async with aiosqlite.connect(DB_PATH) as conn:
