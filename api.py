@@ -58,6 +58,8 @@ from orgdb import (
     get_organization_by_id,
     create_organization_membership,
     approve_organization,
+    reject_organization,
+    change_organization_status,
     get_pending_organizations,
 )
 from messages_db import (
@@ -171,6 +173,18 @@ from reports_api import router as reports_router
 from metrics_api import router as metrics_router
 from metrics_user_api import router as metrics_user_router
 
+# Import CMS API from landing-pages-api
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), 'landing-pages-api'))
+
+# Set CMS database path to absolute path
+cms_db_path = os.path.join(os.path.dirname(__file__), 'landing-pages-api', 'landing_pages.db')
+os.environ['DATABASE_URL'] = cms_db_path
+
+from routers.cms import router as cms_router
+from database import init_database as init_cms_database
+
 app = FastAPI(
     title="RAG API",
     description="Knowledge Base Query and Management System with RAG",
@@ -181,9 +195,10 @@ app = FastAPI(
 )
 
 app.include_router(reports_router)
-
-
 app.include_router(metrics_user_router)
+
+# Include CMS router from landing-pages-api
+app.include_router(cms_router, prefix="/api/cms", tags=["CMS"])
 
 
 if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
@@ -216,7 +231,10 @@ async def _startup_events():
     await init_catalog_db()  
     await init_org_db()
     await init_api_keys_db()
-    await init_plugins_db()  
+    await init_plugins_db()
+    
+    # Initialize CMS database
+    await init_cms_database()
     
     
     if ADVANCED_ANALYTICS_ENABLED:
@@ -454,6 +472,21 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     user = await get_user_by_session_id(credentials.credentials)
     if user:
         return user
+    
+    
+    # Check if it's the CMS master token
+    if credentials.credentials == "5gPgr9goO4JxyOQDUWL4aGqX_wEIpwAphvXGv1N_AR3jvN04GByJhlbcDjD-4pVl6VEmWZHctgNmGeg9JJCtmQ":
+        # Return a mock admin user for CMS access
+        return (
+            "cms_admin",  # id
+            "cms_admin",   # username
+            "cms",         # source
+            "admin",       # role
+            ["all"],       # permissions
+            datetime.datetime.utcnow().isoformat(),  # created_at
+            datetime.datetime.utcnow().isoformat(),  # last_used
+            None,          # organization_id
+        )
     
     
     api_key_data = await validate_api_key(credentials.credentials)
@@ -1627,6 +1660,145 @@ async def get_pending_organizations_endpoint(
         return APIResponse(
             status="error",
             message="Failed to fetch pending organizations"
+        )
+
+
+@app.get("/organizations", response_model=APIResponse)
+async def get_all_organizations_endpoint(
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get all organizations (admin only)"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to view organizations",
+                response=None
+            )
+        
+        # Get all organizations from database
+        async with aiosqlite.connect("organizations.db") as conn:
+            cursor = await conn.execute("""
+                SELECT id, name, slug, status, created_at, updated_at, admin_user_id
+                FROM organizations
+                ORDER BY created_at DESC
+            """)
+            orgs = await cursor.fetchall()
+        
+        # Format organizations data
+        organizations = []
+        for org in orgs:
+            organizations.append({
+                "id": org[0],
+                "name": org[1],
+                "slug": org[2],
+                "status": org[3],
+                "created_at": org[4],
+                "updated_at": org[5],
+                "admin_user_id": org[6],
+                "admin_username": org[6]  # admin_user_id stores the username directly
+            })
+        
+        return APIResponse(
+            status="success",
+            message="Organizations fetched successfully",
+            response={"organizations": organizations}
+        )
+    except Exception as e:
+        logger.error(f"Error fetching organizations: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to fetch organizations"
+        )
+
+
+@app.post("/organizations/reject/{org_id}", response_model=APIResponse)
+async def reject_organization_endpoint(
+    org_id: str,
+    request: Optional[Dict[str, str]] = Body(None),
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Reject an organization (admin only)"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to reject organizations"
+            )
+        
+        reason = ""
+        if request and "reason" in request:
+            reason = request["reason"]
+        
+        success = await reject_organization(org_id, reason)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message=f"Organization {org_id} rejected successfully"
+            )
+        else:
+            return APIResponse(
+                status="error",
+                message="Organization not found or already rejected"
+            )
+    except Exception as e:
+        logger.error(f"Error rejecting organization {org_id}: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to reject organization"
+        )
+
+
+@app.post("/organizations/change-status/{org_id}", response_model=APIResponse)
+async def change_organization_status_endpoint(
+    org_id: str,
+    request: Dict[str, str] = Body(...),
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Change organization status (admin only) - allows changing active back to pending"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to change organization status"
+            )
+        
+        new_status = request.get("status")
+        if not new_status:
+            return APIResponse(
+                status="error",
+                message="Status field is required"
+            )
+        
+        success = await change_organization_status(org_id, new_status)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message=f"Organization {org_id} status changed to {new_status} successfully"
+            )
+        else:
+            return APIResponse(
+                status="error",
+                message="Organization not found or invalid status"
+            )
+    except ValueError as e:
+        return APIResponse(
+            status="error",
+            message=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error changing organization status {org_id}: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to change organization status"
         )
 
 

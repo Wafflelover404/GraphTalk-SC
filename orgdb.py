@@ -97,6 +97,32 @@ async def approve_organization(org_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+async def reject_organization(org_id: str, reason: str = "") -> bool:
+    """Reject an organization by setting its status to 'rejected'"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE organizations SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (org_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def change_organization_status(org_id: str, new_status: str) -> bool:
+    """Change organization status to any valid status"""
+    valid_statuses = ['pending', 'active', 'approved', 'rejected']
+    if new_status not in valid_statuses:
+        raise ValueError(f"Invalid status. Must be one of: {valid_statuses}")
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE organizations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_status, org_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def get_pending_organizations() -> List[Tuple]:
     """Get all organizations with pending status"""
     async with aiosqlite.connect(DB_PATH) as conn:
