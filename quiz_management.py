@@ -112,7 +112,7 @@ async def create_manual_quiz(
             raise HTTPException(status_code=400, detail=f"Question {i+1} cannot be empty")
         if not q.options or len(q.options) < 2:
             raise HTTPException(status_code=400, detail=f"Question {i+1} must have at least 2 options")
-        if q.answer not in q.options:
+        if q.correct_answer not in q.options:
             raise HTTPException(status_code=400, detail=f"Question {i+1} answer must be one of the options")
     
     questions_json = json.dumps([q.dict() for q in questions])

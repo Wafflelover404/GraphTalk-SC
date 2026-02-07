@@ -228,3 +228,35 @@ async def get_user_organization_role(username: str, organization_id: str) -> Opt
             return row[0] if row else None
 
 
+async def delete_organization(org_id: str) -> bool:
+    """
+    Delete an organization and all its associated data.
+    
+    This will:
+    1. Delete all organization memberships
+    2. Delete the organization itself
+    
+    Returns:
+        True if organization was deleted, False if not found
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            # First delete all organization memberships
+            await db.execute(
+                "DELETE FROM organization_users WHERE organization_id = ?",
+                (org_id,)
+            )
+            
+            # Then delete the organization
+            cursor = await db.execute(
+                "DELETE FROM organizations WHERE id = ?",
+                (org_id,)
+            )
+            
+            await db.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            await db.rollback()
+            raise e
+
+

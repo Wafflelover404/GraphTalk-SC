@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Header, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -12,6 +12,19 @@ from database import get_db_connection, dict_factory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+CMS_PASSWORD = os.getenv("CMS_PASSWORD")
+if not CMS_PASSWORD:
+    raise ValueError("CMS_PASSWORD environment variable not set")
+
+
+async def verify_cms_password(x_cms_password: str = Header(...)):
+    if x_cms_password != CMS_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid CMS password"
+        )
+    return True
 
 # Pydantic models for CMS operations
 class BlogPostCreate(BaseModel):
@@ -64,7 +77,7 @@ class HelpArticleUpdate(BaseModel):
 
 # Blog Management
 @router.get("/blog/posts")
-async def get_blog_posts():
+async def get_blog_posts(_: bool = Depends(verify_cms_password)):
     """Get all blog posts"""
     async with aiosqlite.connect("landing_pages.db") as db:
         db.row_factory = dict_factory
@@ -88,7 +101,7 @@ async def get_blog_posts():
         return posts
 
 @router.post("/blog/posts")
-async def create_blog_post(post: BlogPostCreate):
+async def create_blog_post(post: BlogPostCreate, _: bool = Depends(verify_cms_password)):
     """Create a new blog post"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -142,7 +155,7 @@ async def create_blog_post(post: BlogPostCreate):
             )
 
 @router.put("/blog/posts/{post_id}")
-async def update_blog_post(post_id: int, post: BlogPostUpdate):
+async def update_blog_post(post_id: int, post: BlogPostUpdate, _: bool = Depends(verify_cms_password)):
     """Update a blog post"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -189,7 +202,7 @@ async def update_blog_post(post_id: int, post: BlogPostUpdate):
             )
 
 @router.delete("/blog/posts/{post_id}")
-async def delete_blog_post(post_id: int):
+async def delete_blog_post(post_id: int, _: bool = Depends(verify_cms_password)):
     """Delete a blog post"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -219,7 +232,7 @@ async def delete_blog_post(post_id: int):
 
 # Help Articles Management
 @router.post("/help/articles")
-async def create_help_article(article: HelpArticleCreate):
+async def create_help_article(article: HelpArticleCreate, _: bool = Depends(verify_cms_password)):
     """Create a new help article"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -271,7 +284,7 @@ async def create_help_article(article: HelpArticleCreate):
             )
 
 @router.put("/help/articles/{article_id}")
-async def update_help_article(article_id: int, article: HelpArticleUpdate):
+async def update_help_article(article_id: int, article: HelpArticleUpdate, _: bool = Depends(verify_cms_password)):
     """Update a help article"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -315,7 +328,7 @@ async def update_help_article(article_id: int, article: HelpArticleUpdate):
             )
 
 @router.delete("/help/articles/{article_id}")
-async def delete_help_article(article_id: int):
+async def delete_help_article(article_id: int, _: bool = Depends(verify_cms_password)):
     """Delete a help article"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:
@@ -345,7 +358,7 @@ async def delete_help_article(article_id: int):
 
 # Media Management
 @router.post("/media/upload")
-async def upload_media(file: UploadFile = File(...)):
+async def upload_media(file: UploadFile = File(...), _: bool = Depends(verify_cms_password)):
     """Upload media file"""
     try:
         # Create uploads directory if it doesn't exist
@@ -394,7 +407,7 @@ async def upload_media(file: UploadFile = File(...)):
         )
 
 @router.get("/media/{filename}")
-async def get_media_file(filename: str):
+async def get_media_file(filename: str, _: bool = Depends(verify_cms_password)):
     """Get media file"""
     try:
         upload_dir = os.getenv("UPLOAD_DIR", "./uploads")
@@ -419,7 +432,7 @@ async def get_media_file(filename: str):
         )
 
 @router.delete("/media/{filename}")
-async def delete_media_file(filename: str):
+async def delete_media_file(filename: str, _: bool = Depends(verify_cms_password)):
     """Delete media file"""
     try:
         upload_dir = os.getenv("UPLOAD_DIR", "./uploads")
@@ -448,7 +461,7 @@ async def delete_media_file(filename: str):
 
 # Content Management Utilities
 @router.get("/content/stats")
-async def get_content_stats():
+async def get_content_stats(_: bool = Depends(verify_cms_password)):
     """Get content management statistics"""
     async with aiosqlite.connect("landing_pages.db") as db:
         db.row_factory = dict_factory
@@ -511,7 +524,7 @@ async def get_content_stats():
         }
 
 @router.get("/system/health")
-async def get_system_health():
+async def get_system_health(_: bool = Depends(verify_cms_password)):
     """Get system health information"""
     async with aiosqlite.connect("landing_pages.db") as db:
         try:

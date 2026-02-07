@@ -35,6 +35,18 @@ from quiz_management import (
 )
 import aiosqlite
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv('/Users/wafflelover404/Documents/wikiai/graphtalk/landing-pages-api/.env')
+
+# Load CMS credentials from environment
+CMS_TOKEN = os.getenv("MASTER_CMS_TOKEN")
+CMS_PASSWORD = os.getenv("CMS_PASSWORD")
+if not CMS_TOKEN:
+    raise ValueError("MASTER_CMS_TOKEN environment variable not set")
+if not CMS_PASSWORD:
+    raise ValueError("CMS_PASSWORD environment variable not set")
+
 from rag_api.timing_utils import Timer, PerformanceTracker, time_block
 
 from userdb import (
@@ -61,6 +73,7 @@ from orgdb import (
     reject_organization,
     change_organization_status,
     get_pending_organizations,
+    delete_organization,
 )
 from messages_db import (
     init_messages_db,
@@ -466,6 +479,69 @@ class PluginStatus(BaseModel):
     catalog_count: int
 
 
+async def validate_cms_token(token: str) -> bool:
+    """Validate CMS token against environment variable"""
+    return token == CMS_TOKEN
+
+
+async def get_cms_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    """CMS-specific authentication that accepts CMS tokens or valid CMS sessions"""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing CMS authentication credentials.")
+    
+    # Check if it's a direct CMS token
+    if await validate_cms_token(credentials.credentials):
+        return (
+            "cms_admin",  # id
+            "cms_admin",   # username
+            "cms",         # source
+            "admin",       # role
+            ["all"],       # permissions
+            datetime.datetime.utcnow().isoformat(),  # created_at
+            datetime.datetime.utcnow().isoformat(),  # last_used
+            None,          # organization_id
+        )
+    
+    # Check if it's a valid CMS session (direct check without joining users table)
+    session = None
+    try:
+        async with aiosqlite.connect("users.db") as conn:
+            cursor = await conn.execute('''
+                SELECT session_id, username, created_at, last_activity, expires_at, organization_id, is_active
+                FROM user_sessions 
+                WHERE session_id = ? AND is_active = TRUE AND expires_at > ?
+            ''', (credentials.credentials, datetime.datetime.utcnow().isoformat()))
+            session = await cursor.fetchone()
+            
+            if session and session[1] == "cms_admin":
+                # Update last activity
+                await conn.execute(
+                    'UPDATE user_sessions SET last_activity = ? WHERE session_id = ?',
+                    (datetime.datetime.utcnow().isoformat(), credentials.credentials)
+                )
+                await conn.commit()
+        
+    except Exception as e:
+        logger.error(f"Database error in CMS authentication: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error in authentication.")
+    
+    if session and session[1] == "cms_admin":
+        return (
+            session[1],  # username (cms_admin)
+            session[1],  # username (cms_admin) 
+            "cms",     # source (hardcoded for CMS)
+            "admin",   # role
+            ["all"],   # permissions
+            session[2],  # created_at
+            datetime.datetime.utcnow().isoformat(),  # last_used (updated)
+            session[5],  # organization_id
+        )
+    
+    # If we get here, authentication failed
+    logger.warning(f"CMS session authentication failed for token: {credentials.credentials}")
+    raise HTTPException(status_code=403, detail="Invalid CMS token. Access denied.")
+
+
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing authentication credentials.")
@@ -476,8 +552,8 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         return user
     
     
-    # Check if it's the CMS master token
-    if credentials.credentials == "5gPgr9goO4JxyOQDUWL4aGqX_wEIpwAphvXGv1N_AR3jvN04GByJhlbcDjD-4pVl6VEmWZHctgNmGeg9JJCtmQ":
+    # Check if it's a valid CMS token
+    if await validate_cms_token(credentials.credentials):
         # Return a mock admin user for CMS access
         return (
             "cms_admin",  # id
@@ -1421,6 +1497,48 @@ Store: {catalog['shop_name']}
 async def login_user(request: LoginRequest, request_obj: Request):
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
     
+    # Check if this is CMS login attempt (specific username)
+    if request.username == "admin@example.com":
+        # Verify against CMS token as password OR CMS password
+        if request.password == CMS_TOKEN or request.password == CMS_PASSWORD:
+            # Valid CMS login
+            session_id = str(uuid.uuid4())
+            
+            # Store CMS session
+            await create_session("cms_admin", session_id, organization_id=None)
+            
+            log_security_event(
+                event_type="successful_login",
+                ip_address=client_ip or "unknown",
+                user_id="cms_admin",
+                details={"method": "cms_auth"},
+                severity="info"
+            )
+            
+            return TokenRoleResponse(
+                status="success",
+                message="CMS login successful",
+                token=session_id,
+                role="admin"
+            )
+        else:
+            # Invalid CMS login attempt
+            log_security_event(
+                event_type="failed_login",
+                ip_address=client_ip or "unknown",
+                user_id="cms_admin",
+                details={"reason": "Invalid CMS credentials"},
+                severity="high"
+            )
+            
+            return TokenRoleResponse(
+                status="error", 
+                message="Invalid CMS credentials", 
+                token=None, 
+                role=None
+            )
+    
+    # Regular user login
     if not await verify_user(request.username, request.password):
         
         log_security_event(
@@ -1531,7 +1649,11 @@ async def login_user(request: LoginRequest, request_obj: Request):
 
 
 @app.post("/organizations/create_with_admin", response_model=TokenRoleResponse)
-async def create_organization_with_admin(request: OrganizationCreateRequest, request_obj: Request):
+async def create_organization_with_admin(
+    request: OrganizationCreateRequest, 
+    request_obj: Request,
+    current_user=Depends(get_cms_user)
+):
     client_ip = request_obj.client.host if request_obj and request_obj.client else None
 
     
@@ -1608,7 +1730,7 @@ async def create_organization_with_admin(request: OrganizationCreateRequest, req
 @app.post("/organizations/approve/{org_id}", response_model=APIResponse)
 async def approve_organization_endpoint(
     org_id: str,
-    user=Depends(get_current_user),
+    user=Depends(get_cms_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     """Approve an organization (admin only)"""
@@ -1642,7 +1764,7 @@ async def approve_organization_endpoint(
 
 @app.get("/organizations/pending", response_model=APIResponse)
 async def get_pending_organizations_endpoint(
-    user=Depends(get_current_user),
+    user=Depends(get_cms_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     """Get all pending organizations (admin only)"""
@@ -1670,7 +1792,7 @@ async def get_pending_organizations_endpoint(
 
 @app.get("/organizations", response_model=APIResponse)
 async def get_all_organizations_endpoint(
-    user=Depends(get_current_user),
+    user=Depends(get_cms_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     """Get all organizations (admin only)"""
@@ -1719,11 +1841,20 @@ async def get_all_organizations_endpoint(
         )
 
 
+@app.get("/organizations/all", response_model=APIResponse)
+async def get_all_organizations_admin_endpoint(
+    user=Depends(get_cms_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Get all organizations (admin only) - alias for /organizations"""
+    return await get_all_organizations_endpoint(user, credentials)
+
+
 @app.post("/organizations/reject/{org_id}", response_model=APIResponse)
 async def reject_organization_endpoint(
     org_id: str,
     request: Optional[Dict[str, str]] = Body(None),
-    user=Depends(get_current_user),
+    user=Depends(get_cms_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     """Reject an organization (admin only)"""
@@ -1763,7 +1894,7 @@ async def reject_organization_endpoint(
 async def change_organization_status_endpoint(
     org_id: str,
     request: Dict[str, str] = Body(...),
-    user=Depends(get_current_user),
+    user=Depends(get_cms_user),
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
 ):
     """Change organization status (admin only) - allows changing active back to pending"""
@@ -1804,6 +1935,41 @@ async def change_organization_status_endpoint(
         return APIResponse(
             status="error",
             message="Failed to change organization status"
+        )
+
+
+@app.delete("/organizations/{org_id}", response_model=APIResponse)
+async def delete_organization_endpoint(
+    org_id: str,
+    user=Depends(get_cms_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+):
+    """Delete an organization (admin only)"""
+    try:
+        # Check if user is admin
+        if user[3] not in ["admin", "owner"]:
+            return APIResponse(
+                status="error",
+                message="Admin access required to delete organizations"
+            )
+        
+        success = await delete_organization(org_id)
+        
+        if success:
+            return APIResponse(
+                status="success",
+                message=f"Organization {org_id} deleted successfully"
+            )
+        else:
+            return APIResponse(
+                status="error",
+                message="Organization not found or could not be deleted"
+            )
+    except Exception as e:
+        logger.error(f"Error deleting organization {org_id}: {e}")
+        return APIResponse(
+            status="error",
+            message="Failed to delete organization"
         )
 
 
@@ -5535,8 +5701,7 @@ async def create_quiz(
     
     try:
         logger.info(f"Creating quiz: {quiz_data.title}")
-        logger.info(f"Quiz data received: {quiz_data}")
-        logger.info(f"Questions received: {quiz_data.questions}")
+        logger.info(f"Quiz data received: {quiz_data.questions}")
         
         # Validate questions before processing
         if not quiz_data.questions or len(quiz_data.questions) == 0:
@@ -5545,14 +5710,21 @@ async def create_quiz(
         
         questions = []
         for i, q in enumerate(quiz_data.questions):
-            logger.info(f"Processing question {i}: {q}")
             try:
-                quiz_question = QuizQuestion(**q.dict())
+                # Transform QuizQuestionCreate to QuizQuestion
+                quiz_question = QuizQuestion(
+                    id=str(i + 1),  # Generate ID
+                    type="multiple-choice" if len(q.options) > 2 else "true-false",  # Determine type
+                    question=q.question,
+                    options=q.options,
+                    correct_answer=q.answer,  # Map answer to correct_answer
+                    explanation=q.explanation,
+                    points=q.points
+                )
                 questions.append(quiz_question)
                 logger.info(f"Question {i} validated successfully")
             except Exception as q_error:
                 logger.error(f"Error validating question {i}: {q_error}")
-                logger.error(f"Question data: {q.dict()}")
                 raise HTTPException(status_code=422, detail=f"Invalid question {i+1}: {str(q_error)}")
         
         quiz_id = await create_manual_quiz(
