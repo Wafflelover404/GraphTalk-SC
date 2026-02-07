@@ -54,7 +54,7 @@ async def create_invite(
     """Create invite link"""
     invite_token = secrets.token_urlsafe(32)
     expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=request.expires_in_days or 7)
-    base_url = "http://localhost:3000"
+    base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
     invite_link = f"{base_url}/invite?token={invite_token}"
     
     return APIResponse(
