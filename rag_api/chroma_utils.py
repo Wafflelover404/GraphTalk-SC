@@ -125,7 +125,7 @@ EMBEDDING_MODEL = "intfloat/multilingual-e5-small" if device == "cpu" else "intf
 embedding_function = CachedEmbeddings(model_name=EMBEDDING_MODEL, device=device)
 
 # Initialize Chonkie chunkers for different document types
-# TokenChunker: Token-based chunking with overlap (best for general use and code)
+# TokenChunker: Token-based chunking with overlap (best for general use and code)1
 # Using Mistral tokenizer for better multilingual support and larger vocabulary
 try:
     # Try Mistral tokenizer first (best for multilingual, modern architecture)
