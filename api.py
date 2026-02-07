@@ -44,7 +44,7 @@ from userdb import (
     get_user,
     get_allowed_files,
     get_user_by_token,
-    list_users,
+    # list_users,
     create_session,
     get_user_by_session_id,
     logout_session_by_id,
@@ -84,8 +84,10 @@ from api_keys import (
     check_api_key_permission,
     revoke_api_key,
     delete_api_key,
+    delete_api_key_by_key_id,
     list_api_keys,
     get_api_key_details,
+    get_api_key_details_by_key_id,
     update_api_key,
     AVAILABLE_PERMISSIONS,
 )
@@ -209,7 +211,7 @@ if ADVANCED_ANALYTICS_ENABLED and advanced_analytics_router:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
+    allow_origins=["*", "api.wikiai.by", "https://wikiai.by", "https://localhost:9001", "https://esell.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -627,15 +629,17 @@ async def create_api_key_endpoint(
         
         username = current_user[1]
         
-        
-        full_key, key_id = await create_api_key(
+        result = await create_api_key(
             organization_id=organization_id,
-            created_by=username,
             name=request.name,
             permissions=request.permissions,
             description=request.description,
             expires_in_days=request.expires_in_days,
+            created_by=username,
         )
+        
+        full_key = result["key"]
+        key_id = result["id"]
         
         logger.info(f"API key '{request.name}' created by {username} for org {organization_id}")
         
@@ -704,7 +708,7 @@ async def get_api_key_endpoint(
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required.")
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -740,7 +744,7 @@ async def update_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -787,7 +791,7 @@ async def revoke_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -796,7 +800,7 @@ async def revoke_api_key_endpoint(
         
         await revoke_api_key(key_id)
         
-        logger.info(f"API key {key_id} revoked by {current_user[1]}")
+        # logger.info(f"API key {key_id} revoked by {current_user[1]}")
         
         return APIResponse(
             status="success",
@@ -825,14 +829,15 @@ async def delete_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
-        if key_details["organization_id"] != organization_id:
-            raise HTTPException(status_code=403, detail="Cannot delete API keys from other organizations.")
+        # No need to check organization_id match since get_api_key_details_by_key_id already filters by it
         
-        await delete_api_key(key_id)
+        success = await delete_api_key_by_key_id(key_id, organization_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="API key not found or already deleted.")
         
         logger.info(f"API key {key_id} deleted by {current_user[1]}")
         
@@ -1304,12 +1309,12 @@ async def create_new_catalog(
         api_key = None
         try:
             from api_keys import create_api_key as create_api_key_func
-            api_key = await create_api_key_func(
-                user_id=user_id,
+            result = await create_api_key_func(
                 organization_id=organization_id,
                 name=f"{request.shop_name} API Key",
                 permissions=["catalogs:read", "catalogs:write", "products:read", "products:write"]
             )
+            api_key = result["key"]  # Extract key from result dictionary
             logger.info(f"Created API key for catalog {catalog_id}")
         except Exception as api_key_error:
             logger.warning(f"Failed to create API key for catalog: {api_key_error}")
@@ -5687,7 +5692,7 @@ async def delete_quiz_endpoint(
     organization_id = _get_active_org_id(current_user)
     
     try:
-        success = await delete_quiz(quiz_id, organization_id)
+        success = await delete_api_key_by_key_id(quiz_id, organization_id)
         
         if not success:
             raise HTTPException(status_code=404, detail="Quiz not found")
@@ -5974,7 +5979,7 @@ async def create_invite(
         )
         
         # Create the invite link
-        base_url = "http://localhost:3000"  # You might want to make this configurable
+        base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")  # Use environment variable with fallback
         invite_link = f"{base_url}/invite?token={invite_token}"
         
         # Log the creation
