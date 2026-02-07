@@ -1,0 +1,337 @@
+{
+  "test_name": "Organization Status Management Test",
+  "timestamp": "2026-02-04T00:08:48.575562",
+  "organization_id": "e0df3959-c712-4a25-b14a-1ac3ba596bc6",
+  "results": [
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\ud83d\ude80 Starting Organization Status Management Test"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "Step 1: Admin Login"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "Logging in user: test"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\nStep 2: Create Test Organization"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "Creating test organization: Status Test Org 1770152923"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\u2705 Organization created: Organization and admin created - session_id issued. Organization is pending approval."
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "Fetching all organizations"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\u2705 Found 28 organizations"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\u2705 Found organization: e0df3959-c712-4a25-b14a-1ac3ba596bc6, Status: pending"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\nStep 3: Test Organization Rejection"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "Rejecting organization: e0df3959-c712-4a25-b14a-1ac3ba596bc6"
+    },
+    {
+      "time": "00:08:43",
+      "status": "INFO",
+      "message": "\u2705 Organization rejected: Organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 rejected successfully"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "Fetching all organizations"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\u2705 Found 28 organizations"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\ud83d\udcca Status after rejection: rejected"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "Testing login for statustest_1770152923 (should fail)"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "Logging in user: statustest_1770152923"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\ud83d\udcdd Login after rejection: Unexpectedly allowed"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\nStep 4: Test Status Change (Rejected -> Pending)"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "Changing organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 status to: pending"
+    },
+    {
+      "time": "00:08:44",
+      "status": "INFO",
+      "message": "\u2705 Status changed: Organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 status changed to pending successfully"
+    },
+    {
+      "time": "00:08:45",
+      "status": "INFO",
+      "message": "Fetching all organizations"
+    },
+    {
+      "time": "00:08:45",
+      "status": "INFO",
+      "message": "\u2705 Found 28 organizations"
+    },
+    {
+      "time": "00:08:45",
+      "status": "INFO",
+      "message": "\ud83d\udcca Status after change to pending: pending"
+    },
+    {
+      "time": "00:08:45",
+      "status": "INFO",
+      "message": "Testing login for statustest_1770152923 (should fail)"
+    },
+    {
+      "time": "00:08:45",
+      "status": "INFO",
+      "message": "Logging in user: statustest_1770152923"
+    },
+    {
+      "time": "00:08:46",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:08:46",
+      "status": "INFO",
+      "message": "\ud83d\udcdd Login after pending: Unexpectedly allowed"
+    },
+    {
+      "time": "00:08:46",
+      "status": "INFO",
+      "message": "\nStep 5: Test Organization Approval"
+    },
+    {
+      "time": "00:08:46",
+      "status": "INFO",
+      "message": "Approving organization: e0df3959-c712-4a25-b14a-1ac3ba596bc6"
+    },
+    {
+      "time": "00:08:46",
+      "status": "INFO",
+      "message": "\u2705 Organization approved: Organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 approved successfully"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "Fetching all organizations"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\u2705 Found 28 organizations"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\ud83d\udcca Status after approval: active"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "Testing login for statustest_1770152923 (should succeed)"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "Logging in user: statustest_1770152923"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\ud83d\udcdd Login after approval: Allowed correctly"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\nStep 6: Test Status Change (Active -> Pending)"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "Changing organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 status to: pending"
+    },
+    {
+      "time": "00:08:47",
+      "status": "INFO",
+      "message": "\u2705 Status changed: Organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 status changed to pending successfully"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "Fetching all organizations"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Found 28 organizations"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\ud83d\udcca Status after change back to pending: pending"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "Testing login for statustest_1770152923 (should fail)"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "Logging in user: statustest_1770152923"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\ud83d\udcdd Login after back to pending: Unexpectedly allowed"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\nStep 7: Test Invalid Status Change"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "Changing organization e0df3959-c712-4a25-b14a-1ac3ba596bc6 status to: invalid_status"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Status changed: Invalid status. Must be one of: ['pending', 'active', 'approved', 'rejected']"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\ud83d\udcdd Invalid status change: Unexpectedly allowed"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb COMPREHENSIVE TEST SUMMARY"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Organization ID: e0df3959-c712-4a25-b14a-1ac3ba596bc6"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Organization Name: Status Test Org 1770152923"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Admin Username: statustest_1770152923"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Initial Status: pending"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Rejection Success: True"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Status Change (Rejected->Pending): True"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Approval Success: True"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Status Change (Active->Pending): True"
+    },
+    {
+      "time": "00:08:48",
+      "status": "INFO",
+      "message": "\u2705 Invalid Status Change Rejected: False"
+    }
+  ]
+}

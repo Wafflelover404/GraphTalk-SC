@@ -1,0 +1,237 @@
+{
+  "test_name": "Organization Approval/Banning Workflow",
+  "timestamp": "2026-02-04T00:03:28.553940",
+  "organization_id": "03ba793a-adb5-4480-a297-bb126f0e5fd4",
+  "results": [
+    {
+      "time": "00:03:16",
+      "status": "INFO",
+      "message": "\ud83d\ude80 Starting Organization Approval/Banning Workflow Test"
+    },
+    {
+      "time": "00:03:16",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "00:03:16",
+      "status": "INFO",
+      "message": "Logging in as admin user"
+    },
+    {
+      "time": "00:03:16",
+      "status": "INFO",
+      "message": "Logging in user: test"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "Creating new organization: Test Workflow Org 1770152606"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "Creating organization with admin: Test Workflow Org 1770152606"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "\u2705 Organization created: {'status': 'success', 'message': 'Organization and admin created - session_id issued. Organization is pending approval.', 'token': '058d8161-9709-4bb6-b198-eb211c8bf0cb', 'role': 'owner'}"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "\u2705 Organization created successfully, fetching ID from organizations list"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "Fetching all organizations from admin perspective"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "\u2705 Found 27 organizations"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "\u2705 Found organization ID: 03ba793a-adb5-4480-a297-bb126f0e5fd4"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "Attempting login as organization admin: orgadmin_1770152606"
+    },
+    {
+      "time": "00:03:26",
+      "status": "INFO",
+      "message": "Logging in user: orgadmin_1770152606"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\u2705 Organization admin login correctly blocked (organization pending approval)"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\ud83d\udcdd This is the expected behavior for pending organizations"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb STEP 1: Initial Organization Status"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "----------------------------------------"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "Fetching all organizations from admin perspective"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\u2705 Found 27 organizations"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\ud83d\udcca Initial organization status: pending"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\ud83d\udce1 Skipping resource access test (admin cannot login to pending organization)"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb STEP 2: Admin Approval"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "----------------------------------------"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "Approving organization as admin"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "Logging in user: test"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:03:27",
+      "status": "INFO",
+      "message": "\u2705 Organization approved: Organization 03ba793a-adb5-4480-a297-bb126f0e5fd4 approved successfully"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "Fetching all organizations from admin perspective"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Found 27 organizations"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\ud83d\udcca Organization status after approval: active"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "Attempting login after approval: orgadmin_1770152606"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "Logging in user: orgadmin_1770152606"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Organization admin login successful after approval"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "Testing organization resource access"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\ud83d\udce1 Resource access results: {'http://localhost:9001/organizations/03ba793a-adb5-4480-a297-bb126f0e5fd4/documents': {'status': 404, 'accessible': True}, 'http://localhost:9001/organizations/03ba793a-adb5-4480-a297-bb126f0e5fd4/users': {'status': 404, 'accessible': True}, 'http://localhost:9001/organizations/03ba793a-adb5-4480-a297-bb126f0e5fd4/search': {'status': 404, 'accessible': True}}"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb WORKFLOW TEST SUMMARY"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Organization ID: 03ba793a-adb5-4480-a297-bb126f0e5fd4"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Organization Name: Test Workflow Org 1770152606"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Admin Username: orgadmin_1770152606"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Initial Status: pending"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Approval Success: True"
+    },
+    {
+      "time": "00:03:28",
+      "status": "INFO",
+      "message": "\u2705 Final Status: active"
+    }
+  ]
+}

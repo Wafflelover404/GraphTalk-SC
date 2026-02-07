@@ -1,0 +1,147 @@
+{
+  "test_name": "Organization Approval/Banning Workflow",
+  "timestamp": "2026-02-03T23:59:17.970517",
+  "organization_id": "252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4",
+  "results": [
+    {
+      "time": "23:59:04",
+      "status": "INFO",
+      "message": "\ud83d\ude80 Starting Organization Approval/Banning Workflow Test"
+    },
+    {
+      "time": "23:59:04",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "23:59:04",
+      "status": "INFO",
+      "message": "Using existing test user: test"
+    },
+    {
+      "time": "23:59:04",
+      "status": "INFO",
+      "message": "Logging in user: test"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\u2705 User logged in successfully"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Using existing organization: 252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb STEP 1: Initial Organization Status"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "----------------------------------------"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Checking organization status from admin perspective"
+    },
+    {
+      "time": "23:59:17",
+      "status": "ERROR",
+      "message": "\u274c Status check failed: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Checking organization status from creator perspective"
+    },
+    {
+      "time": "23:59:17",
+      "status": "ERROR",
+      "message": "\u274c Status check failed: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Testing organization resource access"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\ud83d\udce1 Resource access results: {'http://localhost:9001/organizations/252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4/documents': {'status': 404, 'accessible': True}, 'http://localhost:9001/organizations/252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4/users': {'status': 404, 'accessible': True}, 'http://localhost:9001/organizations/252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4/search': {'status': 404, 'accessible': True}}"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb STEP 2: Admin Ban"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "----------------------------------------"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Banning organization as admin"
+    },
+    {
+      "time": "23:59:17",
+      "status": "ERROR",
+      "message": "\u274c Ban failed: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb STEP 3: Admin Approval"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "----------------------------------------"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "Approving organization as admin"
+    },
+    {
+      "time": "23:59:17",
+      "status": "ERROR",
+      "message": "\u274c Approval failed: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\n\ud83d\udccb WORKFLOW TEST SUMMARY"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "============================================================"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\u2705 Organization ID: 252ae0a7-fbd1-4ab1-acd3-ee62cd1f05f4"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\u2705 Initial Status: Unknown"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\u2705 Ban Success: False"
+    },
+    {
+      "time": "23:59:17",
+      "status": "INFO",
+      "message": "\u2705 Approval Success: False"
+    }
+  ]
+}
