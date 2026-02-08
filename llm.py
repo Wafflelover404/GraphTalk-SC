@@ -1,30 +1,21 @@
 import os
 import asyncio
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+from typing import Optional, Any, Dict, List
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Configuration - Priority: DeepSeek > ChatGPT > Gemini > None
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Initialize clients
 deepseek_client = None
 openai_client = None
 gemini_client = None
-active_llm = None  # Track which LLM is being used
+active_llm = None
 
-# Try DeepSeek first (preferred)
+# Try DeepSeek first
 if DEEPSEEK_API_KEY:
     try:
         from openai import AsyncOpenAI
-        deepseek_client = AsyncOpenAI(
-            api_key=DEEPSEEK_API_KEY,
-            base_url="https://api.deepseek.com/v1"
-        )
+        deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com/v1")
         active_llm = "deepseek"
         print("✓ DeepSeek client initialized successfully")
     except Exception as e:
@@ -46,7 +37,6 @@ if not deepseek_client and OPENAI_API_KEY:
 if not deepseek_client and not openai_client and GEMINI_API_KEY:
     try:
         from google import genai
-        # Set the API key in environment for the library
         if not os.getenv("GOOGLE_API_KEY"):
             os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
         gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -59,23 +49,9 @@ if not deepseek_client and not openai_client and GEMINI_API_KEY:
 if not deepseek_client and not openai_client and not gemini_client:
     print("ℹ No LLM API key found. Running in RAG-only mode (search results only).")
 
-# Check if any LLM is available
 LLM_AVAILABLE = deepseek_client is not None or openai_client is not None or gemini_client is not None
 
 def get_immediate_results(data):
-    """
-    Extract and return immediate RAG results without waiting for LLM. Always provide user with comprehensive overview in the same language as user query
-    
-    Args:
-        data: Knowledge base search results
-        
-    Returns:
-        dict: {
-            'files': list of source files,
-            'raw_results': str
-        }
-    """
-    # Extract source files from data if possible
     source_files = []
     if isinstance(data, dict) and 'source_documents' in data:
         source_files = list(set(doc.metadata.get('source', 'unknown') 
@@ -88,17 +64,6 @@ def get_immediate_results(data):
     }
 
 async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
-    """
-    Generate LLM overview asynchronously. This can be called separately
-    after immediate results are returned.
-    
-    Args:
-        message: User's query
-        data: Knowledge base search results
-        
-    Returns:
-        str or None: LLM-generated overview
-    """
     if not LLM_AVAILABLE:
         return None
     
@@ -110,7 +75,6 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     
     overview = None
     
-    # Try DeepSeek first
     if deepseek_client:
         try:
             print("🤖 Generating overview with DeepSeek...")
@@ -129,12 +93,11 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
         except Exception as e:
             print(f"❌ DeepSeek API error: {e}")
     
-    # Try ChatGPT if DeepSeek failed or not available
     if openai_client:
         try:
             print("🤖 Generating overview with ChatGPT...")
             response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Fast and cost-effective
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
@@ -148,21 +111,17 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
         except Exception as e:
             print(f"❌ ChatGPT API error: {e}")
     
-    # Try Gemini if DeepSeek and ChatGPT failed or not available
     if gemini_client:
         try:
             print("🤖 Generating overview with Gemini...")
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.0-flash-exp",
-                    contents=[
-                        system_prompt,
-                        f"Knowledge base search results: {data}",
-                        f"User request: {message}"
-                    ],
-                )
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model="gemini-2.0-flash-exp",
+                contents=[
+                    system_prompt,
+                    f"Knowledge base search results: {data}",
+                    f"User request: {message}"
+                ],
             )
             overview = response.text
             print("✓ Gemini overview generated successfully")
@@ -178,30 +137,8 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     return None
 
 async def llm_call(message, data, get_overview=True):
-    """
-    Process query and return results in two phases:
-    1. Immediate return with files list and raw results
-    2. (Optional) LLM-generated overview if available
-    
-    Args:
-        message (str): User's query
-        data (str): Knowledge base search results
-        get_overview (bool): Whether to generate an LLM overview
-        
-    Returns:
-        dict: {
-            'immediate': {
-                'files': list of source files,
-                'raw_results': str  # Raw search results
-            },
-            'overview': str or None,  # LLM-generated overview if available
-            'llm_used': str or None  # Which LLM was used
-        }
-    """
-    # Get immediate results (fast, no LLM)
     immediate_response = get_immediate_results(data)
     
-    # If no LLM or overview not requested, return immediately
     if not LLM_AVAILABLE or not get_overview:
         return {
             'immediate': immediate_response,
@@ -209,7 +146,6 @@ async def llm_call(message, data, get_overview=True):
             'llm_used': None
         }
     
-    # Generate overview (this will take time)
     overview = await generate_llm_overview(message, data)
     
     return {

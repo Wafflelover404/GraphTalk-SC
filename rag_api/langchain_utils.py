@@ -182,16 +182,13 @@ def get_rag_chain(model: str = None):
                 try:
                     logger.info("🤖 Generating response with Gemini...")
                     import asyncio
-                    loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: gemini_client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
-                            contents=[
-                                "You are an expert assistant analyzing company documents. Provide accurate, detailed answers based on the provided context. Always respond in the same language as the user's question.",
-                                qa_prompt.format(context=context, input=user_input)
-                            ],
-                        )
+                    response = await asyncio.to_thread(
+                        gemini_client.models.generate_content,
+                        model="gemini-2.0-flash-exp",
+                        contents=[
+                            "You are an expert assistant analyzing company documents. Provide accurate, detailed answers based on the provided context. Always respond in the same language as the user's question.",
+                            qa_prompt.format(context=context, input=user_input)
+                        ],
                     )
                     result = response.text
                     logger.info("✓ Gemini response generated")

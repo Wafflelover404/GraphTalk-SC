@@ -379,7 +379,29 @@ def index_document_to_chroma(file_path: str, file_id: int) -> bool:
 		
 		logger.info(f"✓ Successfully indexed {filename} with {len(splits)} chunks (ID: {file_id})")
 		
-		# If this is a ZIP file, log the summary
+		# Index to Elasticsearch if configured
+		index_backend = os.getenv("INDEX_BACKEND", "elasticsearch")
+		if index_backend == "elasticsearch":
+			try:
+				# Read raw content for ES
+				with open(file_path, 'r', encoding='utf-8') as f:
+					content = f.read()
+				
+				import asyncio
+				from rag_api.elastic_indexer import index_rag_document
+				
+				async def index_to_es():
+					await index_rag_document(
+						doc_id=file_id,
+						filename=filename,
+						content=content
+					)
+				
+				asyncio.create_task(index_to_es())
+				logger.info(f"✓ ES indexing started for {filename}")
+			except Exception as e:
+				logger.warning(f"ES indexing failed for {filename}: {e}")
+		
 		if file_ext == '.zip':
 			# Count archive chunks
 			archive_chunks = sum(1 for split in splits if 'archive_source' in split.metadata)

@@ -52,8 +52,7 @@ async def kb_search(search_string: str, allowed_files=None) -> list:
     
     # Run the blocking SC-machine operations in a thread pool
     import asyncio
-    loop = asyncio.get_event_loop()
-    
+
     def _sync_search():
         try:
             connect(url)
@@ -121,7 +120,7 @@ async def kb_search(search_string: str, allowed_files=None) -> list:
         finally:
             disconnect()
     
-    return await loop.run_in_executor(None, _sync_search)
+    return await asyncio.to_thread(_sync_search)
 
 if __name__ == "__main__":
     # Example usage:

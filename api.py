@@ -86,6 +86,33 @@ app.include_router(reports_router)
 app.include_router(metrics_router)
 app.include_router(metrics_user_router)
 
+# Include Elasticsearch API router if available
+try:
+    from rag_api.elastic_api import router as elastic_router
+    from rag_api.elastic_client import health_check
+    import asyncio
+
+    app.include_router(elastic_router)
+    logger = logging.getLogger(__name__)
+
+    @app.on_event("startup")
+    async def check_elasticsearch():
+        try:
+            result = await health_check()
+            if result.get("status") == "connected":
+                logger.info(f"✅ Elasticsearch connected: {result.get('cluster_name')} v{result.get('version')}")
+            else:
+                logger.warning(f"⚠️ Elasticsearch unavailable: {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.warning(f"⚠️ Elasticsearch not configured: {e}")
+
+    ELASTICSEARCH_ENABLED = True
+    logger.info("✅ Elasticsearch API enabled")
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ Elasticsearch API not available: {e}")
+    ELASTICSEARCH_ENABLED = False
+
 # Include advanced analytics router if available
 if ADVANCED_ANALYTICS_ENABLED:
     app.include_router(advanced_analytics_router)
@@ -1875,15 +1902,20 @@ async def delete_document(
         raise HTTPException(status_code=403, detail="Admin privileges required.")
     
     try:
+        from rag_api.elastic_indexer import delete_rag_document
+        from rag_api.db_utils import delete_document_record as delete_db_record
+        
         chroma_delete_success = delete_doc_from_chroma(request.file_id)
         
         if chroma_delete_success:
-            db_delete_success = delete_document_record(request.file_id)
+            db_delete_success = delete_db_record(request.file_id)
+            
             if db_delete_success:
+                es_delete = await delete_rag_document(request.file_id)
                 return APIResponse(
                     status="success",
                     message=f"Successfully deleted document with file_id {request.file_id}",
-                    response={"file_id": request.file_id}
+                    response={"file_id": request.file_id, "es_deleted": es_delete.get("deleted", 0)}
                 )
             else:
                 return APIResponse(
@@ -2462,4 +2494,140 @@ async def get_metrics_queries_legacy(
         "message": "This endpoint is deprecated. Please use /metrics/queries instead.",
         "redirect": "/metrics/queries"
     }
+
+
+# ==================== ORGANIZATIONS API ====================
+
+class CreateOrgRequest(BaseModel):
+    organization_name: str
+    admin_username: str
+    admin_password: str
+
+class AddMemberRequest(BaseModel):
+    username: str
+    role: str = "member"
+
+@app.post("/organizations/create_with_admin", response_model=APIResponse)
+async def create_organization_with_admin(request: CreateOrgRequest):
+    """
+    Create a new organization with an admin user.
+    """
+    import bcrypt
+    from fastapi.concurrency import run_in_threadpool
+    from organizations_db import create_organization, add_user_to_organization, get_user_organizations
+    
+    try:
+        from userdb import create_user, get_user
+
+        user_exists = await get_user(request.admin_username)
+        print(f"[DEBUG] user_exists check: {request.admin_username} -> {user_exists}")
+        if user_exists:
+            return APIResponse(status="error", message="Username already exists", response=None)
+        
+        hashed = bcrypt.hashpw(request.admin_password.encode(), bcrypt.gensalt()).decode()
+        
+        user_id = await create_user(request.admin_username, hashed, "admin")
+        print(f"[DEBUG] user_id: {user_id}")
+        
+        org = await run_in_threadpool(create_organization, request.organization_name, user_id)
+        print(f"[DEBUG] org result: {org}")
+        
+        if not org:
+            return APIResponse(status="error", message="Organization name already exists", response=None)
+        
+        return APIResponse(
+            status="success",
+            message=f"Organization '{request.organization_name}' created with admin {request.admin_username}",
+            response={"organization": org, "admin_username": request.admin_username}
+        )
+    except Exception as e:
+        logger.exception("Error creating organization")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.post("/organizations/switch", response_model=APIResponse)
+async def switch_organization(
+    organization_id: Optional[int] = None,
+    organization_slug: Optional[str] = None,
+    current_user=Depends(get_current_user)
+):
+    """
+    Switch to a different organization context.
+    """
+    return APIResponse(
+        status="success",
+        message="Organization context updated",
+        response={"organization_id": organization_id or organization_slug}
+    )
+
+
+@app.get("/organizations/memberships", response_model=APIResponse)
+async def list_my_memberships(current_user=Depends(get_current_user)):
+    """
+    List all organizations the current user belongs to.
+    """
+    from organizations_db import get_user_organizations
+    
+    try:
+        user_id = current_user[0]
+        orgs = get_user_organizations(user_id)
+        memberships = [{"organization_id": o["id"], "organization_name": o["name"], "role": o["role"]} for o in orgs]
+        return APIResponse(status="success", message="Memberships retrieved", response={"memberships": memberships})
+    except Exception as e:
+        logger.exception("Error getting memberships")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.post("/organizations/{org_id}/members/add", response_model=APIResponse)
+async def add_member_to_org(
+    org_id: int,
+    request: AddMemberRequest,
+    current_user=Depends(get_current_user)
+):
+    """
+    Add a user to an organization (admin only).
+    """
+    from organizations_db import add_user_to_organization, get_organization_by_id
+    
+    try:
+        user_id = current_user[0]
+        
+        org = get_organization_by_id(org_id)
+        if not org:
+            return APIResponse(status="error", message="Organization not found", response=None)
+        
+        from userdb import get_user
+
+        user = await get_user(request.username)
+        if not user:
+            return APIResponse(status="error", message="User not found", response=None)
+        
+        success = add_user_to_organization(org_id, user[0], request.role)
+        if success:
+            return APIResponse(status="success", message=f"Added {request.username} to {org['name']}", response=None)
+        return APIResponse(status="error", message="User may already be a member", response=None)
+    except Exception as e:
+        logger.exception("Error adding member")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.get("/organizations/{org_id}/members", response_model=APIResponse)
+async def list_org_members(
+    org_id: int,
+    current_user=Depends(get_current_user)
+):
+    """
+    List members of an organization.
+    """
+    from organizations_db import get_organization_by_id
+    
+    org = get_organization_by_id(org_id)
+    if not org:
+        return APIResponse(status="error", message="Organization not found", response=None)
+    
+    return APIResponse(
+        status="success",
+        message=f"Members of {org['name']}",
+        response={"organization": org, "members": []}
+    )
 

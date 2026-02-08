@@ -32,13 +32,13 @@ logger = logging.getLogger(__name__)
 async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -> List[Dict[str, Any]]:
     """
     Get list of relevant files and chunks for a query that the user has access to.
-    Uses the enhanced search_documents function with filename similarity and semantic search.
+    Uses Elasticsearch for search (semantic + fulltext hybrid).
     """
     logger = logging.getLogger(__name__)
     tracker = PerformanceTracker(f"get_relevant_files_for_query('{username}', '{query[:50]}...')", logger)
 
     try:
-        from rag_api.chroma_utils import search_documents
+        from rag_api.search_backend import search_documents
 
         # Get user's file access permissions
         tracker.start_operation("get_user_permissions")
@@ -78,116 +78,85 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
             logger.info(f"User {username} is an admin and has access to all files")
         tracker.end_operation("build_access_set")
 
-        # Use our enhanced search function
+        # Use Elasticsearch search
         logger.info(f"Searching for query: {query}")
         logger.info(f"User {username} access: {'admin' if allowed_files is None else 'restricted'}")
 
         tracker.start_operation("search_documents")
-        # First pass: Get broad results with lower threshold
-        search_results = search_documents(
+        search_results = await search_documents(
             query=query,
-            similarity_threshold=0.2,  # Lower threshold to get more potential matches
-            filename_similarity_threshold=0.6,  # Slightly lower for broader filename matching
-            include_full_document=True,  # Get full document context
-            max_results=k * 3,  # Get more initial results
-            max_chunks_per_file=5,  # Get more chunks per file
-            min_relevance_score=0.25,  # Slightly lower minimum score
-            filename_match_boost=1.3,  # Moderate boost for filename matches
-            language='russian'  # Explicitly set language for better tokenization
+            allowed_files=allowed_files if allowed_files is not None else [],
+            size=k * 3,
+            search_type="hybrid",
+            language='russian'
         )
+
+        results = search_results.get('results', []) if search_results.get('status') == 'success' else []
         
-        # Log initial search results
-        logger.info(f"Initial search results - Semantic matches: {len(search_results.get('semantic_results', []))}, Filename matches: {len(search_results.get('filename_matches', {}))}")
-        
-        # If we don't have enough high-confidence results, try a more permissive search
-        if len(search_results.get('semantic_results', [])) < k:
-            logger.info("Performing fallback search with expanded parameters")
-            fallback_results = search_documents(
+        logger.info(f"Initial search results: {len(results)} total results")
+
+        # If we don't have enough results, try semantic-only with lower threshold
+        if len(results) < k:
+            logger.info("Performing fallback semantic search with expanded parameters")
+            fallback_results = await search_documents(
                 query=query,
-                similarity_threshold=0.15,  # Even lower threshold
-                filename_similarity_threshold=0.5,
-                include_full_document=True,
-                max_results=k * 5,  # Get even more results
-                max_chunks_per_file=3,
-                min_relevance_score=0.2,
-                filename_match_boost=1.1,
-                language='russian'
+                allowed_files=allowed_files if allowed_files is not None else [],
+                size=k * 5,
+                search_type="semantic",
+                language='russian',
+                min_score=0.05
             )
-            # Log fallback results
-            logger.info(f"Fallback search results - Semantic matches: {len(fallback_results.get('semantic_results', []))}, Filename matches: {len(fallback_results.get('filename_matches', {}))}")
+            fallback = fallback_results.get('results', []) if fallback_results.get('status') == 'success' else []
+            logger.info(f"Fallback search results: {len(fallback)} total results")
             
-            # Merge results, preferring the first pass
-            search_results['semantic_results'] = (
-                search_results.get('semantic_results', []) +
-                [r for r in fallback_results.get('semantic_results', [])
-                 if r not in search_results.get('semantic_results', [])]
-            )
+            # Merge results, preferring first pass
+            existing_keys = {(r.get('filename', ''), r.get('chunk_index', 0)) for r in results}
+            for r in fallback:
+                key = (r.get('filename', ''), r.get('chunk_index', 0))
+                if key not in existing_keys:
+                    results.append(r)
         
-        # Log all filenames from search results for debugging
-        all_filenames = []
-        for doc in search_results.get('semantic_results', []):
-            filename = doc.metadata.get('filename', '')
-            all_filenames.append(filename)
-            logger.debug(f"Search result - Original filename: {filename!r}, Normalized: {normalize_filename(filename)!r}")
-        
+        # Log all filenames from search results
+        all_filenames = [r.get('filename', '') for r in results]
         logger.info(f"Search result filenames (raw): {set(all_filenames)}")
         normalized_filenames = [f"'{normalize_filename(f)}'" for f in set(all_filenames)]
         logger.info(f"Search result filenames (normalized): {{{', '.join(normalized_filenames)}}}")
         logger.info(f"User's allowed files (normalized): {allowed_files_set}")
-        logger.info(f"Total results after merging: {len(search_results.get('semantic_results', []))} semantic matches")
+        logger.info(f"Total results after merging: {len(results)} results")
         tracker.end_operation("search_documents")
 
-        # Process semantic results with enhanced context
-        tracker.start_operation("process_semantic_results")
+        # Process results
+        tracker.start_operation("process_results")
         relevant_files = []
         seen_files = set()
         file_chunks = {}
         total_skipped = 0
         total_allowed = 0
 
-        # First pass: Group all chunks by file
-        for doc in search_results.get('semantic_results', []):
-            file_source = doc.metadata.get('filename', '')
+        for doc in results:
+            file_source = doc.get('filename', '')
             if not file_source:
-                logger.debug("Skipping document with no filename in metadata")
                 continue
-                
-            # Check access if user has restricted access (not an admin)
-            if allowed_files_set is not None:  # If not None, user has restricted access
+            
+            # Check access if user has restricted access
+            if allowed_files_set is not None:
                 norm_name = normalize_filename(file_source)
-                logger.debug(f"Checking file access - Original: {file_source!r}, Normalized: {norm_name!r}, Allowed files: {allowed_files_set}")
-                
-                if not norm_name:
-                    logger.debug(f"Skipping file {file_source} - could not normalize filename")
+                if not norm_name or norm_name not in allowed_files_set:
                     total_skipped += 1
                     continue
-                    
-                if norm_name not in allowed_files_set:
-                    logger.debug(f"Skipping file {file_source} - not in allowed list")
-                    logger.debug(f"  Normalized: {norm_name!r}")
-                    logger.debug(f"  Allowed files: {allowed_files_set}")
-                    total_skipped += 1
-                    continue
-                    
-                logger.info(f"File {file_source} is in allowed list (normalized: {norm_name})")
                 total_allowed += 1
 
-            # Initialize file entry if not exists
             if file_source not in file_chunks:
                 file_chunks[file_source] = []
-                
-            # Add chunk with metadata
+            
             chunk_data = {
-                "content": doc.page_content,
-                "score": doc.metadata.get('similarity_score', 0.5),
-                "metadata": {
-                    k: v for k, v in doc.metadata.items()
-                    if k not in ['filename', 'source']  # Exclude redundant fields
-                }
+                "content": doc.get('content', ''),
+                "score": doc.get('score', 0.5),
+                "metadata": {k: v for k, v in doc.items() if k not in ['filename', 'content', 'score']}
             }
             file_chunks[file_source].append(chunk_data)
         
-        logger.info(f"Processed {len(search_results.get('semantic_results', []))} documents - Allowed: {total_allowed}, Skipped: {total_skipped}")
+        logger.info(f"Processed {len(results)} documents - Allowed: {total_allowed}, Skipped: {total_skipped}")
 
         # Process each file's chunks for optimal context
         for file_source, chunks in file_chunks.items():
@@ -229,46 +198,6 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
                 logger.error(f"Error processing file {file_source}: {str(e)}", exc_info=True)
                 continue
 
-        # Add filename matches if we don't have enough results
-        logger.info(f"Found {len(relevant_files)} relevant files after semantic search, looking for up to {k}")
-        filename_matches_added = 0
-        
-        if len(relevant_files) < k and 'filename_matches' in search_results:
-            logger.info(f"Checking {len(search_results['filename_matches'])} filename matches")
-            
-            for filename, match in search_results['filename_matches'].items():
-                if filename not in seen_files:
-                    # Only check access if user has restricted access (not an admin)
-                    if allowed_files_set is not None:  # If not None, user has restricted access
-                        norm_name = normalize_filename(filename)
-                        if not norm_name or norm_name not in allowed_files_set:
-                            logger.debug(f"Skipping filename match {filename} - not in allowed list (normalized: {norm_name}, allowed: {allowed_files_set})")
-                            continue  # Skip files not in the allowed list
-                        else:
-                            logger.debug(f"Filename match {filename} is in allowed list (normalized: {norm_name})")
-
-                    try:
-                        seen_files.add(filename)
-                        relevant_files.append({
-                            "file_path": filename,
-                            "file_name": os.path.basename(filename),
-                            "relevance_score": 1.0 - match.get('similarity', 0.3),
-                            "content": match.get('content', '')[:500],
-                            "is_filename_match": True
-                        })
-                        filename_matches_added += 1
-                        logger.debug(f"Added filename match: {filename} (score: {1.0 - match.get('similarity', 0.3):.2f})")
-                        
-                        # Stop if we have enough results
-                        if len(relevant_files) >= k:
-                            break
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing filename match {filename}: {str(e)}", exc_info=True)
-                        continue
-
-        logger.info(f"Added {filename_matches_added} filename matches, total results: {len(relevant_files)}")
-
         # Sort by relevance score (higher is better) and take top k
         relevant_files.sort(key=lambda x: x["relevance_score"], reverse=True)
         result = relevant_files[:k]
@@ -278,7 +207,7 @@ async def get_relevant_files_for_query(username: str, query: str, k: int = 20) -
         for i, file_info in enumerate(result, 1):
             logger.info(f"  {i}. {file_info['file_name']} (score: {file_info['relevance_score']:.2f})")
         
-        tracker.end_operation("process_semantic_results")
+        tracker.end_operation("process_results")
         tracker.log_summary()
         return result
 
