@@ -46,7 +46,7 @@ async def get_documentation(
     offset: int = Query(0, ge=0)
 ):
     """Get documentation with optional filtering"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Build query
@@ -76,7 +76,7 @@ async def get_documentation(
 @router.get("/{doc_id}", response_model=DocumentationResponse)
 async def get_documentation_by_id(doc_id: int):
     """Get single documentation by ID"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -96,7 +96,7 @@ async def get_documentation_by_id(doc_id: int):
 @router.get("/slug/{slug}", response_model=DocumentationResponse)
 async def get_documentation_by_slug(slug: str):
     """Get single documentation by slug"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -117,7 +117,7 @@ async def get_documentation_by_slug(slug: str):
 @router.get("/categories", response_model=List[DocCategory])
 async def get_documentation_categories():
     """Get all documentation categories"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get unique categories from documentation
@@ -248,7 +248,7 @@ async def get_changelog():
 @router.get("/analytics")
 async def get_documentation_analytics():
     """Get documentation analytics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Total documentation

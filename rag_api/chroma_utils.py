@@ -426,16 +426,34 @@ def index_document_to_chroma(file_path: str, file_id: int, organization_id: str 
 
 def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
     try:
-        # Build where clause with proper Chroma syntax
+        # First, get the filename from the database using file_id
+        import sqlite3
+        DB_NAME = "rag_app.db"
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT filename FROM document_store WHERE id = ?", (file_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            filename = result['filename']
+            print(f"Found filename '{filename}' for file_id {file_id}")
+        else:
+            print(f"No document found with file_id {file_id}")
+            return True  # Document not found, consider successful
+        
+        # Build where clause to find by filename and organization_id
         if organization_id:
             where_clause = {
                 "$and": [
-                    {"file_id": file_id},
+                    {"source": filename},
                     {"organization_id": organization_id}
                 ]
             }
         else:
-            where_clause = {"file_id": file_id}
+            where_clause = {"source": filename}
         
         # Check if vectorstore is initialized
         global vectorstore
@@ -454,21 +472,21 @@ def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
         # Get documents to see what exists
         try:
             docs = vectorstore.get(where=where_clause)
-            print(f"Found {len(docs['ids'])} document chunks for file_id {file_id}")
-            print(f"Document IDs: {docs['ids'][:5] if docs['ids'] else 'None'}")  # Show first 5 IDs
+            print(f"Found {len(docs['ids'])} document chunks for filename '{filename}'")
+            print(f"Document IDs: {docs['ids'][:5] if docs['ids'] else 'None'}")
         except Exception as e:
             print(f"Error getting documents from Chroma: {e}")
             return False
         
         if len(docs['ids']) == 0:
-            print(f"No documents found with file_id {file_id}")
+            print(f"No documents found with filename '{filename}'")
             return True  # Consider this successful since nothing to delete
         
         # Try to delete using the collection directly
         try:
             result = collection.delete(where=where_clause)
             print(f"Chroma delete operation result: {result}")
-            print(f"Deleted all documents with file_id {file_id}")
+            print(f"Deleted all documents with filename '{filename}'")
             return True
         except Exception as e:
             print(f"Error in collection.delete(): {e}")
@@ -477,7 +495,7 @@ def delete_doc_from_chroma(file_id: int, organization_id: str = None) -> bool:
             try:
                 result = vectorstore.delete(where=where_clause)
                 print(f"Vectorstore delete operation result: {result}")
-                print(f"Deleted all documents with file_id {file_id} using vectorstore.delete")
+                print(f"Deleted all documents with filename '{filename}' using vectorstore.delete")
                 return True
             except Exception as e2:
                 print(f"Error in vectorstore.delete(): {e2}")

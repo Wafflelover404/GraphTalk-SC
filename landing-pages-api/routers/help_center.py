@@ -54,7 +54,7 @@ async def get_help_articles(
     offset: int = Query(0, ge=0)
 ):
     """Get help articles with optional filtering"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Build query
@@ -84,7 +84,7 @@ async def get_help_articles(
 @router.get("/articles/{article_id}", response_model=HelpArticleResponse)
 async def get_help_article(article_id: int):
     """Get single help article by ID"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -111,7 +111,7 @@ async def get_help_article(article_id: int):
 @router.get("/articles/slug/{slug}", response_model=HelpArticleResponse)
 async def get_help_article_by_slug(slug: str):
     """Get single help article by slug"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -138,7 +138,7 @@ async def get_help_article_by_slug(slug: str):
 @router.post("/articles/{article_id}/helpful")
 async def mark_article_helpful(article_id: int, helpful: bool = True):
     """Mark article as helpful or not helpful"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         # Check if article exists
         cursor = await db.execute(
             "SELECT id FROM help_articles WHERE id = ? AND status = 'published'",
@@ -170,7 +170,7 @@ async def mark_article_helpful(article_id: int, helpful: bool = True):
 @router.get("/categories", response_model=List[HelpCategory])
 async def get_help_categories():
     """Get all help categories"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -197,7 +197,7 @@ async def get_video_tutorials(
     offset: int = Query(0, ge=0)
 ):
     """Get video tutorials"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM video_tutorials WHERE status = 'published'"
@@ -218,7 +218,7 @@ async def get_video_tutorials(
 @router.get("/videos/{video_id}")
 async def get_video_tutorial(video_id: int):
     """Get single video tutorial"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -246,7 +246,7 @@ async def get_video_tutorial(video_id: int):
 @router.get("/popular-topics")
 async def get_popular_topics():
     """Get popular help topics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get most viewed articles
@@ -304,7 +304,7 @@ async def search_help_articles(
 @router.get("/analytics")
 async def get_help_analytics():
     """Get help center analytics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Total articles and views

@@ -32,7 +32,7 @@ class ConversionEvent(BaseModel):
 @router.post("/track-visit")
 async def track_landing_page_visit(visit: PageView):
     """Track landing page visit"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             await db.execute(
                 """
@@ -65,7 +65,7 @@ async def track_landing_page_visit(visit: PageView):
 @router.post("/track-event")
 async def track_analytics_event(event: ConversionEvent):
     """Track analytics event"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             import json
             
@@ -108,7 +108,7 @@ async def get_landing_page_conversions(
     page: Optional[str] = Query(None)
 ):
     """Get landing page conversion data"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Build date filter
@@ -183,7 +183,7 @@ async def get_page_view_stats(
     page: Optional[str] = Query(None)
 ):
     """Get page view statistics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -235,7 +235,7 @@ async def get_user_session_stats(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get user session statistics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -287,7 +287,7 @@ async def get_conversion_metrics(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get conversion metrics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -350,7 +350,7 @@ async def get_popular_search_terms(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get popular search terms"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -375,7 +375,7 @@ async def get_user_engagement_metrics(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get user engagement metrics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -437,7 +437,7 @@ async def get_user_engagement_metrics(
 @router.get("/dashboard")
 async def get_dashboard_analytics():
     """Get comprehensive dashboard analytics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get data from multiple sources

@@ -66,42 +66,51 @@ class AutoIndexer:
             logger.error(f"Error connecting to Chroma: {e}")
             return set()
     
-    def index_document(self, file_path: str, file_hash: str) -> bool:
+    def index_document(self, file_path: str, file_hash: str, organization_id: str = None) -> bool:
         """Index a single document into Chroma"""
         try:
-            # Import here to avoid circular imports
             import chromadb
             from chromadb.config import Settings
             from langchain_core.documents import Document
+            from rag_api.chroma_utils import CachedEmbeddings, EMBEDDING_MODEL, device
             
             # Read file content
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             
-            # Create document
+            # Create document with organization_id for multi-tenant filtering
             doc = Document(
                 page_content=content,
                 metadata={
                     "source": os.path.basename(file_path),
+                    "filename": os.path.basename(file_path),  # Required by rag_security.py
                     "path": str(file_path),
                     "hash": file_hash,
-                    "indexed_at": time.time()
+                    "indexed_at": time.time(),
+                    "organization_id": organization_id
                 }
             )
             
-            # Connect to Chroma
+            # Connect to Chroma using langchain wrapper for automatic embeddings
             chroma_settings = Settings(persist_directory=self.chroma_db_path)
-            client = chromadb.PersistentClient(path=self.chroma_db_path, settings=chroma_settings)
-            collection = client.get_or_create_collection("documents")
+            embedding_function = CachedEmbeddings(model_name=EMBEDDING_MODEL, device=device)
             
-            # Add document
-            collection.add(
-                documents=[doc.page_content],
+            # Use langchain's Chroma which handles embeddings automatically
+            from langchain_community.vectorstores import Chroma
+            vectorstore = Chroma(
+                collection_name="documents_optimized",
+                embedding_function=embedding_function,
+                persist_directory=self.chroma_db_path
+            )
+            
+            # Add document with embeddings
+            vectorstore.add_texts(
+                texts=[doc.page_content],
                 metadatas=[doc.metadata],
                 ids=[f"{file_hash}_{os.path.basename(file_path)}"]
             )
             
-            logger.info(f"✅ Indexed: {os.path.basename(file_path)}")
+            logger.info(f"✅ Indexed: {os.path.basename(file_path)} (org: {organization_id})")
             return True
             
         except Exception as e:

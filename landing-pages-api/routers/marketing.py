@@ -43,7 +43,7 @@ class ABTestResult(BaseModel):
 @router.post("/download-request")
 async def request_download(request: DownloadRequest):
     """Request downloadable content (whitepapers, case studies)"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             # Track the download request as an analytics event
             import json
@@ -166,7 +166,7 @@ async def download_resource(resource_id: str):
 @router.post("/webinar-registration")
 async def register_webinar(registration: WebinarRegistration):
     """Register for a webinar"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             # Track webinar registration
             import json
@@ -265,7 +265,7 @@ async def get_upcoming_webinars():
 @router.post("/email-opened")
 async def track_email_opened(event: EmailEvent):
     """Track email opens"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             import json
             
@@ -298,7 +298,7 @@ async def track_email_opened(event: EmailEvent):
 @router.post("/email-clicked")
 async def track_email_clicked(event: EmailEvent):
     """Track email clicks"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             import json
             
@@ -334,7 +334,7 @@ async def get_campaign_performance(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get email campaign performance data"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -389,7 +389,7 @@ async def get_campaign_performance(
 @router.post("/ab-test-result")
 async def track_ab_test_result(result: ABTestResult):
     """Track A/B test results"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             import json
             
@@ -428,7 +428,7 @@ async def get_ab_test_results(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get A/B test results"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"
@@ -482,7 +482,7 @@ async def get_marketing_analytics(
     days: int = Query(30, ge=1, le=365)
 ):
     """Get comprehensive marketing analytics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         date_filter = f"datetime('now', '-{days} days')"

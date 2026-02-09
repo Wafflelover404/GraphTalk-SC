@@ -16,6 +16,9 @@ async def init_org_db():
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 slug TEXT UNIQUE NOT NULL,
+                description TEXT,
+                admin_user_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -42,7 +45,7 @@ async def create_organization(
     org_name: str,
     org_slug: str,
     admin_user_id: str,
-    description: str = None,
+    description: Optional[str] = None,
     status: str = "pending"
 ):
     """Create a new organization with pending status"""

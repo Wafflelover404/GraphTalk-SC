@@ -83,6 +83,7 @@ def insert_document_record(filename, content_bytes=None, organization_id=None):
 	conn.commit()
 	conn.close()
 	return file_id
+	
 def get_file_content_by_filename(filename, organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
@@ -97,6 +98,19 @@ def get_file_content_by_filename(filename, organization_id=None):
 	conn.close()
 	if row:
 		return row['content']
+	return None
+
+def get_file_content_by_id(file_id, organization_id=None):
+	conn = get_db_connection()
+	cursor = conn.cursor()
+	if organization_id:
+		cursor.execute('SELECT content, filename FROM document_store WHERE id = ? AND organization_id = ?', (file_id, organization_id))
+	else:
+		cursor.execute('SELECT content, filename FROM document_store WHERE id = ?', (file_id,))
+	row = cursor.fetchone()
+	conn.close()
+	if row:
+		return {'content': row['content'], 'filename': row['filename']}
 	return None
 
 def delete_document_record(file_id):
@@ -125,16 +139,39 @@ def delete_document_record(file_id):
         traceback.print_exc()
         return False
 
-def get_all_documents(organization_id=None):
+def get_unindexed_documents(organization_id=None):
 	conn = get_db_connection()
 	cursor = conn.cursor()
 	if organization_id:
 		cursor.execute(
-			'SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
+			'SELECT id, filename, content, organization_id, file_size FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
 			(organization_id,)
 		)
 	else:
-		cursor.execute('SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store ORDER BY upload_timestamp DESC')
+		cursor.execute('SELECT id, filename, content, organization_id, file_size FROM document_store ORDER BY upload_timestamp DESC')
+	documents = cursor.fetchall()
+	conn.close()
+	return [dict(doc) for doc in documents]
+
+def get_all_documents(organization_id=None, include_content=False):
+	conn = get_db_connection()
+	cursor = conn.cursor()
+	if include_content:
+		if organization_id:
+			cursor.execute(
+				'SELECT id, filename, content, upload_timestamp, organization_id, file_size FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
+				(organization_id,)
+			)
+		else:
+			cursor.execute('SELECT id, filename, content, upload_timestamp, organization_id, file_size FROM document_store ORDER BY upload_timestamp DESC')
+	else:
+		if organization_id:
+			cursor.execute(
+				'SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store WHERE organization_id = ? ORDER BY upload_timestamp DESC',
+				(organization_id,)
+			)
+		else:
+			cursor.execute('SELECT id, filename, upload_timestamp, organization_id, file_size FROM document_store ORDER BY upload_timestamp DESC')
 	documents = cursor.fetchall()
 	conn.close()
 	return [dict(doc) for doc in documents]

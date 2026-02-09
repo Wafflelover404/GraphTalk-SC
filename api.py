@@ -84,9 +84,12 @@ from api_keys import (
     check_api_key_permission,
     revoke_api_key,
     delete_api_key,
+    delete_api_key_by_key_id,
     list_api_keys,
     get_api_key_details,
+    get_api_key_details_by_key_id,
     update_api_key,
+    update_api_key_by_key_id,
     AVAILABLE_PERMISSIONS,
 )
 
@@ -181,6 +184,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'landing-pages-api'))
 # Set CMS database path to absolute path
 cms_db_path = os.path.join(os.path.dirname(__file__), 'landing-pages-api', 'landing_pages.db')
 os.environ['DATABASE_URL'] = cms_db_path
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'landing-pages-api'))
+from database import init_database as init_cms_database
 
 from routers.cms import router as cms_router
 from database import init_database as init_cms_database
@@ -475,7 +481,8 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     
     
     # Check if it's the CMS master token
-    if credentials.credentials == "5gPgr9goO4JxyOQDUWL4aGqX_wEIpwAphvXGv1N_AR3jvN04GByJhlbcDjD-4pVl6VEmWZHctgNmGeg9JJCtmQ":
+    cms_token = os.getenv("CMS_MASTER_TOKEN")
+    if cms_token and credentials.credentials == cms_token:
         # Return a mock admin user for CMS access
         return (
             "cms_admin",  # id
@@ -699,12 +706,12 @@ async def get_api_key_endpoint(
         
         if current_user[3] not in ["admin"]:
             raise HTTPException(status_code=403, detail="Admin access required.")
-        
         organization_id = _get_active_org_id(current_user)
         if not organization_id:
             raise HTTPException(status_code=400, detail="Organization context required.")
         
-        key_details = await get_api_key_details(key_id)
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -748,10 +755,10 @@ async def update_api_key_endpoint(
             raise HTTPException(status_code=403, detail="Cannot update API keys from other organizations.")
         
         
-        success = await update_api_key(
+        success = await update_api_key_by_key_id(
             key_id=key_id,
+            organization_id=organization_id,
             name=request.name,
-            description=request.description,
             permissions=request.permissions,
         )
         
@@ -787,7 +794,7 @@ async def revoke_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -825,14 +832,14 @@ async def delete_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
         if key_details["organization_id"] != organization_id:
             raise HTTPException(status_code=403, detail="Cannot delete API keys from other organizations.")
         
-        await delete_api_key(key_id)
+        await delete_api_key_by_key_id(key_id, organization_id)
         
         logger.info(f"API key {key_id} deleted by {current_user[1]}")
         
@@ -1454,8 +1461,8 @@ async def login_user(request: LoginRequest, request_obj: Request):
     
     # Check organization status if user belongs to an organization
     if organization_id:
-        # Direct SQL query to ensure we get all columns including status
-        async with aiosqlite.connect("organizations.db") as conn:
+        from orgdb import DB_PATH
+        async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT * FROM organizations WHERE id = ?", (organization_id,))
             org = await cursor.fetchone()
         
@@ -1665,8 +1672,7 @@ async def get_pending_organizations_endpoint(
 
 @app.get("/organizations", response_model=APIResponse)
 async def get_all_organizations_endpoint(
-    user=Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme)
+    user=Depends(get_current_user)
 ):
     """Get all organizations (admin only)"""
     try:
@@ -1677,9 +1683,10 @@ async def get_all_organizations_endpoint(
                 message="Admin access required to view organizations",
                 response=None
             )
-        
+
         # Get all organizations from database
-        async with aiosqlite.connect("organizations.db") as conn:
+        from orgdb import DB_PATH
+        async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("""
                 SELECT id, name, slug, status, created_at, updated_at, admin_user_id
                 FROM organizations
@@ -2706,7 +2713,8 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                 rag_chain = get_rag_chain()
                 
                 # Use secure RAG retriever with skip_llm=True for immediate results
-                secure_retriever = SecureRAGRetriever(username)
+                organization_id = _get_active_org_id(user)
+                secure_retriever = SecureRAGRetriever(username=username, organization_id=organization_id)
                 rag_result = await secure_retriever.invoke_secure_rag_chain(
                     rag_chain=rag_chain,
                     query=question,
@@ -2972,6 +2980,8 @@ async def process_secure_rag_query(
         role = user[3]  # Get user role
         session_id = str(uuid.uuid4())  # Generate session for this query
         client_ip = request_obj.client.host if request_obj and hasattr(request_obj, 'client') and request_obj.client else None
+        
+        organization_id = _get_active_org_id(user)
         # Get model type from environment variable (RAG_MODEL_TYPE: "local" or "server")
         model_type = "local" if os.getenv("RAG_MODEL_TYPE", "server").lower() == "local" else "server"
 
@@ -2992,7 +3002,7 @@ async def process_secure_rag_query(
 
         # Use secure RAG retriever that respects file permissions
         tracker.start_operation("secure_retrieval")
-        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id)
+        secure_retriever = SecureRAGRetriever(username=username, session_id=session_id, organization_id=organization_id)
         rag_result = await secure_retriever.invoke_secure_rag_chain(
             rag_chain=rag_chain,
             query=request.question,
@@ -3869,7 +3879,7 @@ async def upload_file(
             from auto_indexer import AutoIndexer
             indexer = AutoIndexer()
             file_hash = indexer.get_file_hash(file_path)
-            if indexer.index_document(file_path, file_hash):
+            if indexer.index_document(file_path, file_hash, organization_id=organization_id):
                 logger.info(f"✓ Document automatically indexed: {original_filename}")
             else:
                 logger.warning(f"⚠️ Failed to auto-index document: {original_filename}")
@@ -3943,34 +3953,30 @@ async def delete_document(
         
         logger.info(f"Attempting to delete document with file_id: {request.file_id}")
         organization_id = _get_active_org_id(current_user)
-        if not organization_id:
-            organization_id = ""  
         
-        logger.info(f"Deleting from Chroma with organization_id: {organization_id}")
-        chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id or "")
-        logger.info(f"Chroma deletion result: {chroma_delete_success}")
+        # Try to delete from Chroma
+        try:
+            chroma_delete_success = delete_doc_from_chroma(request.file_id, organization_id=organization_id)
+            logger.info(f"Chroma deletion result: {chroma_delete_success}")
+        except Exception as e:
+            logger.warning(f"Chroma delete error (will continue): {e}")
+            chroma_delete_success = True  # Continue anyway
         
-        if chroma_delete_success:
-            logger.info(f"Deleting from database with file_id: {request.file_id}")
-            db_delete_success = delete_document_record(request.file_id)
-            logger.info(f"Database deletion result: {db_delete_success}")
-            
-            if db_delete_success:
-                return APIResponse(
-                    status="success",
-                    message=f"Successfully deleted document with file_id {request.file_id}",
-                    response={"file_id": request.file_id}
-                )
-            else:
-                return APIResponse(
-                    status="error",
-                    message=f"Deleted from Chroma but failed to delete document with file_id {request.file_id} from database",
-                    response=None
-                )
+        # Delete from database
+        logger.info(f"Deleting from database with file_id: {request.file_id}")
+        db_delete_success = delete_document_record(request.file_id)
+        logger.info(f"Database deletion result: {db_delete_success}")
+        
+        if db_delete_success:
+            return APIResponse(
+                status="success",
+                message=f"Successfully deleted document with file_id {request.file_id}",
+                response={"file_id": request.file_id}
+            )
         else:
             return APIResponse(
                 status="error",
-                message=f"Failed to delete document with file_id {request.file_id} from Chroma",
+                message=f"Failed to delete document with file_id {request.file_id} from database",
                 response=None
             )
     except Exception as e:
@@ -4085,7 +4091,7 @@ async def index_files(
         
         logger.info(f"Starting manual indexation for organization {organization_id}")
         
-        
+        from rag_api.db_utils import get_file_content_by_id
         documents = get_all_documents(organization_id=organization_id)
         
         if not documents:
@@ -4104,88 +4110,77 @@ async def index_files(
         
         for doc in documents:
             try:
+                from rag_api.db_utils import get_file_content_by_id
                 
                 if isinstance(doc, dict):
                     file_id = doc.get("id")
                     filename = doc.get("filename")
-                    content = doc.get("content")
                 elif isinstance(doc, (list, tuple)) and len(doc) >= 2:
                     file_id = doc[0]
                     filename = doc[1]
-                    content = doc[2] if len(doc) > 2 else None
                 else:
                     continue
                 
                 if not file_id or not filename:
                     continue
                 
-                
-                if content:
-                    
-                    temp_file_path = f"temp_{filename}"
-                    try:
-                        
-                        try:
-                            existing_deleted = delete_doc_from_chroma(file_id, organization_id=organization_id)
-                            if existing_deleted:
-                                replaced_count += 1
-                                replaced_docs.append({
-                                    "file_id": file_id,
-                                    "filename": filename,
-                                    "action": "Replaced existing embeddings"
-                                })
-                                logger.info(f"🔄 Deleted existing embeddings for {filename} (file_id: {file_id})")
-                        except Exception as e:
-                            logger.debug(f"No existing embeddings to delete for {filename}: {e}")
-                        
-                        with open(temp_file_path, "wb") as buffer:
-                            if isinstance(content, bytes):
-                                buffer.write(content)
-                            else:
-                                buffer.write(content.encode('utf-8'))
-                        
-                        
-                        success = index_document_to_chroma(
-                            temp_file_path, 
-                            file_id, 
-                            organization_id=organization_id
-                        )
-                        
-                        if success:
-                            indexed_count += 1
-                            indexed_docs.append({
-                                "file_id": file_id,
-                                "filename": filename
-                            })
-                            logger.info(f"✓ Indexed {filename} (file_id: {file_id})")
-                        else:
-                            failed_count += 1
-                            failed_docs.append({
-                                "file_id": file_id,
-                                "filename": filename,
-                                "reason": "Indexing failed"
-                            })
-                            logger.warning(f"Failed to index {filename} (file_id: {file_id})")
-                    finally:
-                        
-                        if os.path.exists(temp_file_path):
-                            os.remove(temp_file_path)
-                else:
+                file_data = get_file_content_by_id(file_id, organization_id)
+                if not file_data or not file_data.get('content'):
                     failed_count += 1
                     failed_docs.append({
                         "file_id": file_id,
                         "filename": filename,
-                        "reason": "No content found"
+                        "reason": "No content in DB"
                     })
-            
+                    continue
+                
+                content = file_data['content']
+                temp_file_path = f"temp_{filename}"
+                
+                try:
+                    try:
+                        existing_deleted = delete_doc_from_chroma(file_id, organization_id=organization_id)
+                        if existing_deleted:
+                            replaced_count += 1
+                            replaced_docs.append({
+                                "file_id": file_id,
+                                "filename": filename,
+                                "action": "Replaced"
+                            })
+                    except:
+                        pass
+                    
+                    with open(temp_file_path, "wb") as buffer:
+                        if isinstance(content, bytes):
+                            buffer.write(content)
+                        else:
+                            buffer.write(content.encode('utf-8'))
+                    
+                    success = index_document_to_chroma(
+                        temp_file_path, 
+                        file_id, 
+                        organization_id=organization_id
+                    )
+                    
+                    if success:
+                        indexed_count += 1
+                        indexed_docs.append({"file_id": file_id, "filename": filename})
+                        logger.info(f"✓ Indexed {filename}")
+                    else:
+                        failed_count += 1
+                        failed_docs.append({"file_id": file_id, "filename": filename, "reason": "Index failed"})
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                    
             except Exception as e:
                 failed_count += 1
                 failed_docs.append({
-                    "file_id": doc.get("id") if isinstance(doc, dict) else (doc[0] if isinstance(doc, (list, tuple)) else None),
-                    "filename": doc.get("filename") if isinstance(doc, dict) else (doc[1] if isinstance(doc, (list, tuple)) and len(doc) > 1 else None),
+                    "file_id": doc.get("id") if isinstance(doc, dict) else None,
+                    "filename": doc.get("filename") if isinstance(doc, dict) else None,
                     "reason": str(e)
                 })
-                logger.error(f"Error indexing document: {str(e)}")
+                logger.error(f"Error: {str(e)}")
         
         logger.info(f"Indexation complete: {indexed_count} indexed, {replaced_count} replaced, {failed_count} failed")
         
@@ -4704,7 +4699,9 @@ async def edit_file_content(
         from rag_api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
         import os
         
-        file_ids = update_document_record(filename, new_content.encode("utf-8"))
+        organization_id = _get_active_org_id(user)
+        
+        file_ids = update_document_record(filename, new_content.encode("utf-8"), organization_id=organization_id)
         if not file_ids:
             return APIResponse(status="error", message="File not found in DB", response=None)
         
@@ -4713,8 +4710,8 @@ async def edit_file_content(
             buffer.write(new_content)
         
         for file_id in file_ids:
-            delete_doc_from_chroma(file_id)
-            index_document_to_chroma(temp_file_path, file_id)
+            delete_doc_from_chroma(file_id, organization_id=organization_id)
+            index_document_to_chroma(temp_file_path, file_id, organization_id=organization_id)
         os.remove(temp_file_path)
         return APIResponse(status="success", message="File updated and reindexed", response={"file_ids": file_ids, "filename": filename})
     except Exception as e:
@@ -5484,6 +5481,8 @@ async def get_metrics_queries_legacy(
 
 
 class QuizQuestionCreate(BaseModel):
+    id: str
+    type: str
     question: str
     options: List[str]
     answer: str
@@ -5513,7 +5512,7 @@ class QuizSubmissionCreate(BaseModel):
     answers: Dict[str, str]
     time_spent: int
 
-@app.post("/admin/quizzes", response_model=APIResponse, tags=["Quiz Management"])
+@app.post("/admin/quizzes", response_model=APIResponse, tags=["Quiz Management"]) # Create quiz endpoint
 async def create_quiz(
     quiz_data: QuizCreate,
     request_obj: Request,
@@ -5542,7 +5541,15 @@ async def create_quiz(
         for i, q in enumerate(quiz_data.questions):
             logger.info(f"Processing question {i}: {q}")
             try:
-                quiz_question = QuizQuestion(**q.dict())
+                quiz_question = QuizQuestion(
+                    id=q.id,
+                    type=q.type,
+                    question=q.question,
+                    options=q.options,
+                    correct_answer=q.answer,
+                    explanation=q.explanation,
+                    points=q.points
+                )
                 questions.append(quiz_question)
                 logger.info(f"Question {i} validated successfully")
             except Exception as q_error:
@@ -5676,7 +5683,7 @@ async def update_quiz_endpoint(
         logger.error(f"Error updating quiz: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/admin/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"])
+@app.delete("/admin/quizzes/{quiz_id}", response_model=APIResponse, tags=["Quiz Management"]) 
 async def delete_quiz_endpoint(
     quiz_id: str,
     current_user=Depends(get_current_user)
@@ -5802,7 +5809,7 @@ async def submit_quiz(
         for question in quiz.questions:
             total_points += question.points
             user_answer = submission.answers.get(str(quiz.questions.index(question)))
-            if user_answer == question.answer:
+            if user_answer == question.correct_answer:
                 score += question.points
         
         passed = (score / total_points * 100) >= quiz.passing_score

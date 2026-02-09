@@ -57,7 +57,7 @@ class EnterpriseInquiry(BaseModel):
 @router.post("/demo-request")
 async def create_demo_request(request: DemoRequest):
     """Create a new demo request"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             cursor = await db.execute(
                 """
@@ -108,7 +108,7 @@ async def get_demo_requests(
     offset: int = 0
 ):
     """Get demo requests (admin endpoint)"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM demo_requests WHERE 1=1"
@@ -129,7 +129,7 @@ async def get_demo_requests(
 @router.get("/demo-request/{request_id}")
 async def get_demo_request(request_id: int):
     """Get single demo request"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -149,7 +149,7 @@ async def get_demo_request(request_id: int):
 # Sales Leads endpoints
 async def create_sales_lead_from_demo(demo_request: DemoRequest):
     """Create a sales lead from demo request"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             await db.execute(
                 """
@@ -172,7 +172,7 @@ async def create_sales_lead_from_demo(demo_request: DemoRequest):
 @router.post("/leads")
 async def create_sales_lead(lead: SalesLead):
     """Create a new sales lead"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             cursor = await db.execute(
                 """
@@ -215,7 +215,7 @@ async def get_sales_leads(
     offset: int = 0
 ):
     """Get sales leads (admin endpoint)"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM sales_leads WHERE 1=1"
@@ -240,7 +240,7 @@ async def get_sales_leads(
 @router.get("/leads/{lead_id}")
 async def get_sales_lead(lead_id: int):
     """Get single sales lead"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -271,7 +271,7 @@ async def update_lead_status(
             detail=f"Invalid status. Must be one of: {valid_statuses}"
         )
     
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         # Check if lead exists
         cursor = await db.execute(
             "SELECT id FROM sales_leads WHERE id = ?",
@@ -306,7 +306,7 @@ async def update_lead_status(
 @router.post("/quote-request")
 async def create_quote_request(request: QuoteRequest):
     """Create a new quote request"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             cursor = await db.execute(
                 """
@@ -353,7 +353,7 @@ async def get_quote_requests(
     offset: int = 0
 ):
     """Get quote requests (admin endpoint)"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM quote_requests WHERE 1=1"
@@ -375,7 +375,7 @@ async def get_quote_requests(
 @router.post("/enterprise-inquiry")
 async def create_enterprise_inquiry(inquiry: EnterpriseInquiry):
     """Create a new enterprise inquiry"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             cursor = await db.execute(
                 """
@@ -416,7 +416,7 @@ async def create_enterprise_inquiry(inquiry: EnterpriseInquiry):
 @router.get("/analytics/leads")
 async def get_sales_analytics():
     """Get sales analytics data"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Total leads
@@ -482,7 +482,7 @@ async def get_sales_analytics():
 @router.get("/analytics/funnel")
 async def get_sales_funnel():
     """Get sales funnel data"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Sales funnel stages

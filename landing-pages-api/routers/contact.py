@@ -46,7 +46,7 @@ class InquiryType(BaseModel):
 @router.post("/submit")
 async def submit_contact_form(submission: ContactSubmission):
     """Submit contact form"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             # Determine priority based on inquiry type
             priority_map = {
@@ -100,7 +100,7 @@ async def get_contact_submissions(
     offset: int = 0
 ):
     """Get contact submissions (admin endpoint - would normally require auth)"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM contact_submissions WHERE 1=1"
@@ -125,7 +125,7 @@ async def get_contact_submissions(
 @router.get("/submissions/{submission_id}", response_model=ContactResponse)
 async def get_contact_submission(submission_id: int):
     """Get single contact submission"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -209,7 +209,7 @@ async def update_submission_status(
             detail=f"Invalid status. Must be one of: {valid_statuses}"
         )
     
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         # Check if submission exists
         cursor = await db.execute(
             "SELECT id FROM contact_submissions WHERE id = ?",
@@ -243,7 +243,7 @@ async def update_submission_status(
 @router.get("/analytics")
 async def get_contact_analytics():
     """Get contact form analytics"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Total submissions

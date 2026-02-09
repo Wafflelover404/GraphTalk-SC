@@ -45,7 +45,7 @@ class UptimeMetric(BaseModel):
 @router.get("/services", response_model=List[ServiceStatusResponse])
 async def get_service_status():
     """Get status of all services"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -64,7 +64,7 @@ async def get_service_status():
 @router.get("/overview")
 async def get_system_overview():
     """Get overall system status"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get all services
@@ -104,7 +104,7 @@ async def get_system_overview():
 @router.get("/services/{service_id}", response_model=ServiceStatusResponse)
 async def get_service_status_by_id(service_id: int):
     """Get status of a specific service"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -130,7 +130,7 @@ async def get_incidents(
     offset: int = 0
 ):
     """Get status incidents"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         query = "SELECT * FROM status_incidents WHERE 1=1"
@@ -166,7 +166,7 @@ async def get_incidents(
 @router.get("/incidents/{incident_id}", response_model=IncidentResponse)
 async def get_incident_by_id(incident_id: int):
     """Get single incident"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -196,7 +196,7 @@ async def get_incident_by_id(incident_id: int):
 @router.get("/incidents/recent")
 async def get_recent_incidents(days: int = 30):
     """Get recent incidents from last N days"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -225,7 +225,7 @@ async def get_recent_incidents(days: int = 30):
 @router.get("/uptime")
 async def get_uptime_metrics():
     """Get uptime metrics for different time periods"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get current uptime percentages from service_status
@@ -270,7 +270,7 @@ async def subscribe_to_status_updates(email: str):
 @router.get("/rss")
 async def get_status_rss():
     """Get RSS feed for status updates"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get recent incidents and updates

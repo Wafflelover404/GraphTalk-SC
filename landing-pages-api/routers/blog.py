@@ -53,7 +53,7 @@ async def get_blog_posts(
     search: Optional[str] = Query(None, description="Search in title and excerpt")
 ):
     """Get blog posts with optional filtering"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Build query
@@ -97,7 +97,7 @@ async def get_blog_posts(
 @router.get("/posts/{post_id}", response_model=BlogPostResponse)
 async def get_blog_post(post_id: int):
     """Get a single blog post by ID"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -133,7 +133,7 @@ async def get_blog_post(post_id: int):
 @router.get("/posts/slug/{slug}", response_model=BlogPostResponse)
 async def get_blog_post_by_slug(slug: str):
     """Get a single blog post by slug"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute(
@@ -175,7 +175,7 @@ async def get_featured_posts(limit: int = Query(5, ge=1, le=20)):
 @router.get("/categories", response_model=List[BlogCategory])
 async def get_blog_categories():
     """Get all blog categories"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         cursor = await db.execute("SELECT * FROM blog_categories ORDER BY name")
@@ -196,7 +196,7 @@ async def get_posts_by_category(
 @router.post("/subscribe")
 async def subscribe_newsletter(subscription: NewsletterSubscription):
     """Subscribe to newsletter"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         try:
             await db.execute(
                 """
@@ -223,7 +223,7 @@ async def subscribe_newsletter(subscription: NewsletterSubscription):
 @router.post("/unsubscribe")
 async def unsubscribe_newsletter(email: EmailStr):
     """Unsubscribe from newsletter"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         cursor = await db.execute(
             "UPDATE newsletter_subscriptions SET status = 'unsubscribed', updated_at = CURRENT_TIMESTAMP WHERE email = ?",
             (email,)
@@ -253,7 +253,7 @@ async def get_blog_analytics(
     days: int = Query(30, ge=1, le=365, description="Number of days to analyze")
 ):
     """Get blog analytics data"""
-    async with aiosqlite.connect("landing_pages.db") as db:
+    db = await get_db_connection()
         db.row_factory = dict_factory
         
         # Get total views
