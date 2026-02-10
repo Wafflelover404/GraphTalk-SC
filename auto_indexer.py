@@ -50,9 +50,9 @@ class AutoIndexer:
                 results = collection.get(include=['metadatas'])
                 
                 indexed_files = set()
-                if results and 'metadatas' in results:
+                if results and results.get('metadatas'):
                     for metadata in results['metadatas']:
-                        if metadata and 'source' in metadata:
+                        if metadata and metadata.get('source'):
                             indexed_files.add(metadata['source'])
                 
                 logger.info(f"Found {len(indexed_files)} already indexed files in Chroma")
@@ -72,7 +72,7 @@ class AutoIndexer:
             import chromadb
             from chromadb.config import Settings
             from langchain_core.documents import Document
-            from rag_api.chroma_utils import CachedEmbeddings, EMBEDDING_MODEL, device
+            from rag_api.chroma_utils import embedding_function, get_vectorstore
             
             # Read file content
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -91,17 +91,8 @@ class AutoIndexer:
                 }
             )
             
-            # Connect to Chroma using langchain wrapper for automatic embeddings
-            chroma_settings = Settings(persist_directory=self.chroma_db_path)
-            embedding_function = CachedEmbeddings(model_name=EMBEDDING_MODEL, device=device)
-            
-            # Use langchain's Chroma which handles embeddings automatically
-            from langchain_community.vectorstores import Chroma
-            vectorstore = Chroma(
-                collection_name="documents_optimized",
-                embedding_function=embedding_function,
-                persist_directory=self.chroma_db_path
-            )
+            # Use the global vectorstore instance to reuse embeddings
+            vectorstore = get_vectorstore()
             
             # Add document with embeddings
             vectorstore.add_texts(
@@ -141,7 +132,7 @@ class AutoIndexer:
             
             stats['scanned'] += 1
             file_name = os.path.basename(file_path)
-            current_hash = self.get_file_hash(file_path)
+            current_hash = self.get_file_hash(str(file_path))
             
             if not current_hash:
                 stats['failed'] += 1
@@ -164,7 +155,7 @@ class AutoIndexer:
             
             # Index if needed
             if needs_indexing:
-                if self.index_document(str(file_path), current_hash):
+                if self.index_document(str(file_path), current_hash, organization_id="default"):
                     self.indexed_files.add(file_name)
                     self.file_hashes[file_name] = current_hash
                 else:

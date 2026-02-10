@@ -5,6 +5,7 @@ import datetime
 from typing import List, Optional
 import bcrypt
 import logging
+from db_pool import get_db_connection, return_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ def _truncate_password_for_bcrypt(password: str) -> bytes:
 DB_PATH = os.path.join(os.path.dirname(__file__), 'users.db')
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +103,8 @@ async def init_db():
         ''')
         
         await conn.commit()
+    finally:
+        await return_db_connection(conn)
 
 # Initialize database on import
 try:
@@ -122,24 +126,33 @@ async def create_user(username: str, password: str, role: str, allowed_files: Op
     # Convert list to comma-separated string
     allowed_files_str = ','.join(allowed_files)
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute('''
             INSERT INTO users (username, password_hash, role, allowed_files, last_login, organization_id) 
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (username, password_hash, role, allowed_files_str, None, organization_id))
         await conn.commit()
         return cursor.lastrowid
+    finally:
+        await return_db_connection(conn)
 
 async def get_user(username: str):
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         async with conn.execute('SELECT * FROM users WHERE username = ?', (username,)) as cursor:
             user = await cursor.fetchone()
             return user
+    finally:
+        await return_db_connection(conn)
 
 async def update_access_token(username: str, token: str):
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         await conn.execute('UPDATE users SET access_token = ? WHERE username = ?', (token, username))
         await conn.commit()
+    finally:
+        await return_db_connection(conn)
 
 async def verify_user(username: str, password: str):
     user = await get_user(username)
@@ -155,10 +168,13 @@ async def verify_user(username: str, password: str):
         if verified:
             # Update last_login timestamp
             import datetime
-            async with aiosqlite.connect(DB_PATH) as conn:
+            conn = await get_db_connection()
+            try:
                 await conn.execute('UPDATE users SET last_login = ? WHERE username = ?',
                                   (datetime.datetime.utcnow().isoformat(), username))
                 await conn.commit()
+            finally:
+                await return_db_connection(conn)
             return True
     return False
 async def list_users(organization_id: Optional[str] = None):
@@ -166,7 +182,8 @@ async def list_users(organization_id: Optional[str] = None):
     Returns a list of users with username, role, last_login, allowed_files, and organization_id.
     If organization_id is provided, returns only users in that organization.
     """
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         if organization_id:
             async with conn.execute(
                 'SELECT username, role, last_login, allowed_files, organization_id FROM users WHERE organization_id = ?',
@@ -185,6 +202,8 @@ async def list_users(organization_id: Optional[str] = None):
                 'organization_id': u[4]
             } for u in users
         ]
+    finally:
+        await return_db_connection(conn)
 
 async def get_allowed_files(username: str):
     user = await get_user(username)
@@ -196,10 +215,13 @@ async def get_allowed_files(username: str):
     return []
 
 async def get_user_by_token(token: str):
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         async with conn.execute('SELECT * FROM users WHERE access_token = ?', (token,)) as cursor:
             user = await cursor.fetchone()
             return user
+    finally:
+        await return_db_connection(conn)
 
 # Session management functions using session_id
 async def create_session(username: str, session_id: str, expires_hours: int = 24, organization_id: Optional[str] = None):
@@ -208,30 +230,37 @@ async def create_session(username: str, session_id: str, expires_hours: int = 24
     now = datetime.datetime.utcnow()
     expires_at = now + datetime.timedelta(hours=expires_hours)
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         # Allow multiple active sessions per user (do not deactivate previous sessions)
         await conn.execute('''
             INSERT INTO user_sessions (session_id, username, created_at, last_activity, expires_at, is_active, organization_id)
             VALUES (?, ?, ?, ?, ?, TRUE, ?)
         ''', (session_id, username, now.isoformat(), now.isoformat(), expires_at.isoformat(), organization_id))
         await conn.commit()
+    finally:
+        await return_db_connection(conn)
 
 # Disrupt all sessions for a user (logout everywhere)
 async def disrupt_sessions_for_user(username: str):
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'DELETE FROM user_sessions WHERE username = ?',
             (username,)
         )
         await conn.commit()
         return cursor.rowcount
+    finally:
+        await return_db_connection(conn)
 
 async def get_user_by_session_id(session_id: str):
     """Get user by session_id, checking expiration and activity"""
     import datetime
     now = datetime.datetime.utcnow()
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         async with conn.execute('''
             SELECT u.*, s.created_at, s.last_activity, s.expires_at, s.organization_id
             FROM users u 
@@ -249,31 +278,40 @@ async def get_user_by_session_id(session_id: str):
                 await conn.commit()
                 return result
             return None
+    finally:
+        await return_db_connection(conn)
 
 async def logout_session_by_id(session_id: str):
     """Deactivate a session by session_id (logout)"""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'DELETE FROM user_sessions WHERE session_id = ?',  # Delete instead of deactivate for cleaner DB
             (session_id,)
         )
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
 
 async def delete_user(username: str) -> bool:
     """Delete a user and all their sessions from the database by username."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         # Delete user sessions first
         await conn.execute('DELETE FROM user_sessions WHERE username = ?', (username,))
         # Delete user
         cursor = await conn.execute('DELETE FROM users WHERE username = ?', (username,))
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
 
 # Keep backward compatibility functions
 async def update_username(old_username: str, new_username: str) -> bool:
     """Update a user's username in the database."""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         # Update username in users table
         cursor = await conn.execute(
             'UPDATE users SET username = ? WHERE username = ?',
@@ -286,42 +324,53 @@ async def update_username(old_username: str, new_username: str) -> bool:
         )
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
     
 async def update_password(username: str, new_password: str) -> bool:
     """Update a user's password in the database."""
     safe_password = _truncate_password_for_bcrypt(new_password)
     new_password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'UPDATE users SET password_hash = ? WHERE username = ?',
             (new_password_hash, username)
         )
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
     
 async def update_role(username: str, new_role: str) -> bool:
     """Update a user's role in the database."""
     if new_role not in ('user', 'admin'):
         raise ValueError("Role must be 'user' or 'admin'")
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'UPDATE users SET role = ? WHERE username = ?',
             (new_role, username)
         )
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
     
 async def update_allowed_files(username: str, allowed_files: Optional[List[str]]) -> bool:
     """Update a user's allowed files in the database."""
     allowed_files_str = ','.join(allowed_files) if allowed_files else ''
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'UPDATE users SET allowed_files = ? WHERE username = ?',
             (allowed_files_str, username)
         )
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
 
 async def get_user_by_session(session_token: str):
     """Backward compatibility wrapper"""
@@ -336,13 +385,16 @@ async def cleanup_expired_sessions():
     import datetime
     now = datetime.datetime.utcnow()
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute(
             'DELETE FROM user_sessions WHERE expires_at < ? OR is_active = FALSE',
             (now.isoformat(),)
         )
         await conn.commit()
         return cursor.rowcount
+    finally:
+        await return_db_connection(conn)
 
 async def get_user_allowed_filenames(username: str) -> Optional[List[str]]:
     """Get list of filenames user is allowed to access"""
@@ -379,7 +431,8 @@ async def check_file_access(username: str, filename: str) -> bool:
 
 async def get_active_sessions_count(username: str) -> int:
     """Get count of active sessions for a user"""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         # Get current time
         import datetime
         now = datetime.datetime.utcnow()
@@ -392,6 +445,8 @@ async def get_active_sessions_count(username: str) -> int:
         ''', (username, now.isoformat())) as cursor:
             result = await cursor.fetchone()
             return result[0] if result else 0
+    finally:
+        await return_db_connection(conn)
 
 # Invite management functions
 async def create_invite(token: str, email: str = None, role: str = "user", allowed_files: List[str] = None, 
@@ -404,19 +459,23 @@ async def create_invite(token: str, email: str = None, role: str = "user", allow
     
     allowed_files_str = ','.join(allowed_files) if allowed_files else ""
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         await conn.execute('''
             INSERT INTO invites (token, email, role, allowed_files, expires_at, created_at, created_by, message, organization_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (token, email, role, allowed_files_str, expires_at.isoformat(), now.isoformat(), created_by, message, organization_id))
         await conn.commit()
+    finally:
+        await return_db_connection(conn)
 
 async def get_invite_info(token: str):
     """Get invite information by token"""
     import datetime
     now = datetime.datetime.utcnow()
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         async with conn.execute('SELECT * FROM invites WHERE token = ?', (token,)) as cursor:
             invite = await cursor.fetchone()
             
@@ -452,13 +511,16 @@ async def get_invite_info(token: str):
             invite_data['valid'] = True
             
         return invite_data
+    finally:
+        await return_db_connection(conn)
 
 async def mark_invite_used(token: str, used_by: str):
     """Mark an invite as used"""
     import datetime
     now = datetime.datetime.utcnow()
     
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute('''
             UPDATE invites 
             SET is_used = TRUE, used_at = ?, used_by = ? 
@@ -466,10 +528,13 @@ async def mark_invite_used(token: str, used_by: str):
         ''', (now.isoformat(), used_by, token))
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)
 
 async def list_invites(organization_id: str = None):
     """List all invites, optionally filtered by organization"""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         if organization_id:
             async with conn.execute('SELECT * FROM invites WHERE organization_id = ? ORDER BY created_at DESC', (organization_id,)) as cursor:
                 invites = await cursor.fetchall()
@@ -495,10 +560,15 @@ async def list_invites(organization_id: str = None):
             }
             for invite in invites
         ]
+    finally:
+        await return_db_connection(conn)
 
 async def revoke_invite(token: str):
     """Delete an invite token"""
-    async with aiosqlite.connect(DB_PATH) as conn:
+    conn = await get_db_connection()
+    try:
         cursor = await conn.execute('DELETE FROM invites WHERE token = ?', (token,))
         await conn.commit()
         return cursor.rowcount > 0
+    finally:
+        await return_db_connection(conn)

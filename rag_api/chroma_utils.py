@@ -65,16 +65,28 @@ from chonkie import TokenChunker, SentenceChunker
 # Configure device (use GPU if available)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Initialize embedding function with caching
+# Initialize embedding function with caching and singleton pattern
 class CachedEmbeddings:
-    def __init__(self, model_name: str, device: str = "cpu"):
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls, model_name: str = None, device: str = "cpu"):
+        if cls._instance is None:
+            cls._instance = super(CachedEmbeddings, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self, model_name: str = None, device: str = "cpu"):
+        if self._initialized:
+            return
+        
         # Only pass show_progress_bar in one place, not both
         self.embedder = SentenceTransformerEmbeddings(
-            model_name=model_name,
+            model_name=model_name or EMBEDDING_MODEL,
             model_kwargs={"device": device}
         )
         self.device = device
         self.cache = TTLCache(maxsize=1000, ttl=3600)  # Cache for 1 hour
+        self._initialized = True
         
     @lru_cache(maxsize=1000)
     def embed_query(self, text: str) -> List[float]:
