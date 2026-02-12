@@ -81,6 +81,7 @@ from api_keys import (
     init_api_keys_db,
     create_api_key,
     validate_api_key,
+    validate_full_api_key,
     check_api_key_permission,
     revoke_api_key,
     delete_api_key,
@@ -90,6 +91,9 @@ from api_keys import (
     get_api_key_details_by_key_id,
     update_api_key,
     update_api_key_by_key_id,
+    get_api_key_usage_stats,
+    get_audit_log,
+    update_llm_control_settings,
     AVAILABLE_PERMISSIONS,
 )
 
@@ -503,7 +507,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         )
     
     
-    api_key_data = await validate_api_key(credentials.credentials)
+    api_key_data = await validate_full_api_key(credentials.credentials)
     if api_key_data:
         
         
@@ -514,7 +518,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             "api_key",  
             api_key_data["permissions"],  
             api_key_data["created_at"],  
-            api_key_data["last_used"],  
+            api_key_data["last_used_at"],  
             api_key_data["organization_id"],  
         )
     
@@ -754,7 +758,7 @@ async def update_api_key_endpoint(
             raise HTTPException(status_code=400, detail="Organization context required.")
         
         
-        key_details = await get_api_key_details(key_id)
+        key_details = await get_api_key_details_by_key_id(key_id)
         if not key_details:
             raise HTTPException(status_code=404, detail="API key not found.")
         
@@ -859,6 +863,223 @@ async def delete_api_key_endpoint(
         raise
     except Exception as e:
         logger.exception("Failed to delete API key")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.get("/api-keys/{key_id}/quota", response_model=APIResponse)
+async def get_api_key_quota(
+    key_id: str,
+    current_user=Depends(get_current_user)
+):
+    """Get current quota status for an API key."""
+    try:
+        if current_user[3] not in ["admin"]:
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        
+        organization_id = _get_active_org_id(current_user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
+        if not key_details:
+            raise HTTPException(status_code=404, detail="API key not found.")
+        
+        current_usage = key_details.get("current_usage", 0)
+        limit = key_details.get("rate_limit_requests", 10000)
+        usage_percent = round((current_usage / limit * 100) if limit > 0 else 0, 1)
+        
+        return APIResponse(
+            status="success",
+            message="Quota status retrieved",
+            response={
+                "key_id": key_id,
+                "limit": limit,
+                "current_usage": current_usage,
+                "usage_percent": usage_percent,
+                "warning_threshold": key_details.get("quota_warning_threshold", 80),
+                "warning_triggered": usage_percent >= key_details.get("quota_warning_threshold", 80),
+                "period": key_details.get("reset_on", "daily_utc"),
+                "reset_at": key_details.get("usage_reset_time", ""),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get quota for API key {key_id}")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.get("/api-keys/{key_id}/usage-stats", response_model=APIResponse)
+async def get_api_key_usage_stats(
+    key_id: str,
+    days: int = 7,
+    current_user=Depends(get_current_user)
+):
+    """Get usage statistics for an API key."""
+    try:
+        if current_user[3] not in ["admin"]:
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        
+        organization_id = _get_active_org_id(current_user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
+        if not key_details:
+            raise HTTPException(status_code=404, detail="API key not found.")
+        
+        stats = await get_api_key_usage_stats(key_id, days)
+        
+        return APIResponse(
+            status="success",
+            message="Usage statistics retrieved",
+            response={
+                "key_id": key_id,
+                "period_days": days,
+                "total_requests": stats.get("total_requests", 0),
+                "avg_response_time_ms": stats.get("avg_response_time_ms", 0),
+                "min_response_time_ms": stats.get("min_response_time_ms", 0),
+                "max_response_time_ms": stats.get("max_response_time_ms", 0),
+                "error_count": stats.get("error_count", 0),
+                "error_rate_percent": stats.get("error_rate_percent", 0),
+                "total_llm_tokens": stats.get("total_llm_tokens", 0),
+                "total_request_bytes": stats.get("total_request_bytes", 0),
+                "total_response_bytes": stats.get("total_response_bytes", 0),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get usage stats for API key {key_id}")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.get("/api-keys/{key_id}/audit-log", response_model=APIResponse)
+async def get_api_key_audit_log(
+    key_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    current_user=Depends(get_current_user)
+):
+    """Get audit log for an API key."""
+    try:
+        if current_user[3] not in ["admin"]:
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        
+        organization_id = _get_active_org_id(current_user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
+        if not key_details:
+            raise HTTPException(status_code=404, detail="API key not found.")
+        
+        audit_log = await get_audit_log(key_id, limit, offset)
+        
+        return APIResponse(
+            status="success",
+            message="Audit log retrieved",
+            response={
+                "key_id": key_id,
+                "total_events": len(audit_log),
+                "events": audit_log
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get audit log for API key {key_id}")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.get("/api-keys/{key_id}/llm-control", response_model=APIResponse)
+async def get_api_key_llm_control(
+    key_id: str,
+    current_user=Depends(get_current_user)
+):
+    """Get LLM control settings for an API key."""
+    try:
+        if current_user[3] not in ["admin"]:
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        
+        organization_id = _get_active_org_id(current_user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
+        if not key_details:
+            raise HTTPException(status_code=404, detail="API key not found.")
+        
+        return APIResponse(
+            status="success",
+            message="LLM control settings retrieved",
+            response={
+                "key_id": key_id,
+                "llm_enabled": key_details.get("llm_enabled", True),
+                "llm_models_allowed": key_details.get("llm_models_allowed", "").split(",") if key_details.get("llm_models_allowed") else [],
+                "max_tokens_per_day": key_details.get("max_tokens_per_day", 1000000),
+                "current_tokens_used_today": key_details.get("current_llm_tokens_used", 0),
+                "tokens_remaining": max(0, key_details.get("max_tokens_per_day", 1000000) - key_details.get("current_llm_tokens_used", 0)),
+                "llm_cost_limit": key_details.get("llm_cost_limit", 1000.0),
+                "current_cost_today": key_details.get("current_llm_cost", 0),
+                "cost_remaining": max(0, key_details.get("llm_cost_limit", 1000.0) - key_details.get("current_llm_cost", 0)),
+                "daily_reset_at": key_details.get("llm_cost_reset_date", ""),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get LLM control settings for API key {key_id}")
+        return APIResponse(status="error", message=str(e), response=None)
+
+
+@app.put("/api-keys/{key_id}/llm-control", response_model=APIResponse)
+async def update_api_key_llm_control(
+    key_id: str,
+    request: dict,
+    current_user=Depends(get_current_user)
+):
+    """Update LLM control settings for an API key."""
+    try:
+        if current_user[3] not in ["admin"]:
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        
+        organization_id = _get_active_org_id(current_user)
+        if not organization_id:
+            raise HTTPException(status_code=400, detail="Organization context required.")
+        
+        key_details = await get_api_key_details_by_key_id(key_id, organization_id)
+        if not key_details:
+            raise HTTPException(status_code=404, detail="API key not found.")
+        
+        # Update LLM settings
+        llm_enabled = request.get("llm_enabled", key_details.get("llm_enabled"))
+        llm_models = request.get("llm_models_allowed", key_details.get("llm_models_allowed", "gpt3.5,gpt4"))
+        max_tokens = request.get("max_tokens_per_day", key_details.get("max_tokens_per_day", 1000000))
+        cost_limit = request.get("llm_cost_limit", key_details.get("llm_cost_limit", 1000.0))
+        
+        # Convert list to comma-separated string if needed
+        if isinstance(llm_models, list):
+            llm_models = ",".join(llm_models)
+        
+        await update_llm_control_settings(key_id, {
+            "llm_enabled": llm_enabled,
+            "llm_models_allowed": llm_models,
+            "max_tokens_per_day": max_tokens,
+            "llm_cost_limit": cost_limit
+        })
+        
+        logger.info(f"LLM control settings updated for key {key_id} by {current_user[1]}")
+        
+        return APIResponse(
+            status="success",
+            message="LLM control settings updated",
+            response={"key_id": key_id}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to update LLM control settings for API key {key_id}")
         return APIResponse(status="error", message=str(e), response=None)
 
 
@@ -2676,6 +2897,11 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
         await websocket.close(code=1008, reason="Authentication required")
         return
     
+    # Check API key permissions for search
+    if not await check_api_key_operation_permission(user, "search"):
+        await websocket.close(code=1008, reason="API key requires 'search' permission")
+        return
+    
     await websocket.accept()
     logger.info(f"WebSocket connection established for user {user[1]}")
     
@@ -2689,6 +2915,14 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
             session_id = data.get("session_id", str(uuid.uuid4()))
             ai_agent_mode = data.get("ai_agent_mode", False)
             stream_requested = data.get("stream", True)
+            
+            # Check API key permissions for AI features when humanize is enabled
+            if humanize and not await check_api_key_operation_permission(user, "generate_ai_response"):
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "API key requires 'generate_ai_response' permission for humanized responses"
+                })
+                continue
             
             logger.info(f"WebSocket query received - question: {question}, humanize: {humanize}, stream: {stream_requested}, ai_agent_mode: {ai_agent_mode}")
             
@@ -3045,6 +3279,10 @@ async def process_secure_rag_query(
     # Check API key permissions for search
     if not await check_api_key_operation_permission(user, "search"):
         raise HTTPException(status_code=403, detail="API key requires 'search' permission")
+    
+    # Check API key permissions for AI features when humanize is enabled
+    if request.humanize and not await check_api_key_operation_permission(user, "generate_ai_response"):
+        raise HTTPException(status_code=403, detail="API key requires 'generate_ai_response' permission for humanized responses")
     
     logger = logging.getLogger(__name__)
     tracker = PerformanceTracker(f"query_endpoint('{request.question[:50]}...')", logger)
