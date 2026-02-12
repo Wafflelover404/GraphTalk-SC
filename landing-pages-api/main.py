@@ -6,6 +6,13 @@ import os
 import logging
 from dotenv import load_dotenv
 
+# Load environment variables FIRST before importing anything that needs them
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import our modules
 from database import init_database
 from auth import create_master_token, verify_master_token
@@ -18,29 +25,15 @@ from routers import (
     docs,
     analytics,
     cms,
-    marketing
+    marketing,
+    organizations
 )
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting WikiAI Landing Pages API...")
     await init_database()
-    
-    # Create master CMS token if it doesn't exist
-    master_token = os.getenv("MASTER_CMS_TOKEN")
-    if not master_token:
-        logger.warning("MASTER_CMS_TOKEN not set in environment variables")
-    else:
-        logger.info("Master CMS token is configured")
-    
     logger.info("API startup complete")
     
     yield
@@ -89,6 +82,7 @@ app.include_router(status_monitoring.router, prefix="/api/status", tags=["Status
 app.include_router(docs.router, prefix="/api/docs", tags=["Documentation"])
 app.include_router(marketing.router, prefix="/api/marketing", tags=["Marketing"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
+app.include_router(organizations.router, prefix="/api/organizations", tags=["Organizations"])
 
 # Protected CMS routes (require master token)
 app.include_router(

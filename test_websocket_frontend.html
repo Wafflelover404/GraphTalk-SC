@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphTalk WebSocket Streaming Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.info { background: #d1ecf1; color: #0c5460; }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #5a6fd8; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .response-area {
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>🚀 GraphTalk WebSocket Streaming Test</h1>
+        
+        <div class="status info">
+            <strong>Prerequisites:</strong><br>
+            1. Server running at http://localhost:9001<br>
+            2. Set window.GraphTalkChatbot configuration below<br>
+            3. DEEPSEEK_API_KEY configured in server environment
+        </div>
+
+        <h2>Configuration</h2>
+        <textarea id="config" placeholder="Configure GraphTalkChatbot here...">window.GraphTalkChatbot = {
+    apiKey: 'e5adee97-1536-45bd-97e9-e647173f07d7',
+    apiEndpoint: 'http://localhost:9001'
+};</textarea>
+        <button onclick="applyConfig()">Apply Configuration</button>
+        
+        <h2>Test Queries</h2>
+        <div>
+            <button onclick="testQuery('What is the architecture of this system?')">Test System Architecture</button>
+            <button onclick="testQuery('Explain the main features')">Test Main Features</button>
+            <button onclick="testQuery('How does authentication work?')">Test Authentication</button>
+        </div>
+        
+        <textarea id="customQuery" placeholder="Enter custom query here..."></textarea>
+        <button onclick="testCustomQuery()">Send Custom Query</button>
+        
+        <h2>Response</h2>
+        <div id="status" class="status info">Ready to test. Configure your API settings above.</div>
+        <div id="response" class="response-area">Responses will appear here...</div>
+        
+        <h2>Debug Info</h2>
+        <div id="debug" class="response-area">Debug information will appear here...</div>
+    </div>
+
+    <script>
+        let ws = null;
+        let currentMessageId = null;
+        
+        function updateStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+        }
+        
+        function updateResponse(text) {
+            const responseDiv = document.getElementById('response');
+            responseDiv.textContent = text;
+        }
+        
+        function updateDebug(text) {
+            const debugDiv = document.getElementById('debug');
+            const timestamp = new Date().toLocaleTimeString();
+            debugDiv.textContent = `[${timestamp}] ${text}\n${debugDiv.textContent}`;
+        }
+        
+        function applyConfig() {
+            try {
+                const configText = document.getElementById('config').value;
+                eval(configText);
+                
+                if (!window.GraphTalkChatbot || !window.GraphTalkChatbot.apiKey) {
+                    throw new Error('apiKey is required in configuration');
+                }
+                
+                updateStatus('Configuration applied successfully', 'success');
+                updateDebug('Configuration loaded');
+                return true;
+            } catch (error) {
+                updateStatus(`Configuration error: ${error.message}`, 'error');
+                updateDebug(`Configuration error: ${error.message}`);
+                return false;
+            }
+        }
+        
+        function initWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                return true;
+            }
+            
+            const config = window.GraphTalkChatbot;
+            if (!config) {
+                updateStatus('Please apply configuration first', 'error');
+                return false;
+            }
+            
+            const wsUrl = `${config.apiEndpoint.replace('http', 'ws')}/ws/query?token=${config.apiKey}`;
+            updateDebug(`Connecting to: ${wsUrl}`);
+            
+            try {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    updateDebug('WebSocket connected successfully');
+                    updateStatus('WebSocket connected', 'success');
+                };
+                
+                ws.onclose = () => {
+                    updateDebug('WebSocket disconnected');
+                    updateStatus('WebSocket disconnected', 'error');
+                };
+                
+                ws.onerror = (error) => {
+                    updateDebug(`WebSocket error: ${error}`);
+                    updateStatus('WebSocket connection failed', 'error');
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleWebSocketMessage(data);
+                    } catch (error) {
+                        updateDebug(`Error parsing message: ${error}`);
+                    }
+                };
+                
+                return true;
+            } catch (error) {
+                updateDebug(`Failed to create WebSocket: ${error}`);
+                updateStatus('Failed to create WebSocket connection', 'error');
+                return false;
+            }
+        }
+        
+        function handleWebSocketMessage(data) {
+            updateDebug(`Received message type: ${data.type}`);
+            
+            switch (data.type) {
+                case 'status':
+                    updateStatus(`Processing: ${data.message}`, 'info');
+                    break;
+                    
+                case 'immediate':
+                    const files = data.data?.files || [];
+                    updateDebug(`Immediate results: ${files.length} files found`);
+                    if (files.length > 0) {
+                        updateResponse(`Found ${files.length} relevant files:\n${files.join('\n')}\n\nGenerating AI analysis...`);
+                    }
+                    break;
+                    
+                case 'stream_start':
+                    updateStatus('AI streaming started...', 'info');
+                    updateResponse('');
+                    updateDebug('Streaming started');
+                    break;
+                    
+                case 'stream_token':
+                    const token = data.token || '';
+                    const currentResponse = document.getElementById('response').textContent;
+                    updateResponse(currentResponse + token);
+                    break;
+                    
+                case 'stream_end':
+                    updateStatus('Streaming completed', 'success');
+                    updateDebug('Streaming completed');
+                    break;
+                    
+                case 'overview':
+                    updateStatus('Non-streaming response received', 'success');
+                    updateResponse(data.data || 'No overview data');
+                    break;
+                    
+                case 'error':
+                    updateStatus(`Error: ${data.message}`, 'error');
+                    updateResponse(`Error: ${data.message}`);
+                    break;
+                    
+                default:
+                    updateDebug(`Unhandled message type: ${data.type}`);
+            }
+        }
+        
+        function testQuery(query) {
+            document.getElementById('customQuery').value = query;
+            testCustomQuery();
+        }
+        
+        function testCustomQuery() {
+            const query = document.getElementById('customQuery').value.trim();
+            if (!query) {
+                updateStatus('Please enter a query', 'error');
+                return;
+            }
+            
+            if (!applyConfig()) {
+                return;
+            }
+            
+            if (!initWebSocket()) {
+                return;
+            }
+            
+            // Wait for WebSocket to be ready
+            if (ws.readyState === WebSocket.CONNECTING) {
+                ws.onopen = () => {
+                    sendQuery(query);
+                };
+            } else if (ws.readyState === WebSocket.OPEN) {
+                sendQuery(query);
+            } else {
+                updateStatus('WebSocket is not connected', 'error');
+            }
+        }
+        
+        function sendQuery(query) {
+            const message = {
+                question: query,
+                humanize: true,
+                stream: true,
+                session_id: `test-${Date.now()}`
+            };
+            
+            updateStatus(`Sending query: ${query}`, 'info');
+            updateResponse('Waiting for response...');
+            updateDebug(`Sending message: ${JSON.stringify(message)}`);
+            
+            try {
+                ws.send(JSON.stringify(message));
+                updateDebug('Message sent successfully');
+            } catch (error) {
+                updateStatus(`Failed to send message: ${error.message}`, 'error');
+                updateDebug(`Send error: ${error.message}`);
+            }
+        }
+    </script>
+</body>
+</html>

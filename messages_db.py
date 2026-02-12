@@ -162,9 +162,5 @@ async def get_unread_message_count() -> int:
         result = await cursor.fetchone()
         return result[0] if result else 0
 
-# Initialize database on import
-try:
-    import asyncio
-    asyncio.run(init_messages_db())
-except Exception as e:
-    print(f"Warning: Could not initialize messages database on import: {e}")
+# Database initialization should be called during application startup
+# to avoid event loop conflicts during import.

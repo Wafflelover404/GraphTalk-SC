@@ -359,3 +359,7 @@ async def get_db_connection():
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+def get_database_path():
+    """Get the database file path"""
+    return DATABASE_URL

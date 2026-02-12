@@ -242,6 +242,9 @@ async def _startup_events():
     # Initialize CMS database
     await init_cms_database()
     
+    # Initialize messages database
+    await init_messages_db()
+    
     
     if ADVANCED_ANALYTICS_ENABLED:
         try:
@@ -313,6 +316,10 @@ class RAGQueryRequest(BaseModel):
     session_id: Optional[str] = None
     model_type: Optional[str] = None
     catalog_ids: Optional[List[str]] = None  
+
+class BatchOverviewRequest(BaseModel):
+    queries: List[str]
+    results: List[Any]
 
 class UserEditRequest(BaseModel):
     username: str
@@ -2681,6 +2688,9 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
             humanize = data.get("humanize", True)
             session_id = data.get("session_id", str(uuid.uuid4()))
             ai_agent_mode = data.get("ai_agent_mode", False)
+            stream_requested = data.get("stream", True)
+            
+            logger.info(f"WebSocket query received - question: {question}, humanize: {humanize}, stream: {stream_requested}, ai_agent_mode: {ai_agent_mode}")
             
             if not question:
                 await websocket.send_json({
@@ -2786,11 +2796,49 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                 if humanize:
                     try:
                         from llm import generate_llm_overview
-                        # Generate overview asynchronously without blocking
-                        overview = await generate_llm_overview(
-                            question,
-                            {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
-                        )
+                        
+                        # Send streaming start message
+                        logger.info("Sending stream_start message")
+                        await websocket.send_json({
+                            "type": "stream_start",
+                            "message": "Generating AI analysis...",
+                            "ai_agent_mode": ai_agent_mode
+                        })
+                        logger.info("stream_start message sent successfully")
+                        
+                        # Define streaming callback
+                        async def stream_token(token):
+                            await websocket.send_json({
+                                "type": "stream_token",
+                                "token": token,
+                                "ai_agent_mode": ai_agent_mode
+                            })
+                        
+                        # Check if streaming is requested (default to true for better UX)
+                        use_streaming = stream_requested
+                        
+                        logger.info(f"WebSocket query - streaming requested: {use_streaming}")
+                        logger.info(f"WebSocket query - humanize: {humanize}")
+                        
+                        if use_streaming:
+                            # Generate overview with streaming
+                            overview = await generate_llm_overview(
+                                question,
+                                {"source_documents": source_docs, "answer": rag_result.get("answer", "")},
+                                stream_callback=stream_token
+                            )
+                            
+                            # Send stream completion message
+                            await websocket.send_json({
+                                "type": "stream_end",
+                                "ai_agent_mode": ai_agent_mode
+                            })
+                        else:
+                            # Generate overview without streaming (fallback)
+                            overview = await generate_llm_overview(
+                                question,
+                                {"source_documents": source_docs, "answer": rag_result.get("answer", "")}
+                            )
                         
                         # Always send an overview message, even if LLM generation fails
                         if not overview:
@@ -2800,12 +2848,15 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
                         if ai_agent_mode:
                             overview = f"🤖 **AI-Agent Analysis**: {overview}"
                         
-                        await websocket.send_json({
-                            "type": "overview",
-                            "data": overview,
-                            "ai_agent_mode": ai_agent_mode,
-                            "enhanced": ai_agent_mode
-                        })
+                        # Send final overview message for non-streaming mode or as summary
+                        if not use_streaming:
+                            await websocket.send_json({
+                                "type": "overview",
+                                "data": overview,
+                                "ai_agent_mode": ai_agent_mode,
+                                "enhanced": ai_agent_mode
+                            })
+                        
                     except Exception as e:
                         logger.error(f"Error generating LLM overview: {e}")
                         await websocket.send_json({
@@ -2958,6 +3009,29 @@ async def websocket_query_endpoint(websocket: WebSocket, token: Optional[str] = 
             await websocket.close(code=1011, reason="Internal server error")
         except:
             pass
+
+@app.post("/query/batch-overview", response_model=APIResponse)
+async def batch_overview_endpoint(
+    request: BatchOverviewRequest,
+    current_user=Depends(get_current_user)
+):
+    """Generate multiple AI overviews for a batch of queries and results"""
+    try:
+        from llm import generate_batch_overviews
+        
+        overviews = await generate_batch_overviews(request.queries, request.results)
+        
+        return APIResponse(
+            status="success",
+            message=f"Generated {len(overviews)} overviews",
+            response={"overviews": overviews}
+        )
+    except Exception as e:
+        logger.error(f"Error in batch overview generation: {e}")
+        return APIResponse(
+            status="error",
+            message=str(e)
+        )
 
 # SECURE RAG Query endpoint with file access control (HTTP fallback)
 @app.post("/query", response_model=APIResponse)

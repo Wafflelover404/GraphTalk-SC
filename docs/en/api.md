@@ -9,6 +9,7 @@ The main FastAPI application that provides a secure REST API for interacting wit
 - **RAG-based Search**: New feature to use a RAG model for querying.
 - **File Upload Support**: Upload and process knowledge base zip files
 - **LLM Integration**: Optional humanized responses using language models
+- **WebSocket Streaming**: Real-time streaming responses with Deepseek LLM token-by-token output
 - **Interactive Documentation**: Swagger UI with authentication
 
 ## Architecture
@@ -36,6 +37,29 @@ FastAPI Application
     - `humanize`: Optional boolean to get LLM-enhanced responses
     - `use_rag`: Optional boolean to use the RAG model for the query
   - Returns structured search results or humanized responses
+
+### WebSocket Streaming API
+- **WebSocket /ws/query**: Real-time streaming RAG queries with token-based authentication
+  - Query Parameter: `token` (optional) - Bearer token for authentication
+  - Message Format (JSON):
+    ```json
+    {
+      "question": "Your query here",
+      "humanize": true,
+      "stream": true,
+      "ai_agent_mode": false,
+      "session_id": "optional-session-id"
+    }
+    ```
+  - Response Messages:
+    - `status`: Processing status updates
+    - `immediate`: Fast RAG results with files and snippets
+    - `stream_start`: Indicates beginning of LLM streaming
+    - `stream_token`: Individual tokens from Deepseek LLM (when stream=true)
+    - `stream_end`: Indicates completion of LLM streaming
+    - `overview`: Complete LLM-generated analysis (when stream=false)
+    - `chunks`: Raw document chunks for non-humanized responses
+    - `error`: Error messages
 
 - **POST /upload/kb_zip**: Upload knowledge base files
   - Accepts ZIP files containing .scs (Semantic Computer Source) files
@@ -90,6 +114,48 @@ curl -X POST http://localhost:9001/query \
 ## Integration Points
 - **sc_search.py**: Core search functionality
 - **rag_api**: Handles RAG-based search
-- **llm.py**: Language model integration for humanized responses
+- **llm.py**: Language model integration for humanized responses with Deepseek streaming support
 - **memloader.py**: Knowledge base file processing
 - **OSTIS Server**: WebSocket connection at `ws://localhost:8090`
+
+## WebSocket Streaming Example
+```javascript
+// Connect to WebSocket with streaming enabled
+const ws = new WebSocket('ws://localhost:9001/ws/query?token=YOUR_TOKEN');
+
+ws.onopen = () => {
+    // Send query with streaming enabled
+    ws.send(JSON.stringify({
+        question: "What is the architecture of this system?",
+        humanize: true,
+        stream: true,
+        ai_agent_mode: false
+    }));
+};
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    
+    switch(data.type) {
+        case 'status':
+            console.log('Status:', data.message);
+            break;
+        case 'immediate':
+            console.log('Immediate results:', data.data.files);
+            break;
+        case 'stream_start':
+            console.log('Starting LLM streaming...');
+            break;
+        case 'stream_token':
+            // Append tokens to display in real-time
+            appendToResponse(data.token);
+            break;
+        case 'stream_end':
+            console.log('Streaming completed');
+            break;
+        case 'error':
+            console.error('Error:', data.message);
+            break;
+    }
+};
+```

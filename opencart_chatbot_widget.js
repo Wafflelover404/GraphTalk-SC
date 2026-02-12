@@ -21,7 +21,7 @@
 
   // Configuration from window object
   const config = window.GraphTalkChatbot || {};
-  const API_KEY = config.apiKey;
+  const API_KEY = config.apiKey || 'e5adee97-1536-45bd-97e9-e647173f07d7'; // Fallback to valid session
   const DEEPSEEK_API_KEY = config.deepseekApiKey;
   const CATALOG_ID = config.catalogId || 'opencart-catalog';
   const API_ENDPOINT = config.apiEndpoint || 'http://localhost:9001';
@@ -179,6 +179,29 @@
       background: white;
       color: #333;
       border: 1px solid #e0e0e0;
+    }
+
+    .graphtalk-chatbot-message.streaming .graphtalk-chatbot-message-content {
+      background: white;
+      color: #333;
+      border: 1px solid #e0e0e0;
+      position: relative;
+    }
+
+    .graphtalk-chatbot-message.streaming .graphtalk-chatbot-message-content::after {
+      content: '';
+      display: inline-block;
+      width: 2px;
+      height: 1.2em;
+      background: #667eea;
+      animation: cursor 1s infinite;
+      margin-left: 2px;
+      vertical-align: text-bottom;
+    }
+
+    @keyframes cursor {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
     }
 
     .graphtalk-chatbot-message.user .graphtalk-chatbot-message-content {
@@ -459,7 +482,46 @@
       });
     });
 
-    // Send message function
+    // WebSocket connection
+    let websocket = null;
+    let connectionAttempts = 0;
+    const maxConnectionAttempts = 3;
+    
+    function initWebSocket() {
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        return websocket;
+      }
+      
+      const wsUrl = `${API_ENDPOINT.replace('http', 'ws')}/ws/query?token=${API_KEY}`;
+      console.log('Connecting to WebSocket:', wsUrl);
+      
+      try {
+        websocket = new WebSocket(wsUrl);
+        
+        websocket.onopen = () => {
+          console.log('WebSocket connected successfully');
+          connectionAttempts = 0;
+        };
+        
+        websocket.onclose = () => {
+          console.log('WebSocket disconnected');
+          websocket = null;
+        };
+        
+        websocket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          websocket = null;
+        };
+        
+      } catch (error) {
+        console.error('Failed to create WebSocket:', error);
+        websocket = null;
+      }
+      
+      return websocket;
+    }
+    
+    // Send message function with WebSocket streaming
     async function sendMessage() {
       const message = inputField.value.trim();
       if (!message) return;
@@ -470,98 +532,216 @@
       inputField.focus();
       sendBtn.disabled = true;
 
-      // Show loading
+      // Initialize WebSocket connection
+      if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+        if (connectionAttempts >= maxConnectionAttempts) {
+          addMessage(
+            '❌ Unable to connect to chat service. Please refresh the page and try again.',
+            'bot error'
+          );
+          sendBtn.disabled = false;
+          return;
+        }
+        
+        initWebSocket();
+        connectionAttempts++;
+        
+        // Wait for connection
+        await new Promise((resolve) => {
+          const checkConnection = () => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+              resolve();
+            } else if (websocket && websocket.readyState === WebSocket.CLOSED) {
+              resolve();
+            } else {
+              setTimeout(checkConnection, 100);
+            }
+          };
+          checkConnection();
+        });
+        
+        if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+          addMessage(
+            '❌ Failed to connect to chat service. Please try again.',
+            'bot error'
+          );
+          sendBtn.disabled = false;
+          return;
+        }
+      }
+
+      // Show loading and streaming indicators
       const loadingId = addMessage('', 'bot loading');
+      let streamingMessageId = null;
+      let accumulatedResponse = '';
 
       try {
-        let response = null;
-        let overview = null;
+        // Send WebSocket message
+        const wsMessage = {
+          question: message,
+          humanize: true,
+          stream: true,
+          session_id: `widget-${Date.now()}`
+        };
+        
+        websocket.send(JSON.stringify(wsMessage));
+        console.log('WebSocket message sent:', wsMessage);
 
-        // First, try GraphTalk API for product overview
-        try {
-          const graphTalkResponse = await fetch(
-            `${API_ENDPOINT}/api/v1/catalog/${CATALOG_ID}/ai-overview`,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                query: message,
-                limit: 20,
-                min_relevance: 0.2
-              }),
-              timeout: 5000
-            }
-          );
-
-          if (graphTalkResponse.ok) {
-            const data = await graphTalkResponse.json();
-            overview = data.overview;
-          }
-        } catch (e) {
-          console.warn('GraphTalk API failed, will use DeepSeek:', e);
-        }
-
-        // If no overview from GraphTalk, use DeepSeek for direct AI response
-        if (!overview && DEEPSEEK_API_KEY) {
-          console.log('Using DeepSeek API for direct LLM response');
+        // Set up message handler for this specific query
+        let messageHandlerActive = true;
+        const messageHandler = (event) => {
+          if (!messageHandlerActive) return;
           
-          const systemPrompt = `You are a helpful AI shopping assistant for an online store. 
-Your task is to help customers find products and provide useful information about their searches.
-Be concise, helpful, and friendly. Focus on product recommendations and store information.`;
-
-          const deepSeekResponse = await fetch('https://api.deepseek.com/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: 'deepseek-chat',
-              messages: [
-                {
-                  role: 'system',
-                  content: systemPrompt
-                },
-                {
-                  role: 'user',
-                  content: message
+          try {
+            const data = JSON.parse(event.data);
+            
+            switch (data.type) {
+              case 'status':
+                console.log('Status:', data.message);
+                // Update loading message if needed
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement && data.message) {
+                  const contentDiv = loadingElement.querySelector('.graphtalk-chatbot-message-content');
+                  if (contentDiv) {
+                    // Show specific status messages with better formatting
+                    const displayMessage = data.message.includes('Generating AI analysis') 
+                      ? '🤖 Generating AI analysis...' 
+                      : data.message;
+                    
+                    contentDiv.innerHTML = `
+                      <div class="graphtalk-chatbot-typing">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                      </div>
+                      <div style="font-size: 12px; margin-top: 8px; color: #666; font-weight: 500;">${displayMessage}</div>
+                    `;
+                  }
                 }
-              ],
-              temperature: 0.7,
-              max_tokens: 500,
-              top_p: 0.95,
-              frequency_penalty: 0,
-              presence_penalty: 0
-            })
-          });
-
-          if (!deepSeekResponse.ok) {
-            const error = await deepSeekResponse.json();
-            throw new Error(error.error?.message || 'DeepSeek API error');
+                break;
+                
+              case 'immediate':
+                // Handle immediate search results (optional - show as context)
+                const files = data.data?.files || [];
+                if (files.length > 0) {
+                  console.log('Found relevant files:', files);
+                }
+                break;
+                
+              case 'stream_start':
+                // Remove loading, start streaming
+                removeMessage(loadingId);
+                streamingMessageId = addMessage('', 'bot streaming');
+                console.log('Streaming started - AI overview generation begun');
+                break;
+                
+              case 'stream_token':
+                // Add token to streaming response
+                if (streamingMessageId) {
+                  accumulatedResponse += data.token;
+                  updateStreamingMessage(streamingMessageId, accumulatedResponse);
+                }
+                break;
+                
+              case 'stream_end':
+                // Streaming completed
+                console.log('Streaming completed');
+                if (streamingMessageId) {
+                  // Convert streaming message to normal message
+                  const streamingElement = document.getElementById(streamingMessageId);
+                  if (streamingElement) {
+                    streamingElement.classList.remove('streaming');
+                    streamingElement.classList.add('bot');
+                  }
+                }
+                
+                // Deactivate this message handler
+                messageHandlerActive = false;
+                sendBtn.disabled = false;
+                break;
+                
+              case 'overview':
+                // Non-streaming fallback
+                removeMessage(loadingId);
+                addMessage(data.data, 'bot');
+                messageHandlerActive = false;
+                sendBtn.disabled = false;
+                break;
+                
+              case 'error':
+                // Handle errors
+                removeMessage(loadingId);
+                if (streamingMessageId) {
+                  removeMessage(streamingMessageId);
+                }
+                addMessage(
+                  `❌ Error: ${data.message || 'Something went wrong. Please try again.'}`,
+                  'bot error'
+                );
+                messageHandlerActive = false;
+                sendBtn.disabled = false;
+                break;
+                
+              default:
+                console.log('Unhandled message type:', data.type, data);
+            }
+          } catch (error) {
+            console.error('Error processing WebSocket message:', error);
           }
+        };
 
-          const deepSeekData = await deepSeekResponse.json();
-          overview = deepSeekData.choices?.[0]?.message?.content || 'Unable to generate response';
-        } else if (!overview) {
-          // No APIs available
-          overview = 'I apologize, but I\'m currently unable to process your request. Please try again later or contact support.';
-        }
+        // Add message handler
+        websocket.addEventListener('message', messageHandler);
 
-        // Remove loading message and add response
-        removeMessage(loadingId);
-        addMessage(overview, 'bot');
+        // Set timeout for fallback and also check if streaming started
+        setTimeout(() => {
+          if (messageHandlerActive) {
+            // Check if we're still in loading state (streaming never started)
+            if (document.getElementById(loadingId)) {
+              removeMessage(loadingId);
+              addMessage(
+                '⚠️ AI analysis is taking longer than expected. This might be due to high demand or API issues. Please try again in a moment.',
+                'bot error'
+              );
+              messageHandlerActive = false;
+              sendBtn.disabled = false;
+            }
+            // If streaming started but never completed
+            else if (streamingMessageId && document.getElementById(streamingMessageId)) {
+              const streamingElement = document.getElementById(streamingMessageId);
+              const contentDiv = streamingElement.querySelector('.graphtalk-chatbot-message-content');
+              if (contentDiv && contentDiv.textContent.trim() === '') {
+                // Streaming started but no content received
+                removeMessage(streamingMessageId);
+                addMessage(
+                  '⚠️ AI response was incomplete. Please try your query again.',
+                  'bot error'
+                );
+              } else {
+                // Convert partial response to normal message
+                streamingElement.classList.remove('streaming');
+                streamingElement.classList.add('bot');
+                addMessage(
+                  '⚠️ AI response was cut short. The partial response above may still be helpful.',
+                  'bot'
+                );
+              }
+              messageHandlerActive = false;
+              sendBtn.disabled = false;
+            }
+          }
+        }, 30000); // 30 second timeout
 
       } catch (error) {
         removeMessage(loadingId);
-        console.error('API Error:', error);
+        if (streamingMessageId) {
+          removeMessage(streamingMessageId);
+        }
+        console.error('WebSocket Error:', error);
         addMessage(
-          `❌ Error: ${error.message || 'Failed to get response. Please try again.'}`,
+          `❌ Error: ${error.message || 'Failed to send message. Please try again.'}`,
           'bot error'
         );
-      } finally {
         sendBtn.disabled = false;
       }
     }
@@ -595,6 +775,21 @@ Be concise, helpful, and friendly. Focus on product recommendations and store in
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
       return messageDiv.id;
+    }
+
+    function updateStreamingMessage(id, text) {
+      const element = document.getElementById(id);
+      if (element) {
+        const contentDiv = element.querySelector('.graphtalk-chatbot-message-content');
+        if (contentDiv) {
+          contentDiv.textContent = text;
+          // Scroll to bottom as new content arrives
+          const messagesDiv = element.parentElement;
+          if (messagesDiv) {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          }
+        }
+      }
     }
 
     function removeMessage(id) {

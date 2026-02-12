@@ -1,6 +1,6 @@
 import os
 import asyncio
-from typing import Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -87,7 +87,7 @@ def get_immediate_results(data):
         'raw_results': str(data) if not isinstance(data, str) else data
     }
 
-async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
+async def generate_llm_overview(message: str, data: Any, stream_callback=None) -> Optional[str]:
     """
     Generate LLM overview asynchronously. This can be called separately
     after immediate results are returned.
@@ -95,6 +95,7 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     Args:
         message: User's query
         data: Knowledge base search results
+        stream_callback: Optional callback function for streaming tokens
         
     Returns:
         str or None: LLM-generated overview
@@ -114,16 +115,40 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     if deepseek_client:
         try:
             print("🤖 Generating overview with DeepSeek...")
-            response = await deepseek_client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            overview = response.choices[0].message.content
+            if stream_callback:
+                # Streaming mode
+                stream = await deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000,
+                    stream=True
+                )
+                
+                accumulated_content = ""
+                async for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        accumulated_content += token
+                        await stream_callback(token)
+                
+                overview = accumulated_content
+            else:
+                # Non-streaming mode
+                response = await deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                overview = response.choices[0].message.content
+            
             print("✓ DeepSeek overview generated successfully")
             return overview
         except Exception as e:
@@ -133,16 +158,40 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     if openai_client:
         try:
             print("🤖 Generating overview with ChatGPT...")
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Fast and cost-effective
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            overview = response.choices[0].message.content
+            if stream_callback:
+                # Streaming mode
+                stream = await openai_client.chat.completions.create(
+                    model="gpt-4o-mini",  # Fast and cost-effective
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000,
+                    stream=True
+                )
+                
+                accumulated_content = ""
+                async for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        accumulated_content += token
+                        await stream_callback(token)
+                
+                overview = accumulated_content
+            else:
+                # Non-streaming mode
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o-mini",  # Fast and cost-effective
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Knowledge base search results: {data}\n\nUser request: {message}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                overview = response.choices[0].message.content
+            
             print("✓ ChatGPT overview generated successfully")
             return overview
         except Exception as e:
@@ -176,6 +225,29 @@ async def generate_llm_overview(message: str, data: Any) -> Optional[str]:
     
     print("⚠️ All LLM services unavailable. Providing fallback response.")
     return "I apologize, but I'm currently unable to generate a detailed AI overview due to technical difficulties with the language models. The search results above contain relevant information from your knowledge base that should help answer your question. Please try again later for a comprehensive analysis."
+
+async def generate_batch_overviews(queries: List[str], search_results: List[Any]) -> List[str]:
+    """
+    Generate multiple AI overviews in parallel for a batch of queries.
+    """
+    if not LLM_AVAILABLE:
+        return ["AI overview unavailable (LLM not configured)"] * len(queries)
+        
+    tasks = []
+    for i in range(len(queries)):
+        tasks.append(generate_llm_overview(queries[i], search_results[i]))
+        
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    overviews = []
+    for res in results:
+        if isinstance(res, Exception):
+            print(f"Error in batch overview generation: {res}")
+            overviews.append("Error generating AI overview for this result.")
+        else:
+            overviews.append(res or "No overview generated.")
+            
+    return overviews
 
 async def llm_call(message, data, get_overview=True):
     """
