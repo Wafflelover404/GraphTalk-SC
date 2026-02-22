@@ -1,99 +1,114 @@
 # GraphTalk
 
-**[English](../../README.md)** | **Русский**
+**[English](../../README.md)** | **[Русский](README.md)**
 
-Комплексная система управления и запросов базы знаний OSTIS с REST API, интеграцией LLM и возможностями семантической обработки.
+Комплексная система управления и запросов базы знаний OSTIS с REST API, интеграцией LLM, семантической обработкой, мульти-тенантной архитектурой и расширенными аналитическими возможностями.
 
 ```mermaid
 
 flowchart TD
     %% Clients Layer
-    subgraph "Clients"
+    subgraph "Клиенты"
         StreamlitUI["Streamlit Web UI"]:::client
         click StreamlitUI "https://github.com/wafflelover404/graphtalk-sc/blob/main/ui/sc_machine_ui.py"
         TelegramUI["Telegram Bot UI"]:::client
         click TelegramUI "https://github.com/wafflelover404/graphtalk-sc/blob/main/ui/tg_bot.py"
         CLI["CLI (curl/Postman)"]:::client
+        ReactUI["React Frontend<br/>wiki-ai-react"]:::client
+        click ReactUI "https://github.com/wafflelover404/wiki-ai-react"
     end
 
     %% API Layer
-    subgraph "API Layer"
-        APIGateway["API Gateway<br/>(api.py)"]:::api
-        click APIGateway "https://github.com/wafflelover404/graphtalk-sc/blob/main/api.py"
+    subgraph "Слой API"
+        APIGateway["API Gateway<br/>(src/api.py)"]:::api
+        click APIGateway "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/api.py"
         SCServer["SC-machine API Server<br/>(api_sc.py)"]:::api
         click SCServer "https://github.com/wafflelover404/graphtalk-sc/blob/main/api_sc.py"
-        Auth["Auth Module"]:::api
-        click Auth "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_security.py"
-        MetricsMW["Metrics Middleware"]:::api
-        click MetricsMW "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_middleware.py"
-        MetricsAdmin["Metrics API (Admin)"]:::api
-        click MetricsAdmin "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_api.py"
-        MetricsUser["Metrics API (User)"]:::api
-        click MetricsUser "https://github.com/wafflelover404/graphtalk-sc/blob/main/metrics_user_api.py"
-        ReportsAPI["Reporting API<br/>(reports_api.py)"]:::api
-        click ReportsAPI "https://github.com/wafflelover404/graphtalk-sc/blob/main/reports_api.py"
+        Auth["Модуль аутентификации<br/>(src/rag_security.py)"]:::api
+        click Auth "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_security.py"
+        MetricsMW["Промежуточное ПО метрик<br/>(src/metrics_middleware.py)"]:::api
+        click MetricsMW "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/metrics_middleware.py"
+        MetricsAdmin["API метрик (Админ)<br/>(src/metrics_api.py)"]:::api
+        click MetricsAdmin "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/metrics_api.py"
+        MetricsUser["API метрик (Пользователь)<br/>(src/metrics_user_api.py)"]:::api
+        click MetricsUser "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/metrics_user_api.py"
+        ReportsAPI["API отчетов<br/>(src/reports_api.py)"]:::api
+        click ReportsAPI "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/reports_api.py"
+        AnalyticsAPI["API аналитики<br/>(src/advanced_analytics_api.py)"]:::api
+        click AnalyticsAPI "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/advanced_analytics_api.py"
+        CMSAPI["CMS API<br/>(landing-pages-api/)"]:::api
+        click CMSAPI "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/landing-pages-api/"
     end
 
     %% Knowledge Base Modules
-    subgraph "Knowledge Base Layer"
-        SearchBasic["Basic Search<br/>(sc_search.py)"]:::api
+    subgraph "Слой базы знаний"
+        SearchBasic["Базовый поиск<br/>(sc_search.py)"]:::api
         click SearchBasic "https://github.com/wafflelover404/graphtalk-sc/blob/main/sc_search.py"
-        SearchAdv["Advanced Search<br/>(sc_search-total.py)"]:::api
+        SearchAdv["Расширенный поиск<br/>(sc_search-total.py)"]:::api
         click SearchAdv "https://github.com/wafflelover404/graphtalk-sc/blob/main/sc_search-total.py"
-        MemLoader["Memory Loader<br/>(memloader.py)"]:::api
+        MemLoader["Загрузчик памяти<br/>(memloader.py)"]:::api
         click MemLoader "https://github.com/wafflelover404/graphtalk-sc/blob/main/memloader.py"
-        JSONInterp["JSON Interpreter<br/>(json_interpreter.py)"]:::api
+        JSONInterp["Интерпретатор JSON<br/>(json_interpreter.py)"]:::api
         click JSONInterp "https://github.com/wafflelover404/graphtalk-sc/blob/main/json_interpreter.py"
-        Reindex["Reindex Docs<br/>(reindex_documents.py)"]:::api
+        Reindex["Переиндексация документов<br/>(reindex_documents.py)"]:::api
         click Reindex "https://github.com/wafflelover404/graphtalk-sc/blob/main/reindex_documents.py"
     end
 
     %% LLM Modules
-    subgraph "LLM Layer"
-        LLMCore["LLM Core<br/>(llm.py)"]:::api
-        click LLMCore "https://github.com/wafflelover404/graphtalk-sc/blob/main/llm.py"
-        LLMJson["LLM JSON Conv.<br/>(json_llm.py)"]:::api
+    subgraph "Слой LLM"
+        LLMCore["Ядро LLM<br/>(src/llm.py)"]:::api
+        click LLMCore "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/llm.py"
+        LLMJson["LLM JSON конв.<br/>(json_llm.py)"]:::api
         click LLMJson "https://github.com/wafflelover404/graphtalk-sc/blob/main/json_llm.py"
     end
 
     %% RAG Microservice
-    subgraph "RAG Microservice"
-        RAG_Main["Main Server<br/>(rag_api/main.py)"]:::api
-        click RAG_Main "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/main.py"
-        ChromaUtil["Chroma Utils<br/>(rag_api/chroma_utils.py)"]:::api
-        click ChromaUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/chroma_utils.py"
-        LCUtil["LangChain Utils<br/>(rag_api/langchain_utils.py)"]:::api
-        click LCUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/langchain_utils.py"
-        PydModels["Pydantic Models<br/>(rag_api/pydantic_models.py)"]:::api
-        click PydModels "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/pydantic_models.py"
-        DBUtils["DB Utils<br/>(rag_api/db_utils.py)"]:::api
-        click DBUtils "https://github.com/wafflelover404/graphtalk-sc/blob/main/rag_api/db_utils.py"
+    subgraph "RAG микросервис"
+        RAG_Main["Основной сервер<br/>(src/rag_api/main.py)"]:::api
+        click RAG_Main "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_api/main.py"
+        ChromaUtil["Утилиты Chroma<br/>(src/rag_api/chroma_utils.py)"]:::api
+        click ChromaUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_api/chroma_utils.py"
+        LCUtil["Утилиты LangChain<br/>(src/rag_api/langchain_utils.py)"]:::api
+        click LCUtil "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_api/langchain_utils.py"
+        PydModels["Pydantic модели<br/>(src/rag_api/pydantic_models.py)"]:::api
+        click PydModels "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_api/pydantic_models.py"
+        DBUtils["Утилиты БД<br/>(src/rag_api/db_utils.py)"]:::api
+        click DBUtils "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/rag_api/db_utils.py"
     end
 
     %% Data Stores
-    subgraph "Data Stores"
-        UserDB["User Tokens DB<br/>(userdb.py)"]:::db
-        click UserDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/userdb.py"
-        UploadsDB["Uploads DB<br/>(uploadsdb.py)"]:::db
-        click UploadsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/uploadsdb.py"
-        MetricsDB["Metrics DB<br/>(metricsdb.py)"]:::db
-        click MetricsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/metricsdb.py"
-        ReportsDB["Reports DB<br/>(reports_db.py)"]:::db
-        click ReportsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/reports_db.py"
-        ChromaDB["Chroma Store"]:::db
-        FS["File Storage<br/>uploaded_kbs/, unpacked_kbs/"]:::db
+    subgraph "Хранилища данных"
+        UserDB["БД токенов пользователей<br/>(src/userdb.py)"]:::db
+        click UserDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/userdb.py"
+        UploadsDB["БД загрузок<br/>(src/uploadsdb.py)"]:::db
+        click UploadsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/uploadsdb.py"
+        MetricsDB["БД метрик<br/>(src/metricsdb.py)"]:::db
+        click MetricsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/metricsdb.py"
+        ReportsDB["БД отчетов<br/>(src/reports_db.py)"]:::db
+        click ReportsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/reports_db.py"
+        AnalyticsDB["БД аналитики<br/>(src/analytics_core.py)"]:::db
+        click AnalyticsDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/analytics_core.py"
+        OrgDB["БД организаций<br/>(src/orgdb.py)"]:::db
+        click OrgDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/orgdb.py"
+        QuizDB["БД викторин<br/>(src/quizdb.py)"]:::db
+        click QuizDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/quizdb.py"
+        APIKeysDB["БД API ключей<br/>(src/api_keys.py)"]:::db
+        click APIKeysDB "https://github.com/wafflelover404/graphtalk-sc/blob/main/src/api_keys.py"
+        ChromaDB["Хранилище Chroma"]:::db
+        FS["Файловое хранилище<br/>uploaded_kbs/, unpacked_kbs/"]:::db
     end
 
     %% External Services
-    subgraph "External Services"
+    subgraph "Внешние сервисы"
         SCMachine["OSTIS SC-machine WS"]:::external
-        LLMService["Google LLM / GPT-4o-mini"]:::external
+        LLMService["DeepSeek/GPT-4o-mini/Gemini"]:::external
     end
 
     %% Connections
     StreamlitUI -->|HTTP| APIGateway
     TelegramUI -->|HTTP| APIGateway
     CLI -->|HTTP| APIGateway
+    ReactUI -->|HTTP| APIGateway
 
     APIGateway -->|WebSocket| SCMachine
     APIGateway -->|POST /query| SearchBasic
@@ -101,32 +116,36 @@ flowchart TD
     APIGateway -->|POST /upload| MemLoader
     APIGateway -->|interpret| JSONInterp
     APIGateway -->|reindex| Reindex
-    SearchBasic -->|WS call| SCMachine
-    SearchAdv -->|WS call| SCMachine
-    MemLoader -->|WS load| SCMachine
-    JSONInterp -->|WS interpret| SCMachine
-    MemLoader -->|store files| FS
-    JSONInterp -->|store files| FS
+    SearchBasic -->|WS вызов| SCMachine
+    SearchAdv -->|WS вызов| SCMachine
+    MemLoader -->|WS загрузка| SCMachine
+    JSONInterp -->|WS интерпретация| SCMachine
+    MemLoader -->|хранение файлов| FS
+    JSONInterp -->|хранение файлов| FS
 
-    APIGateway -->|calls| LLMCore
-    LLMCore -->|formats| LLMJson
-    LLMJson -->|response| APIGateway
+    APIGateway -->|вызовы| LLMCore
+    LLMCore -->|форматирование| LLMJson
+    LLMJson -->|ответ| APIGateway
     APIGateway -->|HTTP| LLMService
 
-    APIGateway -->|metrics| MetricsMW
-    MetricsMW -->|write| MetricsDB
+    APIGateway -->|метрики| MetricsMW
+    MetricsMW -->|запись| MetricsDB
+    AnalyticsAPI -->|аналитика| AnalyticsDB
 
-    APIGateway -->|auth| UserDB
-    APIGateway -->|metadata| UploadsDB
-    ReportsAPI -->|read/write| ReportsDB
-    APIGateway -->|reporting| ReportsAPI
+    APIGateway -->|аутентификация| UserDB
+    APIGateway -->|организации| OrgDB
+    APIGateway -->|метаданные| UploadsDB
+    ReportsAPI -->|чтение/запись| ReportsDB
+    APIGateway -->|отчетность| ReportsAPI
+    APIGateway -->|викторины| QuizDB
+    APIGateway -->|API ключи| APIKeysDB
 
     APIGateway -->|HTTP| RAG_Main
-    RAG_Main -->|uses| ChromaDB
-    RAG_Main -->|util| ChromaUtil
-    RAG_Main -->|util| LCUtil
-    RAG_Main -->|models| PydModels
-    RAG_Main -->|db util| DBUtils
+    RAG_Main -->|использует| ChromaDB
+    RAG_Main -->|утилиты| ChromaUtil
+    RAG_Main -->|утилиты| LCUtil
+    RAG_Main -->|модели| PydModels
+    RAG_Main -->|утилиты БД| DBUtils
 
     %% Styles
     classDef api fill:#CFE2FF,stroke:#03396c,color:#03396c
@@ -135,24 +154,34 @@ flowchart TD
     classDef client fill:#EAD1DC,stroke:#880E4F,color:#880E4F
 
 ```
-UPD: 07.28.25
+**Обновлено: Февраль 2026**
 
 ## Обзор
 GraphTalk предоставляет безопасный и многофункциональный интерфейс для взаимодействия с базами знаний OSTIS через:
-- **REST API**: Безопасные конечные точки с аутентификацией по токену
-- **Поиск по базе знаний**: Несколько алгоритмов поиска для разных случаев использования
-- **Интеграция LLM**: Генерация ответов на основе ИИ и семантический анализ
-- **Управление файлами**: Загрузка и обработка файлов базы знаний
+- **REST API**: Безопасные конечные точки с аутентификацией по токену и поддержкой мульти-тенантности
+- **Поиск по базе знаний**: Несколько алгоритмов поиска, включая улучшенный поиск с AI-агентом
+- **Интеграция LLM**: Мульти-провайдерная поддержка (DeepSeek, GPT-4o-mini, Gemini) с интеллектуальным переключением
+- **Управление файлами**: Загрузка и обработка файлов базы знаний с комплексными метаданными
 - **Семантическая обработка**: Преобразование естественного языка в структурированные семантические представления
+- **Расширенная аналитика**: Метрики в реальном времени, отслеживание производительности и аналитика поведения пользователей
+- **Управление организациями**: Мульти-тенантная архитектура с управлением на основе приглашений
+- **Управление контентом**: Интегрированная CMS для блогов, статей помощи и медиа
+- **Система викторин**: Интерактивные викторины с аналитикой и отчетностью
+- **Управление API ключами**: Безопасная генерация API ключей с гранулярными разрешениями
 
 ## Основные Функциональные Возможности
-- 🔐 **Безопасное API**: Аутентификация на основе токенов с хешированием через bcrypt
-- 🔍 **Двойная система поиска**: Быстрый базовый поиск и глубокое рекурсивное исследование
-- 🤖 **Интеграция с ИИ**: GPT-4o-mini для человекоподобных ответов и генерации JSON
-- 📁 **Обработка файлов**: Загрузка ZIP-файлов, содержащих файлы базы знаний SCS
+- 🔐 **Безопасное API**: Аутентификация на основе токенов с хешированием через bcrypt и управление API ключами
+- 🔍 **Расширенная система поиска**: Стандартный поиск, улучшенный поиск с AI-агентом и возможности RAG
+- 🤖 **Мульти-LLM интеграция**: DeepSeek (предпочтительный), GPT-4o-mini и Gemini с автоматическим переключением
+- 📁 **Комплексная обработка файлов**: Загрузка ZIP-файлов, содержащих файлы базы знаний SCS
 - 🌐 **Подключение через WebSocket**: Прямая интеграция с SC-машиной OSTIS
-- 📊 **Семантический анализ**: Преобразование естественного языка в SC-Machine JSON формат
+- 📊 **Расширенная аналитика**: Метрики в реальном времени, отслеживание объема запросов и анализ поведения пользователей
+- 🏢 **Мульти-тенантная архитектура**: Контроль доступа и управление на основе организаций
+- 📝 **Управление контентом**: Полная CMS для блогов, статей помощи и управления медиа
+- 🎯 **Система викторин**: Интерактивные викторины с детальной аналитикой и отчетностью
+- 🔑 **Управление API ключами**: Гранулярные разрешения и отслеживание использования
 - 📖 **Интерактивная документация**: Swagger UI с аутентификацией
+- 🌍 **Интернационализация**: Поддержка английского и русского языков
 
 ## Необходимое ПО
 - Python 3.9+
