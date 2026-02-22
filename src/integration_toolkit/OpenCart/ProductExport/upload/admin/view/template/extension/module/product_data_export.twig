@@ -1,0 +1,412 @@
+{{ header }}{{ column_left }}
+<div id="content">
+  <div class="page-header">
+    <div class="container-fluid">
+      <div class="pull-right">
+        <a href="{{ cancel }}" data-toggle="tooltip" title="{{ button_cancel }}" class="btn btn-default"><i class="fa fa-reply"></i></a>
+      </div>
+      <h1>{{ heading_title }}</h1>
+      <ul class="breadcrumb">
+        {% for breadcrumb in breadcrumbs %}
+        <li><a href="{{ breadcrumb.href }}">{{ breadcrumb.text }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  <div class="container-fluid">
+    {% if error_warning %}
+    <div class="alert alert-danger alert-dismissible">
+      <i class="fa fa-exclamation-circle"></i> {{ error_warning }}
+      <button type="button" class="close" data-dismiss="alert">&times;</button>
+    </div>
+    {% endif %}
+
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <h3 class="panel-title"><i class="fa fa-download"></i> {{ text_export }}</h3>
+      </div>
+      <div class="panel-body">
+        <form class="form-horizontal" id="export-form">
+          <div class="form-group">
+            <label class="col-sm-2 control-label">{{ text_format }}</label>
+            <div class="col-sm-10">
+              <select class="form-control" id="export-format">
+                <option value="json">JSON Format</option>
+                <option value="csv">CSV Format (Download)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">{{ text_limit }}</label>
+            <div class="col-sm-10">
+              <input type="number" id="export-limit" class="form-control" value="100" min="1" max="10000" />
+              <span class="help-block">Number of products to export per batch</span>
+              <label style="margin-top: 10px;">
+                <input type="checkbox" id="export-all" /> Export ALL products (ignore batch size)
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">&nbsp;</label>
+            <div class="col-sm-10">
+              <button type="button" class="btn btn-primary" id="btn-export"><i class="fa fa-download"></i> Export Products</button>
+              <button type="button" class="btn btn-success" id="btn-export-all"><i class="fa fa-download"></i> Export All</button>
+              <button type="button" class="btn btn-default" id="btn-preview"><i class="fa fa-eye"></i> Preview</button>
+              <span id="export-status"></span>
+            </div>
+          </div>
+
+          <div class="form-group" style="border-top: 1px solid #ddd; padding-top: 20px; margin-top: 20px;">
+            <label class="col-sm-2 control-label">Send to Endpoint</label>
+            <div class="col-sm-10">
+              <input type="url" id="endpoint-url" class="form-control" placeholder="https://your-graphtalk-host/opencart/products/import" />
+              <span class="help-block">Enter the Graphtalk ingest URL (FastAPI) that accepts the exported JSON</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">Bearer/Session Token</label>
+            <div class="col-sm-10">
+              <input type="text" id="endpoint-token" class="form-control" placeholder="Paste Graphtalk session_id or access_token" />
+              <span class="help-block">Uses the same Authorization Bearer token/session_id as Graphtalk <code>api.py</code></span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-2 control-label">&nbsp;</label>
+            <div class="col-sm-10">
+              <button type="button" class="btn btn-warning" id="btn-save-endpoint"><i class="fa fa-save"></i> Save Endpoint</button>
+              <button type="button" class="btn btn-info" id="btn-send-endpoint"><i class="fa fa-send"></i> Send to Endpoint</button>
+              <span id="send-status"></span>
+            </div>
+          </div>
+        </form>
+
+        <div id="preview-container" style="display:none; margin-top: 20px;">
+          <h4>Product Preview</h4>
+          <div id="preview-content"></div>
+        </div>
+
+        <div id="export-results" style="display:none; margin-top: 20px;">
+          <h4>Export Results</h4>
+          <div id="export-content"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+$(document).ready(function() {
+    // Get the base URL for API calls
+    var baseUrl = window.location.origin || (window.location.protocol + '//' + window.location.host);
+    var apiUrl = baseUrl + '/index.php?route=extension/module/product_data_export';
+    
+    // Load saved endpoint URL from localStorage on page load
+    var savedEndpoint = localStorage.getItem('productExportEndpoint');
+    if (savedEndpoint) {
+        $('#endpoint-url').val(savedEndpoint);
+    }
+    var savedToken = localStorage.getItem('productExportBearer');
+    if (savedToken) {
+        $('#endpoint-token').val(savedToken);
+    }
+    
+    // Update send button state based on URL and export data
+    function updateSendButtonState() {
+        var hasEndpoint = $('#endpoint-url').val().trim().length > 0;
+        var hasToken = $('#endpoint-token').val().trim().length > 0;
+        var hasExportData = window.exportData && window.exportData.products && window.exportData.products.length > 0;
+        $('#btn-send-endpoint').prop('disabled', !(hasEndpoint && hasToken && hasExportData));
+    }
+    
+    // Enable save endpoint button when URL is entered
+    $('#endpoint-url').on('input', function() {
+        var hasUrl = $(this).val().trim().length > 0;
+        $('#btn-save-endpoint').prop('disabled', !hasUrl);
+        updateSendButtonState();
+    });
+
+    // Enable send when token changes
+    $('#endpoint-token').on('input', function() {
+        updateSendButtonState();
+    });
+    
+    // Save endpoint button
+    $('#btn-save-endpoint').click(function() {
+        var endpointUrl = $('#endpoint-url').val().trim();
+        var endpointToken = $('#endpoint-token').val().trim();
+        if (!endpointUrl) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a valid URL</span>');
+            return;
+        }
+        if (!endpointToken) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a bearer/session token</span>');
+            return;
+        }
+        localStorage.setItem('productExportEndpoint', endpointUrl);
+        localStorage.setItem('productExportBearer', endpointToken);
+        $('#send-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Endpoint saved successfully</span>');
+        updateSendButtonState();
+    });
+    
+    // Preview button
+    $('#btn-preview').click(function() {
+        var limit = $('#export-limit').val() || 5;
+        var btn = $(this);
+        
+        btn.prop('disabled', true);
+        $('#preview-content').html('<p class="text-info"><i class="fa fa-spinner fa-spin"></i> Loading preview...</p>');
+        $('#preview-container').show();
+
+        $.ajax({
+            url: apiUrl + '/export',
+            type: 'get',
+            data: { limit: limit, offset: 0 },
+            dataType: 'json',
+            timeout: 30000,
+            success: function(json) {
+                btn.prop('disabled', false);
+                
+                if (json.error) {
+                    $('#preview-content').html('<div class="alert alert-danger">' + json.error + '</div>');
+                    return;
+                }
+
+                var html = '<p class="text-success"><i class="fa fa-check-circle"></i> Total products in database: <strong>' + json.total_products + '</strong></p>';
+                html += '<table class="table table-striped table-hover">';
+                html += '<thead><tr>';
+                html += '<th>Product ID</th>';
+                html += '<th>Name</th>';
+                html += '<th>SKU</th>';
+                html += '<th>Price</th>';
+                html += '<th>Stock</th>';
+                html += '<th>Link</th>';
+                html += '</tr></thead><tbody>';
+
+                $.each(json.products, function(i, product) {
+                    html += '<tr>';
+                    html += '<td>' + product.product_id + '</td>';
+                    html += '<td><strong>' + (product.name || 'N/A') + '</strong></td>';
+                    html += '<td>' + (product.sku || 'N/A') + '</td>';
+                    html += '<td>' + (product.price || 'N/A') + '</td>';
+                    html += '<td>' + (product.quantity || '0') + '</td>';
+                    html += '<td><a href="' + (product.url || '#') + '" target="_blank">View</a></td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                $('#preview-content').html(html);
+            },
+            error: function(xhr, status, error) {
+                btn.prop('disabled', false);
+                var errorMsg = error;
+                if (xhr.status === 0) {
+                    errorMsg = 'Network error - API endpoint unreachable';
+                } else if (xhr.responseText && xhr.responseText.indexOf('<') !== -1) {
+                    errorMsg = 'Invalid response - API returned HTML instead of JSON';
+                }
+                $('#preview-content').html('<div class="alert alert-danger">Error loading preview: ' + errorMsg + '</div>');
+            }
+        });
+    });
+
+    // Export button
+    $('#btn-export').click(function() {
+        var format = $('#export-format').val();
+        var limit = $('#export-limit').val() || 100;
+        var btn = $(this);
+
+        btn.prop('disabled', true);
+        $('#export-status').html('<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Exporting...</span>');
+
+        if (format === 'csv') {
+            // CSV download
+            window.location.href = apiUrl + '/exportcsv?limit=' + limit + '&offset=0';
+            btn.prop('disabled', false);
+            $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Download started</span>');
+        } else {
+            // JSON export
+            $.ajax({
+                url: apiUrl + '/export',
+                type: 'get',
+                data: { limit: limit, offset: 0, format: 'json' },
+                dataType: 'json',
+                timeout: 60000,
+                success: function(json) {
+                    btn.prop('disabled', false);
+                    
+                    if (json.error) {
+                        $('#export-status').html('<span class="text-danger">Error: ' + json.error + '</span>');
+                        return;
+                    }
+
+                    var html = '<p class="text-success"><i class="fa fa-check-circle"></i> Export completed: <strong>' + json.count + ' products</strong></p>';
+                    html += '<div class="form-group">';
+                    html += '<button type="button" class="btn btn-default" onclick="downloadJSON()">';
+                    html += '<i class="fa fa-download"></i> Download JSON</button>';
+                    html += '</div>';
+                    html += '<pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; max-height: 400px; overflow-y: auto;">' 
+                            + JSON.stringify(json.products, null, 2).substring(0, 1000) + '...</pre>';
+                    
+                    $('#export-content').html(html);
+                    $('#export-results').show();
+                    $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Export completed</span>');
+                    
+                    window.exportData = json;
+                    
+                    updateSendButtonState();
+                },
+                error: function(xhr, status, error) {
+                    btn.prop('disabled', false);
+                    var errorMsg = error;
+                    if (xhr.status === 0) {
+                        errorMsg = 'Network error - API endpoint unreachable';
+                    } else if (xhr.responseText && xhr.responseText.indexOf('<') !== -1) {
+                        errorMsg = 'Invalid response - API returned HTML instead of JSON';
+                    }
+                    $('#export-status').html('<span class="text-danger">Error: ' + errorMsg + '</span>');
+                }
+            });
+        }
+    });
+
+    $('#btn-export-all').click(function() {
+        var format = $('#export-format').val();
+        var btn = $(this);
+        var maxLimit = 10000; 
+
+        btn.prop('disabled', true);
+        $('#export-status').html('<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Exporting all products...</span>');
+
+        if (format === 'csv') {
+            window.location.href = apiUrl + '/exportcsv?limit=' + maxLimit + '&offset=0';
+            btn.prop('disabled', false);
+            $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Download started</span>');
+        } else {
+            $.ajax({
+                url: apiUrl + '/export',
+                type: 'get',
+                data: { limit: maxLimit, offset: 0, format: 'json' },
+                dataType: 'json',
+                timeout: 120000, 
+                success: function(json) {
+                    btn.prop('disabled', false);
+                    
+                    if (json.error) {
+                        $('#export-status').html('<span class="text-danger">Error: ' + json.error + '</span>');
+                        return;
+                    }
+
+                    var html = '<p class="text-success"><i class="fa fa-check-circle"></i> Export completed: <strong>' + json.count + ' products</strong> out of <strong>' + json.total_products + ' total</strong></p>';
+                    if (json.count < json.total_products) {
+                        html += '<p class="text-warning"><i class="fa fa-info-circle"></i> Only ' + json.count + ' products exported (limit reached). Use batch export for remaining products.</p>';
+                    }
+                    html += '<div class="form-group">';
+                    html += '<button type="button" class="btn btn-default" onclick="downloadJSON()">';
+                    html += '<i class="fa fa-download"></i> Download JSON</button>';
+                    html += '</div>';
+                    html += '<pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; max-height: 400px; overflow-y: auto;">' 
+                            + JSON.stringify(json.products, null, 2).substring(0, 1000) + '...</pre>';
+                    
+                    $('#export-content').html(html);
+                    $('#export-results').show();
+                    $('#export-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Export completed</span>');
+                    
+                    // Store data globally for download and sending
+                    window.exportData = json;
+                    
+                    // Update send button state
+                    updateSendButtonState();
+                },
+                error: function(xhr, status, error) {
+                    btn.prop('disabled', false);
+                    var errorMsg = error;
+                    if (xhr.status === 0) {
+                        errorMsg = 'Network error - API endpoint unreachable';
+                    } else if (xhr.responseText && xhr.responseText.indexOf('<') !== -1) {
+                        errorMsg = 'Invalid response - API returned HTML instead of JSON';
+                    }
+                    $('#export-status').html('<span class="text-danger">Error: ' + errorMsg + '</span>');
+                }
+            });
+        }
+    });
+
+    // Send to Endpoint button
+    $('#btn-send-endpoint').click(function() {
+        var endpointUrl = $('#endpoint-url').val().trim();
+        var endpointToken = $('#endpoint-token').val().trim();
+        var btn = $(this);
+
+        if (!endpointUrl) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter an endpoint URL</span>');
+            return;
+        }
+        if (!endpointToken) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> Please enter a bearer/session token</span>');
+            return;
+        }
+
+        if (!window.exportData || !window.exportData.products || window.exportData.products.length === 0) {
+            $('#send-status').html('<span class="text-danger"><i class="fa fa-times-circle"></i> No data to send. Please export data first.</span>');
+            return;
+        }
+
+        btn.prop('disabled', true);
+        $('#send-status').html('<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Sending data to endpoint...</span>');
+
+        $.ajax({
+            url: endpointUrl,
+            type: 'POST',
+            data: JSON.stringify(window.exportData),
+            contentType: 'application/json',
+            headers: {
+                'Authorization': 'Bearer ' + endpointToken
+            },
+            timeout: 30000,
+            success: function(response) {
+                btn.prop('disabled', false);
+                $('#send-status').html('<span class="text-success"><i class="fa fa-check-circle"></i> Successfully sent ' + window.exportData.count + ' products to endpoint</span>');
+                console.log('Response from endpoint:', response);
+            },
+            error: function(xhr, status, error) {
+                btn.prop('disabled', false);
+                var errorMsg = error;
+                var statusText = '';
+                
+                if (xhr.status === 0) {
+                    errorMsg = 'Network error or CORS blocked. Check if the endpoint is accessible.';
+                } else if (xhr.status === 404) {
+                    statusText = ' (404 Not Found)';
+                } else if (xhr.status === 401 || xhr.status === 403) {
+                    statusText = ' (Authentication/Authorization failed)';
+                } else if (xhr.status === 500) {
+                    statusText = ' (Server error)';
+                }
+                
+                var fullError = 'Error sending data: ' + errorMsg + statusText;
+                $('#send-status').html('<span class="text-danger"><i class="fa fa-exclamation-circle"></i> ' + fullError + '</span>');
+                console.error('Endpoint error:', xhr);
+            }
+        });
+    });
+});
+
+function downloadJSON() {
+    if (!window.exportData) return;
+    
+    var dataStr = JSON.stringify(window.exportData, null, 2);
+    var dataBlob = new Blob([dataStr], {type: 'application/json'});
+    var url = URL.createObjectURL(dataBlob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'products_' + new Date().toISOString().split('T')[0] + '.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+</script>
+{{ footer }}
