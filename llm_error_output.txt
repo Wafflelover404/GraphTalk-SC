@@ -1,3 +1,0 @@
-Exception: Models.generate_content() got an unexpected keyword argument 'stream'
-
-Partial output:
